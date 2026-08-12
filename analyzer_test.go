@@ -90,6 +90,12 @@ var analyzerCases = []struct {
 		name: "lockorder",
 		args: []string{"-checklocks=false", "-lockstringer=false", "./test/lockorder"},
 	},
+	{
+		// The hierarchical direction check is off by default, so its
+		// corpus is the one place it is turned on.
+		name: "lockhier",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder.hierarchy=true", "./test/lockhier"},
+	},
 }
 
 // TestAnalyzer runs each analyzer over its corpus and requires that it produce

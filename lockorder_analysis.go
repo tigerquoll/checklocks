@@ -43,6 +43,12 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	in := make([]*classSet, len(fn.Blocks))
 	in[0] = entry
 
+	// The instances holding a lock, tracked beside the classes for the hierarchical
+	// direction check. Nothing is carried in at the entry: an annotation names a class,
+	// not the instance it was taken on.
+	inInst := make([]*instanceSet, len(fn.Blocks))
+	inInst[0] = newInstanceSet()
+
 	// The calls deferred so far. A defer is registered when it is reached and runs at the
 	// return, so the list accumulates across the blocks on the way there.
 	var deferred []ssa.CallInstruction
@@ -54,6 +60,11 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 			cur = newClassSet()
 		}
 		cur = cur.fork()
+		curInst := inInst[b.Index]
+		if curInst == nil {
+			curInst = newInstanceSet()
+		}
+		curInst = curInst.fork()
 
 		for _, instr := range b.Instrs {
 			switch t := instr.(type) {
@@ -65,7 +76,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 				// nesting with "go" is the sanctioned fix for an inverted order, and
 				// reporting it would punish exactly that fix.
 			case ssa.CallInstruction:
-				pc.visitCall(fn, t, cur, summary, report && !ignored)
+				pc.visitCall(fn, t, cur, curInst, summary, report && !ignored)
 			}
 		}
 		// A deferred call runs when the function RETURNS, not at the end of the block it
@@ -79,8 +90,9 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		// which is the idiom for notifying listeners safely.
 		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn {
 			exit := cur.fork()
+			exitInst := curInst.fork()
 			for i := len(deferred) - 1; i >= 0; i-- {
-				pc.visitCall(fn, deferred[i], exit, summary, report && !ignored)
+				pc.visitCall(fn, deferred[i], exit, exitInst, summary, report && !ignored)
 			}
 		}
 
@@ -88,16 +100,21 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		for _, succ := range b.Succs {
 			if in[succ.Index] == nil {
 				in[succ.Index] = cur.fork()
-				continue
+			} else {
+				in[succ.Index].merge(cur)
 			}
-			in[succ.Index].merge(cur)
+			if inInst[succ.Index] == nil {
+				inInst[succ.Index] = curInst.fork()
+			} else {
+				inInst[succ.Index].merge(curInst)
+			}
 		}
 	}
 }
 
 // visitCall handles one call: the lock operations it performs, and the classes it may
 // acquire through its callee.
-func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, curInst *instanceSet, summary *summaryFact, report bool) {
 	callee := staticCallee(call)
 
 	// A lock operation changes what is held. Both the standard lock types and a type that
@@ -118,11 +135,14 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 				case opAcquire:
 					if class != "" {
 						pc.checkAcquire(call.Pos(), class, displayName(callee), cur, summary, report)
+						pc.checkHierarchy(call.Pos(), recv, class, displayName(callee), curInst, report)
 						cur.acquire(class)
+						curInst.acquire(recv, class)
 						summary.addAcquire(class)
 					}
 				case opRelease:
 					cur.release(class)
+					curInst.release(recv)
 				}
 				return
 			}
