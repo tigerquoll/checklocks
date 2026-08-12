@@ -44,6 +44,7 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 	FactTypes: []analysis.Fact{
 		(*atomicAlignment)(nil),
+		(*globalAccessorFacts)(nil),
 		(*lockGuardFacts)(nil),
 		(*lockFunctionFacts)(nil),
 		(*lockTypeFacts)(nil),
@@ -179,8 +180,15 @@ func run(pass *analysis.Pass) (any, error) {
 		pc.functionFacts(fn)
 	})
 
-	// Scan all code looking for invalid accesses.
+	// Mark the functions that do nothing but return a package-level
+	// variable. This must precede the scan below, which resolves calls to
+	// them using the facts exported here.
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	for _, fn := range state.SrcFuncs {
+		pc.globalAccessorFactsFor(fn)
+	}
+
+	// Scan all code looking for invalid accesses.
 	for _, fn := range state.SrcFuncs {
 		// Import function facts generated above.
 		//

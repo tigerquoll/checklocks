@@ -699,6 +699,10 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, lff *lockFunctionF
 			pc.checkFieldAccess(x, x.X, x.Field, ls, isWrite(x))
 		}
 	case *ssa.Call:
+		// Resolve the result before the call is checked, so that a
+		// lock reached through the result of an accessor is the same
+		// lock as one named directly. See accessor.go.
+		pc.substituteGlobalAccessor(x, ls)
 		pc.checkCall(x, lff, ls)
 	case *ssa.Defer:
 		ls.pushDefer(x)

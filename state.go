@@ -51,6 +51,11 @@ type lockState struct {
 	// multiple use of the same memory location.
 	used map[ssa.Value]struct{}
 
+	// substitutions overrides the resolution of a value. It is used for
+	// the result of a call to a function that returns a package-level
+	// variable, which resolves to that variable. See accessor.go.
+	substitutions map[ssa.Value]substitution
+
 	// defers are the stack of defers that have been pushed.
 	defers []*ssa.Defer
 
@@ -67,6 +72,7 @@ func newLockState() *lockState {
 		aliases:       make(map[string]string),
 		used:          make(map[ssa.Value]struct{}),
 		stored:        make(map[ssa.Value]ssa.Value),
+		substitutions: make(map[ssa.Value]substitution),
 		defers:        make([]*ssa.Defer, 0),
 		refs:          &refs,
 	}
@@ -84,6 +90,7 @@ func (l *lockState) fork() *lockState {
 		aliases:       l.aliases,
 		used:          make(map[ssa.Value]struct{}),
 		stored:        l.stored,
+		substitutions: l.substitutions,
 		defers:        l.defers,
 		refs:          l.refs,
 	}
@@ -100,6 +107,9 @@ func (l *lockState) modify() {
 
 		// Copy the stored values.
 		l.stored = maps.Clone(l.stored)
+
+		// Copy the substitutions.
+		l.substitutions = maps.Clone(l.substitutions)
 
 		// Reset the used values.
 		clear(l.used)
@@ -209,6 +219,18 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 	l.stored[addr] = v
 }
 
+// substitution is a resolution override for a single value.
+type substitution struct {
+	key string
+	obj types.Object
+}
+
+// substitute records that v resolves to the given key and object.
+func (l *lockState) substitute(v ssa.Value, key string, obj types.Object) {
+	l.modify()
+	l.substitutions[v] = substitution{key: key, obj: obj}
+}
+
 func (l *lockState) addAlias(left, right resolvedValue) {
 	leftKey, _ := left.valueAndObject(l)
 	rightKey, _ := right.valueAndObject(l)
@@ -277,6 +299,11 @@ type elemType interface {
 //
 // Nil may not be passed here.
 func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
+	// An overridden value resolves to whatever it was substituted with,
+	// regardless of its shape. See accessor.go.
+	if s, ok := l.substitutions[v]; ok {
+		return s.key, s.obj
+	}
 	switch x := v.(type) {
 	case *ssa.Parameter:
 		// Was this provided as a parameter for a local anonymous
