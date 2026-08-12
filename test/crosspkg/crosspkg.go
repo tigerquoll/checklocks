@@ -56,6 +56,21 @@ func testUnexportedGlobalExcludeInvalid() {
 	barMu.Unlock()
 }
 
+// PtrGuarded is used via a pointer-typed global below. This verifies that the
+// dereference required for such a variable travels with the exported facts.
+type PtrGuarded struct {
+	Mu sync.Mutex
+	// +checklocks:Mu
+	Value int
+}
+
+var PtrGuard = &PtrGuarded{}
+
+// CallPtrGuard requires that PtrGuard.Mu is not held.
+//
+// +checklocksexclude:PtrGuard.Mu
+func CallPtrGuard() {}
+
 // GenericGuard is a generic type with a guarded field. This is used to verify
 // that facts exported by this package are correctly imported when another
 // package instantiates GenericGuard[T].

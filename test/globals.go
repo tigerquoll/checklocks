@@ -40,6 +40,26 @@ var otherStruct struct {
 	guardedField3 int
 }
 
+// ptrGuarded is used via a pointer-typed global below. Such a variable holds a
+// reference, and must be loaded before the lock is resolved.
+type ptrGuarded struct {
+	mu sync.Mutex
+	// +checklocks:mu
+	guardedField int
+}
+
+var (
+	globalPtrStruct = &ptrGuarded{}
+	globalPtrMu     = &sync.Mutex{}
+)
+
+var ptrOtherStruct struct {
+	// +checklocks:globalPtrStruct.mu
+	guardedField1 int
+	// +checklocks:globalPtrMu
+	guardedField2 int
+}
+
 func testGlobalValid() {
 	globalMu.Lock()
 	otherStruct.guardedField1 = 1
@@ -100,6 +120,72 @@ func testGlobalInvalid() {
 	otherStruct.guardedField3 = 1 // +checklocksfail
 }
 
+func testGlobalPtrValid() {
+	globalPtrStruct.mu.Lock()
+	globalPtrStruct.guardedField = 1
+	ptrOtherStruct.guardedField1 = 1
+	globalPtrStruct.mu.Unlock()
+
+	globalPtrMu.Lock()
+	ptrOtherStruct.guardedField2 = 1
+	globalPtrMu.Unlock()
+}
+
+func testGlobalPtrInvalid() {
+	globalPtrStruct.guardedField = 1 // +checklocksfail
+	ptrOtherStruct.guardedField1 = 1 // +checklocksfail
+	ptrOtherStruct.guardedField2 = 1 // +checklocksfail
+}
+
+// +checklocks:globalPtrStruct.mu
+func testGlobalPtrPreconditions0() {
+	globalPtrStruct.guardedField = 1
+	ptrOtherStruct.guardedField1 = 1
+}
+
+// +checklocks:globalPtrMu
+func testGlobalPtrPreconditions1() {
+	ptrOtherStruct.guardedField2 = 1
+}
+
+func testGlobalPtrPreconditionsValid() {
+	globalPtrStruct.mu.Lock()
+	testGlobalPtrPreconditions0()
+	globalPtrStruct.mu.Unlock()
+
+	globalPtrMu.Lock()
+	testGlobalPtrPreconditions1()
+	globalPtrMu.Unlock()
+}
+
+func testGlobalPtrPreconditionsInvalid() {
+	testGlobalPtrPreconditions0() // +checklocksfail
+	testGlobalPtrPreconditions1() // +checklocksfail
+}
+
+// +checklocksexclude:globalPtrStruct.mu
+func testGlobalPtrExcludePreconditions0() {
+}
+
+// +checklocksexclude:globalPtrMu
+func testGlobalPtrExcludePreconditions1() {
+}
+
+func testGlobalPtrExcludeValid() {
+	testGlobalPtrExcludePreconditions0()
+	testGlobalPtrExcludePreconditions1()
+}
+
+func testGlobalPtrExcludeInvalid() {
+	globalPtrStruct.mu.Lock()
+	testGlobalPtrExcludePreconditions0() // +checklocksfail
+	globalPtrStruct.mu.Unlock()
+
+	globalPtrMu.Lock()
+	testGlobalPtrExcludePreconditions1() // +checklocksfail
+	globalPtrMu.Unlock()
+}
+
 func testCrosspkgGlobalValid() {
 	crosspkg.FooMu.Lock()
 	crosspkg.Foo = 1
@@ -126,4 +212,24 @@ func testCrosspkgGlobalExcludeInvalid() {
 func testCrosspkgUnexportedGlobalValid() {
 	crosspkg.CallBar()
 	crosspkg.Bar = 1
+}
+
+func testCrosspkgPtrGlobalValid() {
+	crosspkg.PtrGuard.Mu.Lock()
+	crosspkg.PtrGuard.Value = 1
+	crosspkg.PtrGuard.Mu.Unlock()
+}
+
+func testCrosspkgPtrGlobalInvalid() {
+	crosspkg.PtrGuard.Value = 1 // +checklocksfail
+}
+
+func testCrosspkgPtrGlobalExcludeValid() {
+	crosspkg.CallPtrGuard()
+}
+
+func testCrosspkgPtrGlobalExcludeInvalid() {
+	crosspkg.PtrGuard.Mu.Lock()
+	crosspkg.CallPtrGuard() // +checklocksfail
+	crosspkg.PtrGuard.Mu.Unlock()
 }
