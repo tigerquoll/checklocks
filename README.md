@@ -37,6 +37,10 @@ The `checklocks` analyzer is otherwise unmodified apart from what standing
 alone requires: the analyzer package moved to the repository root, import paths
 were rewritten, and the bazel `BUILD` files were dropped.
 
+Also applied to `checklocks` itself, and not yet filed upstream: calls to a
+function that returns a package-level variable resolve to that variable, so an
+annotation naming the variable and a lock reached through the accessor unify.
+
 Added here rather than derived from gVisor: the `lockstringer` analyzer, the
 `go test` driver, and the multi-analyzer binary. The self-check machinery that
 `checklocks` uses for its own corpus was generalised so that each analyzer has
@@ -172,6 +176,32 @@ An unexported global lock is enforceable only within the package that declares
 it. Export data does not carry unexported package-level variables, so the lock
 cannot be resolved elsewhere and the annotation is silently skipped at use sites
 in other packages. Export the lock if cross-package enforcement is required.
+
+A function that does nothing but return a package-level variable is treated as
+naming that variable, so a lock reached through the accessor's result is the
+same lock as one named directly:
+
+```go
+var instance = &foo{}
+
+func getInstance() *foo { return instance }
+
+// +checklocksexclude:instance.mu
+func doThing() { ... }
+
+func caller() {
+    f := getInstance()
+    f.mu.Lock()
+    doThing()   // reported: instance.mu is held
+    f.mu.Unlock()
+}
+```
+
+The function must have exactly one return, of exactly one value, and that value
+must be the variable or a load of it. A function that may return either of two
+variables is not treated this way. Statements before the return are not
+examined, so the accessor of a lazily initialised singleton, which runs an
+initialiser and then returns the variable, is included.
 
 Like atomic access enforcement, checks may be elided on newly allocated objects.
 

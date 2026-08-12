@@ -71,6 +71,24 @@ var PtrGuard = &PtrGuarded{}
 // +checklocksexclude:PtrGuard.Mu
 func CallPtrGuard() {}
 
+// AccessorGuarded is reached through the accessor below, to verify that the
+// accessor fact travels across packages.
+type AccessorGuarded struct {
+	Mu sync.Mutex
+	// +checklocks:Mu
+	Value int
+}
+
+var AccessorGlobal = &AccessorGuarded{}
+
+// GetAccessorGlobal does nothing but return the package-level variable.
+func GetAccessorGlobal() *AccessorGuarded { return AccessorGlobal }
+
+// CallAccessorExcluded requires that AccessorGlobal.Mu is not held.
+//
+// +checklocksexclude:AccessorGlobal.Mu
+func CallAccessorExcluded() {}
+
 // GenericGuard is a generic type with a guarded field. This is used to verify
 // that facts exported by this package are correctly imported when another
 // package instantiates GenericGuard[T].
