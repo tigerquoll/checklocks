@@ -301,7 +301,38 @@ The alias above means `example.inner.mu` is treated as the same lock as
 
 #### Anonymous Functions and Closures
 
-Anonymous functions and closures cannot be annotated.
+A function literal may be annotated, with the same annotations a declared
+function takes. A literal handed to something this analysis cannot follow, such
+as a callback table read by a state machine library, is otherwise analyzed
+holding nothing, and every guarded access in it is reported; the annotation
+says what the caller holds when it runs.
+
+```go
+register(callbacks{
+    // +checklocks:t.mu
+    "enter": func(t *target) {
+        t.value = 1
+    },
+})
+```
+
+A literal has no declaration to carry a doc comment, so the comment is matched
+to the surrounding syntax. It binds when it sits immediately above:
+
+*   the literal itself, and exactly one literal begins on that line;
+*   an assignment or declaration whose single value is that literal;
+*   a key and value in a composite literal whose value is that literal.
+
+A comment above a line on which several literals begin binds to none of them,
+rather than to all of them: it does not say which it means. The guard is
+resolved against the literal's own parameters, or a package-level variable,
+exactly as it is for a declared function — **a value the literal obtains from
+inside its own body, such as one recovered from an argument by type assertion,
+cannot be named**, since the annotation is resolved where it is written.
+
+Note that a literal invoked in a scope this analysis can follow is unaffected:
+its caller's real lock state is known, and is more precise than an annotation.
+An ignore on a literal applies in both cases.
 
 If anonymous functions and closures are bound and invoked within a single scope,
 the analysis will happen with the available lock state. For example, the

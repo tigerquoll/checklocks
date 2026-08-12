@@ -608,6 +608,14 @@ func (pc *passContext) checkClosure(call callCommon, fn *ssa.MakeClosure, lff *l
 	nlff := lockFunctionFacts{
 		Ignore: lff.Ignore, // Inherit ignore.
 	}
+	// An ignore written on the literal applies wherever it is analyzed,
+	// including here, where it is invoked in a scope this analysis can
+	// follow. The lock requirements are not seeded in that case: the real
+	// state of the caller is known and is more precise than the
+	// annotation.
+	if annotated, ok := pc.closureFactsFor(clfn.Syntax()); ok && annotated.Ignore {
+		nlff.Ignore = true
+	}
 	pc.checkFunction(call, clfn, &nlff, clls, true /* force */)
 }
 
