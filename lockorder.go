@@ -33,23 +33,24 @@
 //     nesting, and reporting it would punish the fix.
 //
 // +checkalignedignore
-package lockorder
+package checklocks
 
 import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 )
 
 // Analyzer is the entrypoint.
-var Analyzer = &analysis.Analyzer{
+var LockOrderAnalyzer = &analysis.Analyzer{
 	Name:     "lockorder",
 	Doc:      "checks that lock classes are acquired in the declared order",
-	Run:      run,
-	Requires: []*analysis.Analyzer{buildssa.Analyzer},
+	Run:      runLockOrder,
+	Requires: []*analysis.Analyzer{buildssa.Analyzer, Analyzer},
 	FactTypes: []analysis.Fact{
 		(*classFact)(nil),
 		(*orderFact)(nil),
@@ -58,34 +59,27 @@ var Analyzer = &analysis.Analyzer{
 	},
 }
 
-// passContext carries the per pass state.
-type passContext struct {
+// lockOrderContext carries the per pass state.
+//
+// The expectation machinery is shared with the other analyzers in this package, so a corpus
+// can state expectations for this analyzer without the others acting on them.
+type lockOrderContext struct {
+	*expectations
 	pass *analysis.Pass
 
 	// order is the taxonomy, assembled from the declarations of this package and the
 	// order facts of its dependencies.
 	order *order
-
-	// failures, exemptions mirror the checklocks machinery: expected diagnostics for the
-	// corpus and line level suppressions.
-	failures   map[positionKey]*failData
-	exemptions map[positionKey]struct{}
-
-	// entryGuards holds the checklocks guard annotations of the package's functions,
-	// which seed the classes held when the walk of a function starts.
-	entryGuards map[*types.Func][]string
 }
 
 // run is the main entrypoint.
-func run(pass *analysis.Pass) (any, error) {
-	pc := &passContext{
-		pass:       pass,
-		order:      newOrder(),
-		failures:   make(map[positionKey]*failData),
-		exemptions: make(map[positionKey]struct{}),
+func runLockOrder(pass *analysis.Pass) (any, error) {
+	pc := &lockOrderContext{
+		expectations: newExpectations(pass, lockOrderAnnotations, true /* reportInvalidPos */),
+		pass:         pass,
+		order:        newOrder(),
 	}
-
-	pc.extractLineAnnotations()
+	pc.extractLineFailures()
 
 	// Assemble the taxonomy: the declarations in this package, then the ones imported
 	// from dependencies.
@@ -104,7 +98,6 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Function level annotations.
 	pc.loadFunctionAnnotations()
-	pc.loadEntryGuards()
 
 	// Walk the package to a fixpoint and report against the settled summaries.
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
@@ -115,13 +108,13 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 // loadDeclaredOrder reads the order declarations out of the package doc comments.
-func (pc *passContext) loadDeclaredOrder() {
+func (pc *lockOrderContext) loadDeclaredOrder() {
 	for _, f := range pc.pass.Files {
 		if f.Doc == nil {
 			continue
 		}
 		for _, c := range f.Doc.List {
-			pc.extractAnnotations(c.Text, map[string]func(string){
+			extractAnnotations(c.Text, map[string]func(string){
 				lockOrderAnnotation: func(p string) {
 					e, err := parseOrderEdge(p)
 					if err != nil {
@@ -152,7 +145,7 @@ func (pc *passContext) loadDeclaredOrder() {
 }
 
 // importOrderFacts folds the taxonomy declared by dependencies into this pass.
-func (pc *passContext) importOrderFacts() {
+func (pc *lockOrderContext) importOrderFacts() {
 	for _, pkg := range pc.pass.Pkg.Imports() {
 		var of orderFact
 		if !pc.pass.ImportPackageFact(pkg, &of) {
@@ -173,7 +166,7 @@ func (pc *passContext) importOrderFacts() {
 // exportOrderFact publishes the taxonomy so dependents see it. The closure is not exported,
 // only the declared edges, so that a dependent recomputes it and a cycle introduced by two
 // packages declaring halves of it is still caught.
-func (pc *passContext) exportOrderFact() {
+func (pc *lockOrderContext) exportOrderFact() {
 	if len(pc.order.edges) == 0 && len(pc.order.hierarchical) == 0 && len(pc.order.withheld) == 0 {
 		return
 	}
@@ -184,14 +177,14 @@ func (pc *passContext) exportOrderFact() {
 	for c := range pc.order.withheld {
 		of.Withheld = append(of.Withheld, c)
 	}
-	sortStrings(of.Hierarchical)
-	sortStrings(of.Withheld)
+	sort.Strings(of.Hierarchical)
+	sort.Strings(of.Withheld)
 	pc.pass.ExportPackageFact(of)
 }
 
 // loadDeclaredClasses reads the class declarations on the types of this package and exports
 // them as facts.
-func (pc *passContext) loadDeclaredClasses() {
+func (pc *lockOrderContext) loadDeclaredClasses() {
 	for _, f := range pc.pass.Files {
 		for _, decl := range f.Decls {
 			d, ok := decl.(*ast.GenDecl)
@@ -216,12 +209,12 @@ func (pc *passContext) loadDeclaredClasses() {
 }
 
 // classFromDoc reads a class annotation from a doc comment and attaches it to the type.
-func (pc *passContext) classFromDoc(ts *ast.TypeSpec, doc *ast.CommentGroup) {
+func (pc *lockOrderContext) classFromDoc(ts *ast.TypeSpec, doc *ast.CommentGroup) {
 	if doc == nil {
 		return
 	}
 	for _, c := range doc.List {
-		pc.extractAnnotations(c.Text, map[string]func(string){
+		extractAnnotations(c.Text, map[string]func(string){
 			lockClassAnnotation: func(p string) {
 				name, err := parseClassName(p)
 				if err != nil {
@@ -239,7 +232,7 @@ func (pc *passContext) classFromDoc(ts *ast.TypeSpec, doc *ast.CommentGroup) {
 }
 
 // loadFunctionAnnotations records the function level annotations of this analyzer.
-func (pc *passContext) loadFunctionAnnotations() {
+func (pc *lockOrderContext) loadFunctionAnnotations() {
 	for _, f := range pc.pass.Files {
 		for _, decl := range f.Decls {
 			fd, ok := decl.(*ast.FuncDecl)
@@ -248,7 +241,7 @@ func (pc *passContext) loadFunctionAnnotations() {
 			}
 			var ff funcFact
 			for _, c := range fd.Doc.List {
-				pc.extractAnnotations(c.Text, map[string]func(string){
+				extractAnnotations(c.Text, map[string]func(string){
 					lockOrderIgnore: func(string) { ff.Ignore = true },
 				})
 			}

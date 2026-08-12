@@ -28,5 +28,6 @@ func main() {
 	multichecker.Main(
 		checklocks.Analyzer,
 		checklocks.LockStringerAnalyzer,
+		checklocks.LockOrderAnalyzer,
 	)
 }

@@ -149,14 +149,14 @@ func downwardTransitively(c *Context, t *Tracker) {
 
 func upwardIsAViolation(p *Partition, a *App) {
 	a.Lock()
-	p.Lock() // +lockorderfail:acquiring Partition
+	p.Lock() // +lockorderfail=acquiring Partition
 	p.Unlock()
 	a.Unlock()
 }
 
 func upwardTransitively(c *Context, t *Tracker) {
 	t.Lock()
-	c.Lock() // +lockorderfail:acquiring Context
+	c.Lock() // +lockorderfail=acquiring Context
 	c.Unlock()
 	t.Unlock()
 }
@@ -188,7 +188,7 @@ func unclassedIsSilent(u *Unclassed, a *App) {
 
 func sameClassIsAViolation(a, b *App) {
 	a.Lock()
-	b.Lock() // +lockorderfail:two locks of one class
+	b.Lock() // +lockorderfail=two locks of one class
 	b.Unlock()
 	a.Unlock()
 }
@@ -233,7 +233,7 @@ func viaCalleeIsAllowed(a *App, q *Queue) {
 
 func viaCalleeIsAViolation(a *App, p *Partition) {
 	a.Lock()
-	takesThePartition(p) // +lockorderfail:acquiring Partition
+	takesThePartition(p) // +lockorderfail=acquiring Partition
 	a.Unlock()
 }
 
@@ -244,7 +244,7 @@ func indirectlyTakesThePartition(p *Partition) {
 
 func viaChainIsAViolation(a *App, p *Partition) {
 	a.Lock()
-	indirectlyTakesThePartition(p) // +lockorderfail:acquiring Partition
+	indirectlyTakesThePartition(p) // +lockorderfail=acquiring Partition
 	a.Unlock()
 }
 
@@ -269,7 +269,7 @@ func goClosureEscapeIsSilent(a *App, p *Partition) {
 
 func deferIsCheckedAtExit(a *App, p *Partition) {
 	a.Lock()
-	defer takesThePartition(p) // +lockorderfail:acquiring Partition
+	defer takesThePartition(p) // +lockorderfail=acquiring Partition
 	defer a.Unlock()
 }
 
@@ -297,7 +297,7 @@ func functionIgnoreSuppresses(a *App, p *Partition) {
 //
 // +checklocks:a.mu
 func annotatedCallbackHoldsApp(a *App, p *Partition) {
-	p.Lock() // +lockorderfail:acquiring Partition
+	p.Lock() // +lockorderfail=acquiring Partition
 	p.Unlock()
 }
 

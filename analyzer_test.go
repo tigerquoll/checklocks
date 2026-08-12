@@ -82,6 +82,14 @@ var analyzerCases = []struct {
 		name: "lockstringer",
 		args: []string{"-checklocks=false", "./test/lockstringer"},
 	},
+	{
+		// The corpus declares its own lock taxonomy, so only this
+		// analyzer has anything to say about it. The forwarders in it
+		// carry checklocks ignores, as the wrappers in a real code base
+		// do, so the guard analysis stays quiet either way.
+		name: "lockorder",
+		args: []string{"-checklocks=false", "-lockstringer=false", "./test/lockorder"},
+	},
 }
 
 // TestAnalyzer runs each analyzer over its corpus and requires that it produce
