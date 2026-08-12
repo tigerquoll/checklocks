@@ -99,6 +99,11 @@ var analyzerCases = []struct {
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/lockblocking"},
 	},
 	{
+		// Annotations on function literals.
+		name: "closure",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/closure"},
+	},
+	{
 		// Declared lock primitives. The wrappers carry no ignore, which
 		// is what restores the call site checks.
 		name: "locktype",

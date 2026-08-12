@@ -77,6 +77,7 @@ type objectObservations struct {
 type passContext struct {
 	*expectations
 	pass         *analysis.Pass
+	closures     map[*ast.FuncLit]*lockFunctionFacts
 	functions    map[*ssa.Function]struct{}
 	observations map[types.Object]*objectObservations
 }
@@ -182,6 +183,11 @@ func run(pass *analysis.Pass) (any, error) {
 		pc.functionFacts(fn)
 	})
 
+	// Resolve the annotations on function literals. These are not facts:
+	// a literal has no object to attach one to, and is analyzed only where
+	// it is written.
+	pc.closures = pc.closureAnnotations()
+
 	// Mark the functions that do nothing but return a package-level
 	// variable. This must precede the scan below, which resolves calls to
 	// them using the facts exported here.
@@ -225,8 +231,15 @@ func run(pass *analysis.Pass) (any, error) {
 		if obj := fn.Object(); obj != nil {
 			continue
 		}
-		var nolff lockFunctionFacts
-		pc.checkFunction(nil, fn, &nolff, nil, false /* force */)
+		// An annotated literal is analyzed with the state its
+		// annotation describes, which is what lets a callback invoked
+		// by machinery this analysis cannot follow state the lock its
+		// caller holds.
+		lff := &lockFunctionFacts{}
+		if annotated, ok := pc.closureFactsFor(fn.Syntax()); ok {
+			lff = annotated
+		}
+		pc.checkFunction(nil, fn, lff, nil, false /* force */)
 	}
 
 	// Check for inferred checklocks annotations.
