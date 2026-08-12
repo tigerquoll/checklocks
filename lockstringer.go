@@ -152,7 +152,7 @@ func ignoredFunctions(pass *analysis.Pass) map[types.Object]struct{} {
 				continue
 			}
 			for _, c := range d.Doc.List {
-				if !strings.HasPrefix(c.Text, lockStringerIgnore) {
+				if !hasAnnotation(c.Text, lockStringerIgnore) {
 					continue
 				}
 				if obj, ok := pass.TypesInfo.Defs[d.Name]; ok && obj != nil {

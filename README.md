@@ -445,6 +445,29 @@ In general, both annotations should be highly discouraged. It should be possible
 to avoid their use by factoring functions in such a way that annotations can be
 applied consistently and without the need for ignoring and forcing.
 
+### More than one annotation on a comment
+
+A comment may carry several annotations, separated by a space:
+
+```go
+other.value = <-other.ch // +checklocksignore +lockblockingignore
+```
+
+This matters where the analyses meet. One line can be a finding in two of their
+terms, and before a comment could carry two annotations the second one had to
+go on the FUNCTION, which silences the whole body rather than the line. On one
+real code base that widened two suppressions to two entire functions, and a
+wait added to either of them later would have been silenced with them.
+
+The separator is a space before the plus, because an annotation always begins
+with one while a payload may contain spaces of its own: `+lockorder:A < B` and
+a failure message are each one annotation. A payload containing `" +"` would be
+split, which no annotation defined here can produce.
+
+The comment must still BEGIN with an annotation. A comment that mentions one in
+passing is prose, and prose about annotations is common in a code base that
+uses them.
+
 ## Testing
 
 Tests can be built using the `+checklocksfail` annotation. When applied after a

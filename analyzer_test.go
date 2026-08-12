@@ -152,6 +152,13 @@ var analyzerCases = []struct {
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/locktype"},
 	},
 	{
+		// Two analyses at once, which no other case does: the point of
+		// this corpus is a line that is a violation in two analyses'
+		// terms and carries an annotation for each.
+		name: "multiannotation",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-checklocks.wrappers=false", "-checklocks.inferred=false", "./test/multiannotation"},
+	},
+	{
 		// The hierarchical direction check is off by default, so its
 		// corpus is the one place it is turned on.
 		name: "lockhier",
