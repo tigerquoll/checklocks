@@ -70,6 +70,10 @@ type passContext struct {
 	// corpus and line level suppressions.
 	failures   map[positionKey]*failData
 	exemptions map[positionKey]struct{}
+
+	// entryGuards holds the checklocks guard annotations of the package's functions,
+	// which seed the classes held when the walk of a function starts.
+	entryGuards map[*types.Func][]string
 }
 
 // run is the main entrypoint.
@@ -100,8 +104,11 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// Function level annotations.
 	pc.loadFunctionAnnotations()
+	pc.loadEntryGuards()
 
-	_ = pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	// Walk the package to a fixpoint and report against the settled summaries.
+	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	pc.analyzePackage(state.SrcFuncs)
 
 	pc.checkFailures()
 	return nil, nil
