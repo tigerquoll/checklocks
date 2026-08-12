@@ -17,6 +17,7 @@ package checklocks
 import (
 	"go/token"
 	"go/types"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -39,20 +40,11 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	// over through machinery this analysis cannot follow.
 	entry := pc.entryClasses(fn)
 
-	// The set reaching each block, built up as the blocks are visited.
-	in := make([]*classSet, len(fn.Blocks))
-	in[0] = entry
+	// The state reaching each block, built up as the blocks are walked.
+	in := make([]*walkState, len(fn.Blocks))
+	in[0] = newWalkState(entry)
 
-	// The instances holding a lock, tracked beside the classes for the hierarchical
-	// direction check. Nothing is carried in at the entry: an annotation names a class,
-	// not the instance it was taken on.
-	inInst := make([]*instanceSet, len(fn.Blocks))
-	inInst[0] = newInstanceSet()
-
-	// The calls deferred so far. A defer is registered when it is reached and runs at the
-	// return, so the list accumulates across the blocks on the way there.
-	var deferred []ssa.CallInstruction
-	for _, b := range fn.Blocks {
+	for _, b := range blockOrder(fn) {
 		if b == fn.Recover {
 			// The recover block is a second entry point the SSA builder gives every
 			// function that defers: control resumes there after a recovered panic, with
@@ -61,23 +53,20 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 			// erases what the run at the real return established.
 			continue
 		}
-		cur := in[b.Index]
-		if cur == nil {
+		state := in[b.Index]
+		if state == nil {
 			// Unreachable from the entry as far as this walk is concerned; start clean
 			// rather than skipping, so its calls are still checked.
-			cur = newClassSet()
+			state = newWalkState(newClassSet())
 		}
-		cur = cur.fork()
-		curInst := inInst[b.Index]
-		if curInst == nil {
-			curInst = newInstanceSet()
-		}
-		curInst = curInst.fork()
+		state = state.fork()
+		cur := state.locks
+		curInst := state.instances
 
 		for _, instr := range b.Instrs {
 			switch t := instr.(type) {
 			case *ssa.Defer:
-				deferred = append(deferred, t)
+				state.deferred = append(state.deferred, t)
 			case *ssa.Go:
 				// The acquisitions of the spawned function belong to the new
 				// goroutine, so they are not attributed to this one. Breaking a
@@ -99,25 +88,97 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn {
 			exit := cur.fork()
 			exitInst := curInst.fork()
-			for i := len(deferred) - 1; i >= 0; i-- {
-				pc.visitCall(fn, deferred[i], exit, exitInst, summary, report && !ignored)
+			for i := len(state.deferred) - 1; i >= 0; i-- {
+				pc.visitCall(fn, state.deferred[i], exit, exitInst, summary, report && !ignored)
 			}
 		}
 
 		// Propagate to the successors.
 		for _, succ := range b.Succs {
 			if in[succ.Index] == nil {
-				in[succ.Index] = cur.fork()
-			} else {
-				in[succ.Index].merge(cur)
+				in[succ.Index] = state.fork()
+				continue
 			}
-			if inInst[succ.Index] == nil {
-				inInst[succ.Index] = curInst.fork()
-			} else {
-				inInst[succ.Index].merge(curInst)
-			}
+			in[succ.Index].merge(state)
 		}
 	}
+}
+
+// walkState is what reaches a block: the classes held, the instances they were taken on,
+// and the calls deferred on the way there.
+//
+// The deferred calls belong to the path rather than to the walk. A return that is reached
+// before a defer is registered does not run it, and an early return out of the middle of a
+// function is exactly where that matters: treating every defer written anywhere in the body
+// as pending at every return puts a lock back that the early path never dropped.
+type walkState struct {
+	locks     *classSet
+	instances *instanceSet
+	deferred  []ssa.CallInstruction
+}
+
+// newWalkState returns the state a block starts from, holding the given classes. Nothing is
+// carried in for the instances: an annotation names a class, not the instance it was taken
+// on.
+func newWalkState(locks *classSet) *walkState {
+	return &walkState{locks: locks, instances: newInstanceSet()}
+}
+
+// fork copies the state, for the separate paths of a branch.
+func (s *walkState) fork() *walkState {
+	return &walkState{
+		locks:     s.locks.fork(),
+		instances: s.instances.fork(),
+		deferred:  slices.Clone(s.deferred),
+	}
+}
+
+// merge folds another state into this one.
+//
+// The lock and instance sets merge as they do. For the deferred calls the longer list wins:
+// two paths into a block have registered a prefix of the same sequence, since a defer
+// registered on one path is registered on every path that goes past it, and the longer
+// prefix is the one with more still to run.
+func (s *walkState) merge(other *walkState) {
+	s.locks.merge(other.locks)
+	s.instances.merge(other.instances)
+	if len(other.deferred) > len(s.deferred) {
+		s.deferred = slices.Clone(other.deferred)
+	}
+}
+
+// blockOrder returns the blocks of a function in reverse postorder, so that a block is
+// walked after the blocks that reach it and starts from what they leave held.
+//
+// The order the SSA builder numbers them in is not that order: a short circuit condition
+// puts the blocks that evaluate it AFTER the branch they guard, so walking by index reaches
+// the guarded block before anything has flowed into it, starts it with nothing held, and
+// loses the lock for the whole of the rest of the function.
+//
+// Blocks the entry cannot reach are appended at the end, so that their calls are still
+// checked, which is what walking every block by index did for them.
+func blockOrder(fn *ssa.Function) []*ssa.BasicBlock {
+	seen := make([]bool, len(fn.Blocks))
+	order := make([]*ssa.BasicBlock, 0, len(fn.Blocks))
+	var visit func(b *ssa.BasicBlock)
+	visit = func(b *ssa.BasicBlock) {
+		if seen[b.Index] {
+			return
+		}
+		seen[b.Index] = true
+		for _, succ := range b.Succs {
+			visit(succ)
+		}
+		order = append(order, b)
+	}
+	visit(fn.Blocks[0])
+	slices.Reverse(order)
+	for _, b := range fn.Blocks {
+		if !seen[b.Index] {
+			order = append(order, b)
+		}
+	}
+	return order
 }
 
 // visitCall handles one call: the lock operations it performs, and the classes it may
