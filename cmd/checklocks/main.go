@@ -29,5 +29,6 @@ func main() {
 		checklocks.Analyzer,
 		checklocks.LockStringerAnalyzer,
 		checklocks.LockOrderAnalyzer,
+		checklocks.LockBlockingAnalyzer,
 	)
 }

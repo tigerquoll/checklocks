@@ -104,10 +104,15 @@ type summaryFact struct {
 	// for the corpus expectations.
 	Pairs []classPair
 
-	// Blocking reports whether the function may reach a blocking sink. It is unused by
-	// this analyzer and is present so that the blocking-call analyzer can ride on the same
-	// summary without a fact format migration.
+	// Blocking reports whether the function may reach a blocking sink. The ordering
+	// analyzer does not act on it: it is here so the blocking analyzer rides on the same
+	// summary, computed by the same walk, rather than on a second one of its own.
 	Blocking bool
+
+	// BlockingReleased is what the function had released when it waits, in the sense of
+	// acquisition.ReleasedBefore and intersected over every sink it may reach. It is only
+	// meaningful when Blocking is set.
+	BlockingReleased []string
 }
 
 func (*summaryFact) AFact() {}
@@ -132,6 +137,9 @@ func (f *summaryFact) String() string {
 	}
 	if f.Blocking {
 		s += " blocking"
+		if len(f.BlockingReleased) > 0 {
+			s += "(releases:" + strings.Join(f.BlockingReleased, "+") + ")"
+		}
 	}
 	return s
 }
@@ -186,11 +194,28 @@ func (f *summaryFact) merge(other *summaryFact) bool {
 			changed = true
 		}
 	}
-	if other.Blocking && !f.Blocking {
-		f.Blocking = true
+	if other.Blocking && f.addBlocking(other.BlockingReleased) {
 		changed = true
 	}
 	return changed
+}
+
+// addBlocking records that the function may reach a blocking sink, keeping the
+// INTERSECTION of what had been released at each of them, for the reason addAcquire keeps
+// it: a sink reachable with the caller's lock still held is not excused by another sink
+// that is reached after releasing it.
+func (f *summaryFact) addBlocking(releasedBefore []string) bool {
+	if !f.Blocking {
+		f.Blocking = true
+		f.BlockingReleased = append([]string(nil), releasedBefore...)
+		return true
+	}
+	kept := intersectClasses(f.BlockingReleased, releasedBefore)
+	if equalClasses(kept, f.BlockingReleased) {
+		return false
+	}
+	f.BlockingReleased = kept
+	return true
 }
 
 // equal reports whether two summaries hold the same content.
@@ -200,6 +225,9 @@ func (f *summaryFact) merge(other *summaryFact) bool {
 // changing how much is in it.
 func (f *summaryFact) equal(other *summaryFact) bool {
 	if len(f.Acquires) != len(other.Acquires) || len(f.Pairs) != len(other.Pairs) || f.Blocking != other.Blocking {
+		return false
+	}
+	if !equalClasses(f.BlockingReleased, other.BlockingReleased) {
 		return false
 	}
 	for i, a := range f.Acquires {
@@ -265,19 +293,35 @@ func equalClasses(a, b []string) bool {
 	return slices.Equal(a, b)
 }
 
-// funcFact records the function level annotations of this analyzer.
+// funcFact records the function level annotations of the analyses built on this summary.
+// They travel in one fact because they hang off the same object and are read by the same
+// walk; which of them applies is decided by the analyzer that is reporting.
 type funcFact struct {
-	// Ignore suppresses reporting inside the function and at its call sites.
+	// Ignore suppresses ordering reports inside the function and at its call sites.
 	Ignore bool
+
+	// Blocking declares the function to be a blocking sink.
+	Blocking bool
+
+	// BlockingIgnore suppresses blocking reports inside the function and at its call
+	// sites.
+	BlockingIgnore bool
 }
 
 func (*funcFact) AFact() {}
 
 func (f *funcFact) String() string {
+	var parts []string
 	if f.Ignore {
-		return "lockorderignore"
+		parts = append(parts, "lockorderignore")
 	}
-	return ""
+	if f.Blocking {
+		parts = append(parts, "blocking")
+	}
+	if f.BlockingIgnore {
+		parts = append(parts, "lockblockingignore")
+	}
+	return strings.Join(parts, ",")
 }
 
 // String is used by the tests to compare a computed summary against an expectation.
