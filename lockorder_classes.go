@@ -160,6 +160,40 @@ func receiverOf(call ssa.CallInstruction) (ssa.Value, bool) {
 	return common.Args[0], true
 }
 
+// isReceiver reports whether a value is the receiver of the function it appears in.
+//
+// It answers "is this the object the method was called on", which is what scopes a release
+// to the receiver: the lock a method drops with recv.mu.Unlock() is its caller's lock,
+// while the lock of some other object of the same class is not.
+func isReceiver(fn *ssa.Function, v ssa.Value) bool {
+	if fn == nil || v == nil || fn.Signature.Recv() == nil || len(fn.Params) == 0 {
+		return false
+	}
+	return rootValue(v) == fn.Params[0]
+}
+
+// rootValue unwraps the field accesses and conversions on the way to a value.
+func rootValue(v ssa.Value) ssa.Value {
+	for {
+		switch t := v.(type) {
+		case *ssa.FieldAddr:
+			v = t.X
+		case *ssa.Field:
+			v = t.X
+		case *ssa.ChangeType:
+			v = t.X
+		case *ssa.Convert:
+			v = t.X
+		case *ssa.MakeInterface:
+			v = t.X
+		case *ssa.UnOp:
+			v = t.X
+		default:
+			return v
+		}
+	}
+}
+
 // staticCallee returns the function a call statically dispatches to, if any.
 //
 // Interface dispatch has no callee to consult, so it is skipped: that is the same boundary

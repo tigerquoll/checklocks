@@ -31,6 +31,12 @@
 //   - Acquisitions inside a function started with "go" belong to the new goroutine and are
 //     deliberately not attributed to the spawner: that is the sanctioned way to break a
 //     nesting, and reporting it would punish the fix.
+//   - A callee that RELEASES its caller's lock before acquiring, the unlock-relock gap, is
+//     modelled for the lock of its own receiver only, which is the shape the idiom takes.
+//     The summary records what had been released at each acquisition and the call site
+//     subtracts it. That subtraction is by class, as everything here is, so a caller holding
+//     a different OBJECT of the released class is let off with it: the one place this
+//     analysis errs towards silence rather than towards reporting.
 //
 // +checkalignedignore
 package checklocks

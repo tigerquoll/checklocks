@@ -213,6 +213,95 @@ func releaseClearsTheClass(p *Partition, a *App) {
 	p.Unlock()
 }
 
+// --- a callee that releases its caller's lock is not nesting ------------------------------
+
+// The unlock-relock gap: the callee drops the lock its caller holds, takes another one, and
+// takes the caller's lock back on the way out. Nothing is nested at runtime, and the summary
+// records the release so the call site can see that.
+//
+// +checklocks:n.mu
+func (n *Node) gapThenTakesTheApp(a *App) {
+	n.mu.Unlock()
+	defer n.mu.Lock()
+	a.Lock()
+	a.Unlock()
+}
+
+// +checklocks:n.mu
+func (n *Node) callsTheGap(a *App) {
+	// Silent: the application lock is taken with the node lock released.
+	n.gapThenTakesTheApp(a)
+}
+
+// The same callee without the gap, which is the polarity that must still be reported.
+//
+// +checklocks:n.mu
+func (n *Node) takesTheApp(a *App) {
+	a.Lock() // +lockorderfail=acquiring App
+	a.Unlock()
+}
+
+// +checklocks:n.mu
+func (n *Node) callsWithoutTheGap(a *App) {
+	n.takesTheApp(a) // +lockorderfail=acquiring App
+}
+
+// Only what the callee released is subtracted. The tracker lock is still held across the
+// application acquisition, and the node's gap says nothing about it.
+//
+// +checklocks:n.mu
+func (n *Node) callsTheGapHoldingATracker(a *App, t *Tracker) {
+	t.Lock()
+	n.gapThenTakesTheApp(a) // +lockorderfail=acquiring App
+	t.Unlock()
+}
+
+// The gap is taken on one path only, so the summary cannot promise the caller anything: a
+// class counts as released only where every path that acquires released it first.
+//
+// +checklocks:n.mu
+func (n *Node) gapOnOnePathOnly(a *App, cond bool) {
+	if cond {
+		n.mu.Unlock()
+		a.Lock()
+		a.Unlock()
+		n.mu.Lock()
+		return
+	}
+	a.Lock() // +lockorderfail=acquiring App
+	a.Unlock()
+}
+
+// +checklocks:n.mu
+func (n *Node) callsTheOnePathGap(a *App, cond bool) {
+	n.gapOnOnePathOnly(a, cond) // +lockorderfail=acquiring App
+}
+
+// The caller holds the lock across a loop, which puts the call in a later block than the
+// acquisition: the release has to survive that the same way the lock itself does.
+func loopingCallerOfTheGap(n *Node, apps []*App) {
+	n.Lock()
+	defer n.Unlock()
+	for _, a := range apps {
+		n.gapThenTakesTheApp(a)
+	}
+}
+
+// A gap in a callee called on ANOTHER object says nothing about this receiver's lock, so it
+// does not carry into this summary: a caller of this holding a node lock is still reported.
+//
+// +checklocks:n.mu
+func (n *Node) callsTheGapOnAnotherNode(other *Node, a *App) {
+	other.gapThenTakesTheApp(a)
+}
+
+// +checklocks:n.mu
+func (n *Node) callsThroughAnotherNode(other *Node, a *App) {
+	// Two reports: the application lock, and the other node's lock taken back while this
+	// one is held, which is a genuine same class nesting between two objects.
+	n.callsTheGapOnAnotherNode(other, a) // +lockorderfail=acquiring App|two locks of one class
+}
+
 // --- the violation is found through a callee, using its summary --------------------------
 
 func takesTheQueue(q *Queue) {
