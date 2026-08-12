@@ -935,10 +935,19 @@ func (pc *passContext) structLockGuardFacts(structType *types.Struct, ss *ast.St
 // globalLockGuardFacts finds all relevant guard information for globals.
 //
 // Note that the Type is checked in checklocks.go at the top-level.
-func (pc *passContext) globalLockGuardFacts(vs *ast.ValueSpec) {
-	var lgf lockGuardFacts
-	globalObj := pc.pass.TypesInfo.ObjectOf(vs.Names[0])
-	pc.fillLockGuardFacts(globalObj, vs.Doc, pc.findGlobalFieldGuard, &lgf)
+//
+// The declaration is required in addition to the specification because a
+// single declaration, i.e. one that is not parenthesized, attaches its
+// documentation to the declaration and not to the specification within it.
+// Annotations are accepted in either place, as they are for types.
+func (pc *passContext) globalLockGuardFacts(vs *ast.ValueSpec, decl *ast.GenDecl) {
+	for _, name := range vs.Names {
+		var lgf lockGuardFacts
+		globalObj := pc.pass.TypesInfo.ObjectOf(name)
+		for _, cg := range []*ast.CommentGroup{vs.Doc, vs.Comment, decl.Doc} {
+			pc.fillLockGuardFacts(globalObj, cg, pc.findGlobalFieldGuard, &lgf)
+		}
+	}
 }
 
 // countFields gives an accurate field count, according for unnamed arguments

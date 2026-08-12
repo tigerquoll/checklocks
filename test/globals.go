@@ -40,6 +40,18 @@ var otherStruct struct {
 	guardedField3 int
 }
 
+// A single declaration attaches its documentation to the declaration, not to
+// the specification within it. The annotation applies in either place, as it
+// does for a trailing comment and for every name in the specification.
+
+// +checklocks:globalMu
+var guardedGlobal int
+
+var guardedGlobalTrailing int // +checklocks:globalMu
+
+// +checklocks:globalMu
+var guardedGlobalFirst, guardedGlobalSecond int
+
 // ptrGuarded is used via a pointer-typed global below. Such a variable holds a
 // reference, and must be loaded before the lock is resolved.
 type ptrGuarded struct {
@@ -118,6 +130,22 @@ func testGlobalInvalid() {
 	otherStruct.guardedField1 = 1 // +checklocksfail
 	otherStruct.guardedField2 = 1 // +checklocksfail
 	otherStruct.guardedField3 = 1 // +checklocksfail
+}
+
+func testGuardedGlobalValid() {
+	globalMu.Lock()
+	guardedGlobal = 1
+	guardedGlobalTrailing = 1
+	guardedGlobalFirst = 1
+	guardedGlobalSecond = 1
+	globalMu.Unlock()
+}
+
+func testGuardedGlobalInvalid() {
+	guardedGlobal = 1         // +checklocksfail
+	guardedGlobalTrailing = 1 // +checklocksfail
+	guardedGlobalFirst = 1    // +checklocksfail
+	guardedGlobalSecond = 1   // +checklocksfail
 }
 
 func testGlobalPtrValid() {

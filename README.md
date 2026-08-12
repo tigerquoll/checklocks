@@ -74,6 +74,10 @@ These semantics are enforceable on `sync.Mutex`, `sync.RWMutex` and
 automatically detected and enforced. If an access is read-only, then the lock
 need only be held as a read lock, in the case of an `sync.RWMutex`.
 
+Package-level variables may be guarded in the same way. The annotation may be
+attached to the variable declaration or, within a parenthesized declaration, to
+the individual variable.
+
 The locks must be resolvable within the scope of the declaration. This means the
 lock must refer to one of:
 
