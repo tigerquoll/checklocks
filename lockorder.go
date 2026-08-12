@@ -53,6 +53,7 @@ var LockOrderAnalyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer, Analyzer},
 	FactTypes: []analysis.Fact{
 		(*classFact)(nil),
+		(*hierarchyEdgeFact)(nil),
 		(*orderFact)(nil),
 		(*summaryFact)(nil),
 		(*funcFact)(nil),
@@ -95,6 +96,9 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 
 	// Class declarations on the types of this package.
 	pc.loadDeclaredClasses()
+
+	// The parent edge of each hierarchical type, for the intra-function direction check.
+	pc.loadHierarchyEdges()
 
 	// Function level annotations.
 	pc.loadFunctionAnnotations()

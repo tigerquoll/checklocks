@@ -68,6 +68,7 @@ go vet -vettool=$HOME/go/bin/checklocks ./...
 | --- | --- |
 | `checklocks` | lock and atomic constraints, from annotations on fields and functions |
 | `lockstringer` | lock hazards in lazily evaluated methods such as `String` |
+| `lockorder` | acquisition order between declared lock classes |
 
 Each may be turned off by name, which is how a project adopts one at a time:
 
@@ -96,6 +97,11 @@ Each analyzer's own flags are namespaced under its name:
     configuration for the same reason.
 *   `-lockstringer.methods` (default empty): comma separated additional method
     names to treat as lazily evaluated, for a project specific interface.
+*   `-lockorder.hierarchy` (default **false**): also check the direction of
+    nesting within a hierarchical class; see below.
+*   `-lockorder.hierarchyinfer` (default false): with `-lockorder.hierarchy`,
+    treat a field of the type's own type as the parent edge when none is
+    annotated.
 
 ```sh
 go vet -vettool=$HOME/go/bin/checklocks \
@@ -493,6 +499,74 @@ comes to be, since neither locking nor not locking is correct.
     on a line, drops the diagnostics reported on that line.
 *   `+lockstringerfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
+
+## Hierarchical ordering
+
+A class marked `+lockhierarchical` is exempt from the rule that two locks of one
+class must not nest, because instances of it nest legitimately: a tree walks
+itself. What that exemption cannot express is the *direction*. Both sides are
+the same class, so parent-then-child and child-then-parent look identical to a
+class-level check, and only one of them is safe.
+
+`-lockorder.hierarchy` recovers the direction from the structure. The link from
+an instance to its parent is a field, so an acquisition whose receiver was
+reached through that field of an instance already holding its lock is a
+child-then-parent nesting:
+
+```go
+// +lockhierarchical:Queue
+package scheduler
+
+// +lockclass:Queue
+type Queue struct {
+    sync.RWMutex
+
+    // +lockhierarchyedge
+    parent *Queue
+
+    children []*Queue
+}
+
+func (q *Queue) bad() {
+    q.Lock()
+    defer q.Unlock()
+    q.parent.RLock()   // reported: a hierarchical class must be locked parent first
+    defer q.parent.RUnlock()
+}
+```
+
+Taking a child while the parent is held is the sanctioned direction and is
+silent, as is the parent-first idiom, where the parent is consulted with no lock
+held and only then is this instance locked.
+
+### Scope
+
+The check is **intraprocedural only**, and off by default. Both follow from what
+it rests on:
+
+*   It compares *instances*, and instance identity does not survive a summary. A
+    summary records which classes a function may acquire, not which instance
+    they were reached from, so a parent acquired one call deeper cannot be tied
+    back to the child held here. The cross-function case belongs to a runtime
+    checker, which sees instances.
+*   Only the value shapes a field read produces are followed: the load of a
+    pointer field, a field of a struct value, and conversions. A parent that
+    arrives by another route — a function result, or a value this walk cannot
+    tie back — is not recognised and is not reported. Reaching a *sibling* by
+    going up and back down is likewise not reported, since the acquisition is
+    not the parent itself.
+*   Mere same-class nesting is never reported here. That is the class-level
+    rule, and for a hierarchical class it is deliberately exempt.
+
+Because the approximation accepts those escapes, it is opt-in rather than
+something an existing user starts seeing without asking. Silence from it is
+weak evidence; a report from it is strong evidence.
+
+The parent edge must be annotated with `+lockhierarchyedge` on the field.
+`-lockorder.hierarchyinfer` will instead take a single field of the type's own
+type as the parent link when nothing is annotated, which is convenient on a code
+base that has not annotated yet, but a self-typed field is not necessarily a
+parent link.
 
 ## Development
 
