@@ -187,9 +187,48 @@ func (e *expectations) extractLineFailures() {
 
 // extractAnnotations extracts annotations from text.
 func extractAnnotations(s string, fns map[string]func(p string)) {
-	for prefix, fn := range fns {
-		if strings.HasPrefix(s, prefix) {
-			fn(s[len(prefix):])
+	for _, annotation := range annotationFields(s) {
+		for prefix, fn := range fns {
+			if strings.HasPrefix(annotation, prefix) {
+				fn(annotation[len(prefix):])
+			}
 		}
 	}
+}
+
+// annotationFields splits a comment into the annotations it carries, each in the form the
+// prefixes are written in, so that a comment may carry more than one.
+//
+// A line that has to be silenced for two analyses can then say so on that line:
+//
+//	other.value = <-other.ch // +checklocksignore +lockblockingignore
+//
+// rather than pushing one of the two up to the whole function, which is what a code base
+// ends up doing otherwise and which silences far more than the line.
+//
+// The separator is a space before the plus, because an annotation always begins with one and
+// a payload may contain spaces of its own: "+lockorder:A < B" and a failure message are both
+// one annotation. A payload that contains " +" is therefore split, which is the price; no
+// annotation defined here can produce one.
+//
+// The comment must BEGIN with an annotation, as it always had to. Anything else is prose,
+// and prose that mentions an annotation is common in a code base that uses them.
+func annotationFields(text string) []string {
+	rest, ok := strings.CutPrefix(text, "//")
+	if !ok {
+		return nil
+	}
+	rest = strings.TrimPrefix(rest, " ")
+	if !strings.HasPrefix(rest, "+") {
+		return nil
+	}
+	fields := strings.Split(rest, " +")
+	out := make([]string, 0, len(fields))
+	for i, field := range fields {
+		if i > 0 {
+			field = "+" + field
+		}
+		out = append(out, "// "+strings.TrimRight(field, " \t"))
+	}
+	return out
 }
