@@ -287,6 +287,29 @@ func loopingCallerOfTheGap(n *Node, apps []*App) {
 	}
 }
 
+// A defer is not pending at a return above the line that registers it. The early return
+// here leaves through a path that never dropped the lock and never takes it back, so what
+// the summary can promise is what the gap path promises, and no more.
+//
+// +checklocks:n.mu
+func (n *Node) gapAfterAnEarlyReturn(a *App, done bool) {
+	if done {
+		return
+	}
+	n.mu.Unlock()
+	defer n.mu.Lock()
+	a.Lock()
+	a.Unlock()
+}
+
+// +checklocks:n.mu
+func (n *Node) callsTheGapWithAnEarlyReturn(a *App, done bool) {
+	// Silent: neither path takes the application lock with the node lock held. Treating
+	// the deferred relock as pending at the early return as well would put the node class
+	// back there, and report both this call and every caller of it.
+	n.gapAfterAnEarlyReturn(a, done)
+}
+
 // A gap in a callee called on ANOTHER object says nothing about this receiver's lock, so it
 // does not carry into this summary: a caller of this holding a node lock is still reported.
 //
@@ -382,6 +405,23 @@ func deferredUnlockHoldsAcrossBlocks(a *App, parts []*Partition) {
 	defer a.Unlock()
 	for _, p := range parts {
 		takesThePartition(p) // +lockorderfail=acquiring Partition
+	}
+}
+
+// A short circuit condition is evaluated in blocks the SSA builder numbers AFTER the branch
+// they guard. Walking the blocks by index reaches the guarded body before anything has
+// flowed into it, starts it with nothing held, and loses the lock for the rest of the
+// function. Both arms are here because index order gets the shape right often enough to
+// look correct: it takes a condition of this shape to come out in the wrong order.
+func shortCircuitConditionKeepsTheLock(a *App, parts []*Partition, x, y bool) {
+	a.Lock()
+	defer a.Unlock()
+	if (x || y) && len(parts) > 0 {
+		for _, p := range parts {
+			takesThePartition(p) // +lockorderfail=acquiring Partition
+		}
+	} else {
+		takesThePartition(parts[0]) // +lockorderfail=acquiring Partition
 	}
 }
 
