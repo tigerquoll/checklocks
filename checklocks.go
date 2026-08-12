@@ -69,11 +69,12 @@ type objectObservations struct {
 }
 
 // passContext is a pass with additional expected failures.
+//
+// The embedded expectations carry the self-check annotations, and are shared
+// with the other analyzers in this module; see expectations.go.
 type passContext struct {
+	*expectations
 	pass         *analysis.Pass
-	failures     map[positionKey]*failData
-	exemptions   map[positionKey]struct{}
-	forced       map[positionKey]struct{}
 	functions    map[*ssa.Function]struct{}
 	observations map[types.Object]*objectObservations
 }
@@ -140,11 +141,9 @@ func (pc *passContext) forAllFunctions(fn func(fn *ast.FuncDecl)) {
 // run is the main entrypoint.
 func run(pass *analysis.Pass) (any, error) {
 	pc := &passContext{
-		pass:       pass,
-		failures:   make(map[positionKey]*failData),
-		exemptions: make(map[positionKey]struct{}),
-		forced:     make(map[positionKey]struct{}),
-		functions:  make(map[*ssa.Function]struct{}),
+		expectations: newExpectations(pass, checkLocksAnnotations, enableWrappers),
+		pass:         pass,
+		functions:    make(map[*ssa.Function]struct{}),
 	}
 
 	// Find all line failure annotations.
