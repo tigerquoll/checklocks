@@ -54,26 +54,50 @@ func readCorpus(t *testing.T) int {
 	return count
 }
 
-// TestAnalyzer runs the analyzer over ./test/... and requires that it produce
+// analyzerCase is one analyzer run over its own corpus.
+//
+// Each analyzer has its own corpus, and each is run over it with the others
+// disabled. The corpora hold deliberate violations, and most are violations in
+// more than one analyzer's terms; an expectation can only be stated once per
+// line, so they cannot be stated for two analyzers at once.
+//
+// Note that a disabled analyzer still runs when another requires it, so
+// lockstringer receives checklocks' guard facts here even with checklocks
+// silenced.
+var analyzerCases = []struct {
+	name string
+	args []string
+}{
+	{
+		name: "checklocks",
+		// -checklocks.wrappers=false suppresses diagnostics that have
+		// no source position. Those arise from synthetic wrapper
+		// functions, cannot be annotated, and are excluded by gVisor's
+		// own nogo configuration for the same reason. The flag
+		// suppresses only position-less reports; it disables no
+		// analysis.
+		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg"},
+	},
+	{
+		name: "lockstringer",
+		args: []string{"-checklocks=false", "./test/lockstringer"},
+	},
+}
+
+// TestAnalyzer runs each analyzer over its corpus and requires that it produce
 // no output at all.
 //
-// The test corpus is self-checking. Every case that must be reported carries a
-// "+checklocksfail" annotation, and the analyzer reports "missing expected
+// The corpora are self-checking. Every case that must be reported carries a
+// "+<analyzer>fail" annotation, and the analyzer reports "missing expected
 // failure" when an annotated line produces no diagnostic. So an expectation
 // that stops holding is reported, an expectation that was never met is
 // reported, and any diagnostic the corpus does not expect is reported. All
 // three appear as output, and any output fails this test.
 //
-// The analyzer is exercised as a vettool rather than through analysistest,
-// because the corpus is a set of ordinary packages that must be analyzed with
-// facts flowing between them: test/crosspkg exports facts that test consumes,
-// and several cases exist only to check that behaviour.
-//
-// The -wrappers=false flag suppresses diagnostics that have no source
-// position. Those arise from synthetic wrapper functions, cannot be annotated,
-// and are excluded by gVisor's own nogo configuration for the same reason. The
-// flag suppresses only position-less reports; it does not disable any
-// analysis.
+// The analyzers are exercised as a vettool rather than through analysistest,
+// because the corpora are ordinary packages that must be analyzed with facts
+// flowing between them: test/crosspkg exports facts that test consumes, and
+// several cases exist only to check that behaviour.
 func TestAnalyzer(t *testing.T) {
 	if n := readCorpus(t); n == 0 {
 		t.Fatalf("no source files found in %s", corpus)
@@ -84,10 +108,16 @@ func TestAnalyzer(t *testing.T) {
 		t.Fatalf("building the vettool failed: %v\n%s", err, out)
 	}
 
-	// N.B. go vet exits non-zero whenever diagnostics are reported, so the
-	// error is not itself interesting; the output is.
-	out, err := exec.Command("go", "vet", "-vettool="+bin, "-wrappers=false", "./test/...").CombinedOutput()
-	if s := strings.TrimSpace(string(out)); s != "" {
-		t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)
+	for _, tc := range analyzerCases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"vet", "-vettool=" + bin}, tc.args...)
+			// N.B. go vet exits non-zero whenever diagnostics are
+			// reported, so the error is not itself interesting;
+			// the output is.
+			out, err := exec.Command("go", args...).CombinedOutput()
+			if s := strings.TrimSpace(string(out)); s != "" {
+				t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)
+			}
+		})
 	}
 }
