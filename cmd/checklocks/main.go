@@ -13,11 +13,20 @@
 // limitations under the License.
 
 // Binary checklocks is a `vettool` for `go vet`.
+//
+// It runs every analyzer in this module. Each may be disabled by name, for
+// example -lockstringer=false, and each carries its own flags under its own
+// name, for example -checklocks.inferred=false.
 package main
 
 import (
 	"github.com/tigerquoll/checklocks"
-	"golang.org/x/tools/go/analysis/singlechecker"
+	"golang.org/x/tools/go/analysis/multichecker"
 )
 
-func main() { singlechecker.Main(checklocks.Analyzer) }
+func main() {
+	multichecker.Main(
+		checklocks.Analyzer,
+		checklocks.LockStringerAnalyzer,
+	)
+}

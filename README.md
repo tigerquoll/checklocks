@@ -3,6 +3,10 @@
 Checklocks is an analyzer for lock and atomic constraints. The analyzer relies
 on explicit annotations to identify fields that should be checked for access.
 
+This module also carries analyzers built on top of it, sharing its annotations
+and its view of which fields are guarded. They ship in the same binary and are
+individually switchable; see [Analyzers](#analyzers).
+
 This is a standalone extraction of gVisor's `tools/checklocks`, which is not
 published as an importable Go module of its own. It is packaged here so that it
 can be installed and pinned like any other tool, with fixes applied that are
@@ -29,9 +33,15 @@ The base import is a single commit, and each fix is a separate commit on top, so
 | Pointer-typed global guards resolved through the pointer | [tigerquoll/gvisor#3](https://github.com/tigerquoll/gvisor/pull/3), pending |
 | Guard annotations on package-level variable declarations | [tigerquoll/gvisor#4](https://github.com/tigerquoll/gvisor/pull/4), pending |
 
-Everything else is unmodified apart from what standing alone requires: the
-analyzer package moved to the repository root, import paths were rewritten, and
-the bazel `BUILD` files were dropped.
+The `checklocks` analyzer is otherwise unmodified apart from what standing
+alone requires: the analyzer package moved to the repository root, import paths
+were rewritten, and the bazel `BUILD` files were dropped.
+
+Added here rather than derived from gVisor: the `lockstringer` analyzer, the
+`go test` driver, and the multi-analyzer binary. The self-check machinery that
+`checklocks` uses for its own corpus was generalised so that each analyzer has
+its own `+<analyzer>fail` marker, which is the only change to its behaviour and
+is not observable in its output.
 
 ## Installation
 
@@ -41,28 +51,59 @@ go install github.com/tigerquoll/checklocks/cmd/checklocks@latest
 
 ## Usage
 
-The analyzer is a `go vet` tool. If installed to the default path:
+The binary is a `go vet` tool running every analyzer in this module. If
+installed to the default path:
 
 ```sh
 go vet -vettool=$HOME/go/bin/checklocks ./...
 ```
 
-Flags are passed through `go vet` directly:
+### Analyzers
 
-*   `-inferred` (default true): suggest annotations for fields that are observed
-    to be accessed under a lock most of the time. The suggestions are based on
-    observation ratios and so are sensitive to unrelated nearby changes; a
-    project gating CI on the analyzer will generally want `-inferred=false` plus
-    deliberate annotation.
-*   `-atomic` (default true): enable the atomic access checks.
-*   `-wrappers` (default true): report diagnostics that have no source position.
-    These arise from synthetic wrapper functions and cannot be annotated or
-    suppressed in source, so `-wrappers=false` is usually wanted when the output
-    must be clean. gVisor excludes them by configuration for the same reason.
+| Analyzer | What it checks |
+| --- | --- |
+| `checklocks` | lock and atomic constraints, from annotations on fields and functions |
+| `lockstringer` | lock hazards in lazily evaluated methods such as `String` |
+
+Each may be turned off by name, which is how a project adopts one at a time:
 
 ```sh
-go vet -vettool=$HOME/go/bin/checklocks -inferred=false -wrappers=false ./...
+go vet -vettool=$HOME/go/bin/checklocks -lockstringer=false ./...
 ```
+
+A disabled analyzer still runs when another one requires it, so disabling
+`checklocks` silences its diagnostics without depriving `lockstringer` of the
+guard annotations it reads.
+
+### Flags
+
+Each analyzer's own flags are namespaced under its name:
+
+*   `-checklocks.inferred` (default true): suggest annotations for fields that
+    are observed to be accessed under a lock most of the time. The suggestions
+    are based on observation ratios and so are sensitive to unrelated nearby
+    changes; a project gating CI on the analyzer will generally want
+    `-checklocks.inferred=false` plus deliberate annotation.
+*   `-checklocks.atomic` (default true): enable the atomic access checks.
+*   `-checklocks.wrappers` (default true): report diagnostics that have no
+    source position. These arise from synthetic wrapper functions and cannot be
+    annotated or suppressed in source, so `-checklocks.wrappers=false` is
+    usually wanted when the output must be clean. gVisor excludes them by
+    configuration for the same reason.
+*   `-lockstringer.methods` (default empty): comma separated additional method
+    names to treat as lazily evaluated, for a project specific interface.
+
+```sh
+go vet -vettool=$HOME/go/bin/checklocks \
+	-checklocks.inferred=false -checklocks.wrappers=false ./...
+```
+
+> **Flag names changed when the second analyzer was added.** The binary runs
+> several analyzers now, so `go vet` requires each flag to name its analyzer:
+> `-inferred=false` is now `-checklocks.inferred=false`, and likewise for
+> `-atomic` and `-wrappers`. The old spellings are rejected outright rather than
+> ignored, so a stale command line fails loudly rather than silently analyzing
+> with different settings.
 
 ## Annotations
 
@@ -355,6 +396,74 @@ protected by the mutex, it suggests that the critical section could be made
 smaller by restructuring the code or the structure instead of applying the
 ignore annotation.
 
+## lockstringer
+
+`String`, `Error`, `MarshalJSON` and `MarshalLogObject` are called by `fmt`,
+`encoding/json` and `zap` at a point the type's author does not choose. The
+caller's lock state is therefore unknowable, which makes both of the obvious
+implementations wrong:
+
+*   reading a lock-guarded field without the lock races with any writer, and
+*   taking the receiver's own lock deadlocks when the value is formatted by
+    code that already holds it, which is exactly what logging under a lock
+    does.
+
+`lockstringer` reports both. The remedy for both is the same, and is what the
+diagnostic suggests: restrict the method to fields fixed at construction, or
+have the caller take a snapshot under the lock and log that.
+
+```go
+type node struct {
+    mu sync.Mutex
+    // +checklocks:mu
+    allocations int
+    id          string
+}
+
+func (n *node) String() string {
+    return fmt.Sprintf("%s: %d", n.id, n.allocations) // reported: guarded read races
+}
+
+func (n *node) GoString() string {
+    n.mu.Lock()                                       // reported: self-deadlock
+    defer n.mu.Unlock()
+    return fmt.Sprintf("%s: %d", n.id, n.allocations)
+}
+```
+
+The second rule also fires when the lock is taken by a method the lazy method
+calls, such as a self-locking accessor, or by a function annotated as acquiring
+a lock.
+
+### Scope
+
+The analysis is deliberately narrow, because a diagnostic here asks for a
+redesign of the method rather than a local fix:
+
+*   Only types that carry their own lock **and** have at least one
+    `+checklocks` guarded field are considered. A type that has not annotated
+    what its lock protects has not said enough for this to be meaningful.
+*   Only guarded fields of the receiver's own type are reported. A guarded
+    field reached through another object is an ordinary violation that
+    `checklocks` already reports.
+*   The two rules do not both fire on one method. A method that takes its own
+    lock is reported for that, and its reads are not additionally reported as
+    racy.
+*   Callee inspection is one level deep and within the package. A lock taken
+    two calls away is not found; that needs the summary facts a lock ordering
+    analysis would introduce.
+
+Note that a `+checklocksignore` does not suppress these diagnostics, and should
+not: silencing `checklocks` on a `String` method is the usual way this hazard
+comes to be, since neither locking nor not locking is correct.
+
+### Annotations
+
+*   `+lockstringerignore`: on a function, drops every diagnostic in its body;
+    on a line, drops the diagnostics reported on that line.
+*   `+lockstringerfail`: states that a line must be reported, for the test
+    corpus, exactly as `+checklocksfail` does for `checklocks`.
+
 ## Development
 
 ```sh
@@ -362,11 +471,16 @@ go build ./...
 go test ./...
 ```
 
-`go test` builds the vettool and runs it over the packages in `test/`, which are
-a self-checking corpus: cases that must be reported carry `+checklocksfail`, and
-the analyzer reports a missing expected failure when an annotated line produces
-no diagnostic. Any output at all fails the test, so both unexpected diagnostics
-and expectations that stopped holding are caught.
+`go test` builds the vettool and runs each analyzer over its own corpus:
+`test/` for `checklocks`, `test/lockstringer/` for `lockstringer`. The corpora
+are self-checking: a case that must be reported carries `+checklocksfail` or
+`+lockstringerfail`, and the analyzer reports a missing expected failure when
+an annotated line produces none. Any output at all fails the test, so both
+unexpected diagnostics and expectations that stopped holding are caught.
+
+Each analyzer is run over its corpus with the others disabled. Most cases are
+violations in more than one analyzer's terms, and an expectation can only be
+stated once per line.
 
 ## License
 
