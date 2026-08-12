@@ -18,6 +18,7 @@ import (
 	"go/types"
 	"strings"
 
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -47,9 +48,17 @@ func lockOpName(name string) lockOp {
 
 // isStandardLock reports whether the function is a lock method of a standard lock type,
 // recognised by name the way the checklocks analyzer recognises them.
-func isStandardLock(fn *types.Func) bool {
+func isStandardLock(pass *analysis.Pass, fn *types.Func) bool {
 	name := fn.FullName()
-	return mutexRE.MatchString(name) || lockerRE.MatchString(name)
+	if mutexRE.MatchString(name) || lockerRE.MatchString(name) {
+		return true
+	}
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		if _, declared := lockPrimitiveIn(pass, sig.Recv().Type()); declared {
+			return true
+		}
+	}
+	return false
 }
 
 // classOf resolves the lock class of the object whose lock is being operated on.
