@@ -12,21 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package lockorder
+package checklocks
 
 import (
 	"go/types"
-	"regexp"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
-)
-
-// The lock types are recognised by name, the same way the checklocks analyzer recognises
-// them, so that a wrapper around a standard lock participates without extra configuration.
-var (
-	mutexRE  = regexp.MustCompile(`.*Mutex`)
-	lockerRE = regexp.MustCompile(`.*sync\.Locker`)
 )
 
 // lockOp is the kind of lock operation a call performs.
@@ -70,7 +62,7 @@ func isStandardLock(fn *types.Func) bool {
 //   - x.Lock() on a type that wraps its own lock has the owner as the receiver itself.
 //
 // The empty string means the lock does not participate in the order.
-func (pc *passContext) classOf(v ssa.Value) string {
+func (pc *lockOrderContext) classOf(v ssa.Value) string {
 	// The lock reached through a field: the owner is the type holding the field.
 	if fa, ok := underlyingFieldAddr(v); ok {
 		if named, fieldName, ok := ownerOf(fa); ok {
@@ -89,7 +81,7 @@ func (pc *passContext) classOf(v ssa.Value) string {
 // classForNamed looks up the class declared on a type. A type carrying more than one lock
 // names the field its class applies to; fieldName is empty when the caller cannot say which
 // field was used, in which case only an unqualified declaration matches.
-func (pc *passContext) classForNamed(named *types.Named, fieldName string) string {
+func (pc *lockOrderContext) classForNamed(named *types.Named, fieldName string) string {
 	obj := named.Obj()
 	if obj == nil {
 		return ""

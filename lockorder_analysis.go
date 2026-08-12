@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package lockorder
+package checklocks
 
 import (
 	"go/token"
@@ -28,7 +28,7 @@ import (
 // with the lock set merged at every block from the sets that reach it. Loops are handled by
 // the outer fixpoint rather than by iterating here: a summary that grows re-runs the
 // function, so a class acquired on the second time round a loop is still seen.
-func (pc *passContext) analyzeFunction(fn *ssa.Function, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFact, report bool) {
 	if fn.Blocks == nil {
 		return
 	}
@@ -85,7 +85,7 @@ func (pc *passContext) analyzeFunction(fn *ssa.Function, summary *summaryFact, r
 
 // visitCall handles one call: the lock operations it performs, and the classes it may
 // acquire through its callee.
-func (pc *passContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, summary *summaryFact, report bool) {
 	callee := staticCallee(call)
 
 	// A lock operation changes what is held. Both the standard lock types and a type that
@@ -147,7 +147,7 @@ func (pc *passContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur
 }
 
 // checkAcquire records the pair and reports if the acquisition breaks the order.
-func (pc *passContext) checkAcquire(pos token.Pos, acquired, via string, cur *classSet, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, cur *classSet, summary *summaryFact, report bool) {
 	for _, held := range cur.held() {
 		summary.addPair(held, acquired)
 		if !pc.order.violates(held, acquired) {
@@ -169,7 +169,7 @@ func (pc *passContext) checkAcquire(pos token.Pos, acquired, via string, cur *cl
 // The annotations are the ones the checklocks analyzer already reads, so a code base that
 // has been annotated for guarded fields gets the ordering check for free: a function
 // declared to run with a lock held starts with that lock's class held here.
-func (pc *passContext) entryClasses(fn *ssa.Function) *classSet {
+func (pc *lockOrderContext) entryClasses(fn *ssa.Function) *classSet {
 	cs := newClassSet()
 	obj := funcObject(fn)
 	if obj == nil {
@@ -182,7 +182,7 @@ func (pc *passContext) entryClasses(fn *ssa.Function) *classSet {
 }
 
 // functionIgnored reports whether reporting is suppressed inside a function.
-func (pc *passContext) functionIgnored(fn *ssa.Function) bool {
+func (pc *lockOrderContext) functionIgnored(fn *ssa.Function) bool {
 	obj := funcObject(fn)
 	if obj == nil {
 		return false
@@ -191,7 +191,7 @@ func (pc *passContext) functionIgnored(fn *ssa.Function) bool {
 }
 
 // calleeIgnored reports whether a function carries the ignore annotation.
-func (pc *passContext) calleeIgnored(obj *types.Func) bool {
+func (pc *lockOrderContext) calleeIgnored(obj *types.Func) bool {
 	var ff funcFact
 	if !pc.pass.ImportObjectFact(obj, &ff) {
 		return false
@@ -206,7 +206,7 @@ func (pc *passContext) calleeIgnored(obj *types.Func) bool {
 // while the summaries are still growing would report against a half computed callee and
 // produce different diagnostics depending on the order the functions happened to be
 // visited in.
-func (pc *passContext) analyzePackage(fns []*ssa.Function) {
+func (pc *lockOrderContext) analyzePackage(fns []*ssa.Function) {
 	summaries := make(map[*ssa.Function]*summaryFact, len(fns))
 	for _, fn := range fns {
 		summaries[fn] = &summaryFact{}
@@ -247,7 +247,7 @@ func (pc *passContext) analyzePackage(fns []*ssa.Function) {
 const maxFixpointRounds = 100
 
 // exportSummary publishes a function's summary so dependent packages can consult it.
-func (pc *passContext) exportSummary(fn *ssa.Function, summary *summaryFact) {
+func (pc *lockOrderContext) exportSummary(fn *ssa.Function, summary *summaryFact) {
 	obj := funcObject(fn)
 	if obj == nil {
 		return

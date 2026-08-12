@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package lockorder
+package checklocks
 
 import (
 	"fmt"
@@ -61,6 +61,15 @@ const (
 	// lockOrderFail records an expected diagnostic in the test corpus.
 	lockOrderFail = "// +lockorderfail"
 )
+
+// lockOrderAnnotations is the self-check annotation set belonging to this analyzer.
+//
+// There is no force annotation: forcing means asserting a lock is held, and what this
+// analysis needs asserted is the ORDER, which a single position cannot express.
+var lockOrderAnnotations = annotationSet{
+	fail:   lockOrderFail,
+	ignore: lockOrderIgnore,
+}
 
 // orderEdge is one declared "a is acquired before b" relation.
 type orderEdge struct {
