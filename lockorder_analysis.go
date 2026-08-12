@@ -53,6 +53,14 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	// return, so the list accumulates across the blocks on the way there.
 	var deferred []ssa.CallInstruction
 	for _, b := range fn.Blocks {
+		if b == fn.Recover {
+			// The recover block is a second entry point the SSA builder gives every
+			// function that defers: control resumes there after a recovered panic, with
+			// no predecessor to say what is held. Its return would run every deferred
+			// call a second time against an empty lock set, which says nothing true and
+			// erases what the run at the real return established.
+			continue
+		}
 		cur := in[b.Index]
 		if cur == nil {
 			// Unreachable from the entry as far as this walk is concerned; start clean
@@ -134,14 +142,16 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 				switch op {
 				case opAcquire:
 					if class != "" {
-						pc.checkAcquire(call.Pos(), class, displayName(callee), cur, summary, report)
+						pc.checkAcquire(call.Pos(), class, displayName(callee), cur.held(), summary, report)
 						pc.checkHierarchy(call.Pos(), recv, class, displayName(callee), curInst, report)
+						// What has been released is recorded as it stands BEFORE the
+						// acquisition: taking the lock back closes the gap.
+						summary.addAcquire(class, cur.releasedClasses())
 						cur.acquire(class)
 						curInst.acquire(recv, class)
-						summary.addAcquire(class)
 					}
 				case opRelease:
-					cur.release(class)
+					cur.release(class, isReceiver(fn, recv))
 					curInst.release(recv)
 				}
 				return
@@ -172,15 +182,30 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	if pc.calleeIgnored(obj) {
 		return
 	}
-	for _, class := range cs.Acquires {
-		pc.checkAcquire(call.Pos(), class, displayName(callee), cur, summary, report)
-		summary.addAcquire(class)
+	// A callee called on this function's own receiver acts on the same object, so a lock it
+	// releases of its receiver's is one of this function's caller's locks too, and that
+	// carries into this summary. A callee called on any other object says nothing about the
+	// locks of this one, so only this function's own releases carry.
+	onReceiver := false
+	if recv, ok := receiverOf(call); ok {
+		onReceiver = isReceiver(fn, recv)
+	}
+	released := cur.releasedClasses()
+	for _, a := range cs.Acquires {
+		// The callee dropped these before it acquired, so they are not held across the
+		// acquisition however it looks from here: the unlock-relock gap.
+		pc.checkAcquire(call.Pos(), a.Class, displayName(callee), subtractClasses(cur.held(), a.ReleasedBefore), summary, report)
+		if onReceiver {
+			summary.addAcquire(a.Class, unionClasses(released, a.ReleasedBefore))
+			continue
+		}
+		summary.addAcquire(a.Class, released)
 	}
 }
 
 // checkAcquire records the pair and reports if the acquisition breaks the order.
-func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, cur *classSet, summary *summaryFact, report bool) {
-	for _, held := range cur.held() {
+func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, heldClasses []string, summary *summaryFact, report bool) {
+	for _, held := range heldClasses {
 		summary.addPair(held, acquired)
 		if !pc.order.violates(held, acquired) {
 			continue
@@ -208,7 +233,7 @@ func (pc *lockOrderContext) entryClasses(fn *ssa.Function) *classSet {
 		return cs
 	}
 	for _, class := range pc.heldOnEntry(obj) {
-		cs.acquire(class)
+		cs.enter(class)
 	}
 	return cs
 }
@@ -252,7 +277,7 @@ func (pc *lockOrderContext) analyzePackage(fns []*ssa.Function) {
 			next := &summaryFact{}
 			next.merge(&before)
 			pc.analyzeFunction(fn, next, false)
-			if len(next.Acquires) != len(before.Acquires) || len(next.Pairs) != len(before.Pairs) {
+			if !next.equal(&before) {
 				changed = true
 			}
 			summaries[fn] = next

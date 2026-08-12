@@ -153,13 +153,13 @@ func TestParseOrderEdge(t *testing.T) {
 
 func TestSummaryFactMerge(t *testing.T) {
 	a := &summaryFact{}
-	a.addAcquire("Queue")
-	a.addAcquire("Application")
+	a.addAcquire("Queue", nil)
+	a.addAcquire("Application", nil)
 	a.addPair("Application", "Queue")
 
 	b := &summaryFact{}
-	b.addAcquire("Node")
-	b.addAcquire("Queue") // already present in a
+	b.addAcquire("Node", nil)
+	b.addAcquire("Queue", nil) // already present in a
 	b.addPair("Application", "Node")
 
 	if !a.merge(b) {
@@ -170,7 +170,7 @@ func TestSummaryFactMerge(t *testing.T) {
 	}
 	// The set must stay sorted so the fact encoding is stable across runs.
 	for i := 1; i < len(a.Acquires); i++ {
-		if a.Acquires[i-1] > a.Acquires[i] {
+		if a.Acquires[i-1].Class > a.Acquires[i].Class {
 			t.Fatalf("Acquires is not sorted: %v", a.Acquires)
 		}
 	}
@@ -179,6 +179,94 @@ func TestSummaryFactMerge(t *testing.T) {
 	}
 	if a.merge(b) {
 		t.Error("merging content that is already present must report no change")
+	}
+}
+
+// TestReleasedBeforeIntersectsOnMerge pins the direction the released sets fold in. A class
+// is only released for the call site if every path that acquires it released it first;
+// keeping the union would silence the path that still holds the lock.
+func TestReleasedBeforeIntersectsOnMerge(t *testing.T) {
+	a := &summaryFact{}
+	a.addAcquire("Application", []string{"Node", "Task"})
+
+	b := &summaryFact{}
+	b.addAcquire("Application", []string{"Task"})
+
+	if !a.merge(b) {
+		t.Error("narrowing a released set is a change")
+	}
+	if len(a.Acquires) != 1 {
+		t.Fatalf("Acquires = %v, want one entry", a.Acquires)
+	}
+	if got, want := a.Acquires[0].ReleasedBefore, []string{"Task"}; !equalClasses(got, want) {
+		t.Errorf("ReleasedBefore = %v, want %v", got, want)
+	}
+	if a.merge(b) {
+		t.Error("merging the same released set again must report no change")
+	}
+
+	// A path that releases nothing empties the set: nothing may be subtracted.
+	if !a.merge(&summaryFact{Acquires: []acquisition{{Class: "Application"}}}) {
+		t.Error("emptying a released set is a change")
+	}
+	if len(a.Acquires[0].ReleasedBefore) != 0 {
+		t.Errorf("ReleasedBefore = %v, want empty", a.Acquires[0].ReleasedBefore)
+	}
+}
+
+// TestClassSetReleaseTracksTheCallersLocks pins what a summary may export: only a lock the
+// function was called with held, and only its receiver's.
+func TestClassSetReleaseTracksTheCallersLocks(t *testing.T) {
+	// The gap shape: called with the lock held, drops it, takes it back at the end.
+	cs := newClassSet()
+	cs.enter("Task")
+	cs.release("Task", true)
+	if got, want := cs.releasedClasses(), []string{"Task"}; !equalClasses(got, want) {
+		t.Errorf("after releasing the caller's lock: %v, want %v", got, want)
+	}
+	if !cs.empty() {
+		t.Errorf("the class must not be held after the release: %v", cs)
+	}
+	cs.acquire("Task")
+	if got := cs.releasedClasses(); len(got) != 0 {
+		t.Errorf("taking the lock back closes the gap, got %v", got)
+	}
+
+	// A lock the function took itself is not the caller's, however it is released.
+	cs = newClassSet()
+	cs.acquire("Task")
+	cs.release("Task", true)
+	if got := cs.releasedClasses(); len(got) != 0 {
+		t.Errorf("releasing an own acquisition is not a gap, got %v", got)
+	}
+
+	// Another object's lock is not modelled, so the call site keeps holding it.
+	cs = newClassSet()
+	cs.enter("Task")
+	cs.release("Task", false)
+	if got := cs.releasedClasses(); len(got) != 0 {
+		t.Errorf("releasing another object's lock must not be exported, got %v", got)
+	}
+}
+
+// TestClassSetMergeIntersectsReleases pins the join point: a gap on one path only does not
+// excuse the path that still holds the lock.
+func TestClassSetMergeIntersectsReleases(t *testing.T) {
+	gap := newClassSet()
+	gap.enter("Task")
+	gap.release("Task", true)
+
+	direct := newClassSet()
+	direct.enter("Task")
+
+	if !gap.merge(direct) {
+		t.Error("dropping a release at a join point is a change")
+	}
+	if got := gap.releasedClasses(); len(got) != 0 {
+		t.Errorf("released on one path only, got %v", got)
+	}
+	if got, want := gap.held(), []string{"Task"}; !equalClasses(got, want) {
+		t.Errorf("held = %v, want %v", got, want)
 	}
 }
 

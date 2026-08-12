@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -73,13 +74,31 @@ type classPair struct {
 	Acquired string
 }
 
+// acquisition is one class a function may acquire, with what it had released by then.
+type acquisition struct {
+	// Class is the class acquired.
+	Class string
+
+	// ReleasedBefore is the set of classes the function had released, out of the locks its
+	// caller held, before it acquires Class. A call site subtracts these from its own held
+	// set: a callee that drops its caller's lock before taking another one is not nesting,
+	// though it looks like it from the outside. That is the unlock-relock gap idiom, and
+	// without this it is reported as an inversion at every call site of the gap.
+	//
+	// Only locks belonging to the function's own receiver are recorded, which is the shape
+	// the idiom takes. A release of any other object's lock is not modelled and the summary
+	// stays silent about it, so a call site keeps holding it. Sorted, like Acquires.
+	ReleasedBefore []string
+}
+
 // summaryFact is the per function summary. It is what makes the analysis modular: a call
 // site consults the summary of the callee rather than walking into it, so a package can be
 // analyzed with only the facts of its dependencies.
 type summaryFact struct {
 	// Acquires is the set of classes the function may acquire, directly or through any
-	// statically dispatched callee. Sorted, so the fact encoding is stable.
-	Acquires []string
+	// statically dispatched callee, each with what it had released by then. Sorted by
+	// class, so the fact encoding is stable.
+	Acquires []acquisition
 
 	// Pairs is the set of class pairs the function itself realizes, kept for reporting and
 	// for the corpus expectations.
@@ -94,7 +113,15 @@ type summaryFact struct {
 func (*summaryFact) AFact() {}
 
 func (f *summaryFact) String() string {
-	s := "acquires:" + strings.Join(f.Acquires, ",")
+	acquires := make([]string, 0, len(f.Acquires))
+	for _, a := range f.Acquires {
+		if len(a.ReleasedBefore) > 0 {
+			acquires = append(acquires, a.Class+"(releases:"+strings.Join(a.ReleasedBefore, "+")+")")
+			continue
+		}
+		acquires = append(acquires, a.Class)
+	}
+	s := "acquires:" + strings.Join(acquires, ",")
 	if len(f.Pairs) > 0 {
 		parts := make([]string, 0, len(f.Pairs))
 		for _, p := range f.Pairs {
@@ -110,17 +137,27 @@ func (f *summaryFact) String() string {
 }
 
 // addAcquire adds a class to the summary, keeping the slice sorted and unique.
-func (f *summaryFact) addAcquire(class string) bool {
+//
+// A class already in the summary keeps the INTERSECTION of the two released sets. The
+// summary describes every path through the function at once, so a class may only be
+// treated as released at a call site if it was released on every path that acquires it;
+// keeping the union would silence the path that still holds it.
+func (f *summaryFact) addAcquire(class string, releasedBefore []string) bool {
 	if class == "" {
 		return false
 	}
-	i := sort.SearchStrings(f.Acquires, class)
-	if i < len(f.Acquires) && f.Acquires[i] == class {
-		return false
+	i := sort.Search(len(f.Acquires), func(i int) bool { return f.Acquires[i].Class >= class })
+	if i < len(f.Acquires) && f.Acquires[i].Class == class {
+		kept := intersectClasses(f.Acquires[i].ReleasedBefore, releasedBefore)
+		if equalClasses(kept, f.Acquires[i].ReleasedBefore) {
+			return false
+		}
+		f.Acquires[i].ReleasedBefore = kept
+		return true
 	}
-	f.Acquires = append(f.Acquires, "")
+	f.Acquires = append(f.Acquires, acquisition{})
 	copy(f.Acquires[i+1:], f.Acquires[i:])
-	f.Acquires[i] = class
+	f.Acquires[i] = acquisition{Class: class, ReleasedBefore: append([]string(nil), releasedBefore...)}
 	return true
 }
 
@@ -139,8 +176,8 @@ func (f *summaryFact) addPair(held, acquired string) bool {
 // what drives the in package fixpoint.
 func (f *summaryFact) merge(other *summaryFact) bool {
 	changed := false
-	for _, c := range other.Acquires {
-		if f.addAcquire(c) {
+	for _, a := range other.Acquires {
+		if f.addAcquire(a.Class, a.ReleasedBefore) {
 			changed = true
 		}
 	}
@@ -154,6 +191,78 @@ func (f *summaryFact) merge(other *summaryFact) bool {
 		changed = true
 	}
 	return changed
+}
+
+// equal reports whether two summaries hold the same content.
+//
+// The fixpoint needs this rather than a size comparison: the released sets shrink as more
+// paths are seen while the class sets grow, so a round can change a summary without
+// changing how much is in it.
+func (f *summaryFact) equal(other *summaryFact) bool {
+	if len(f.Acquires) != len(other.Acquires) || len(f.Pairs) != len(other.Pairs) || f.Blocking != other.Blocking {
+		return false
+	}
+	for i, a := range f.Acquires {
+		if a.Class != other.Acquires[i].Class || !equalClasses(a.ReleasedBefore, other.Acquires[i].ReleasedBefore) {
+			return false
+		}
+	}
+	for _, p := range f.Pairs {
+		found := false
+		for _, q := range other.Pairs {
+			if p == q {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// intersectClasses returns the classes present in both sorted sets.
+func intersectClasses(a, b []string) []string {
+	var out []string
+	for _, c := range a {
+		i := sort.SearchStrings(b, c)
+		if i < len(b) && b[i] == c {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// unionClasses returns a sorted set holding the classes of both sets.
+func unionClasses(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	out := append(append([]string(nil), a...), b...)
+	sort.Strings(out)
+	return slices.Compact(out)
+}
+
+// subtractClasses returns the classes of a that are not in the sorted set b.
+func subtractClasses(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	out := make([]string, 0, len(a))
+	for _, c := range a {
+		i := sort.SearchStrings(b, c)
+		if i < len(b) && b[i] == c {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// equalClasses reports whether two sorted sets hold the same classes.
+func equalClasses(a, b []string) bool {
+	return slices.Equal(a, b)
 }
 
 // funcFact records the function level annotations of this analyzer.
