@@ -558,7 +558,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	// Check if it's a method dispatch for something in the sync package.
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#Function
 
-	if (lockerRE.MatchString(fn.FullName()) || mutexRE.MatchString(fn.FullName())) && len(args) > 0 {
+	if (lockerRE.MatchString(fn.FullName()) || mutexRE.MatchString(fn.FullName()) || pc.isLockPrimitiveMethod(fn)) && len(args) > 0 {
 		rv := makeResolvedValue(args[0], nil)
 		isExclusive := false
 		switch fn.Name() {

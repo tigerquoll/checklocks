@@ -171,6 +171,33 @@ Package-level variables may be guarded in the same way. The annotation may be
 attached to the variable declaration or, within a parenthesized declaration, to
 the individual variable.
 
+A type that wraps a lock may be declared to be one, with
+`+checklockslocktype` on the type. Its `Lock`, `Unlock`, `RLock`, `RUnlock`,
+`NestedLock`, `NestedUnlock` and `DowngradeLock` methods then become
+primitives: they are intercepted at each call site exactly as the standard
+ones are, and their own bodies are not analyzed, because the body of a
+primitive is the implementation of a lock rather than a critical section.
+
+```go
+// +checklockslocktype
+type Guard struct {
+    mu sync.Mutex
+}
+
+func (g *Guard) Lock()   { g.mu.Lock() }
+func (g *Guard) Unlock() { g.mu.Unlock() }
+```
+
+Whether the type behaves as a `Mutex` or an `RWMutex` is taken from the type
+itself: it has an `RLock` method or it does not.
+
+Without the declaration a wrapper needs `+checklocksignore` on each forwarder,
+to silence the balance error a method that takes a lock and does not release it
+would otherwise produce. That ignore is read at every call site, not only in
+the forwarder, so it also suppresses the "already locked" and "unlock while not
+held" diagnostics for every user of the lock. Declaring the type is what gets
+those back.
+
 The locks must be resolvable within the scope of the declaration. This means the
 lock must refer to one of:
 
