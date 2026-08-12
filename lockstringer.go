@@ -177,7 +177,7 @@ func (pc *passContext) checkLazyMethod(fn *ssa.Function) {
 	// The analysis applies to types that have taken a position on locking:
 	// a lock to hold, and at least one field annotated as guarded. Without
 	// the annotations there is nothing to say which reads are racy.
-	locks := lockFields(structType)
+	locks := pc.lockFields(structType)
 	if len(locks) == 0 || !pc.hasGuardedField(structType) {
 		return
 	}
@@ -252,22 +252,15 @@ func receiverTypeName(fn *ssa.Function) string {
 }
 
 // lockFields returns the indices of the fields of structType that are locks.
-func lockFields(structType *types.Struct) map[int]types.Object {
+func (pc *passContext) lockFields(structType *types.Struct) map[int]types.Object {
 	locks := make(map[int]types.Object)
 	for i := 0; i < structType.NumFields(); i++ {
 		field := structType.Field(i)
-		if isLockType(field.Type()) {
+		if isLockTypeIn(pc.pass, field.Type()) {
 			locks[i] = field
 		}
 	}
 	return locks
-}
-
-// isLockType reports whether typ is a lock, by the same name matching the
-// checklocks analysis uses, so that a project's own wrapper type is included.
-func isLockType(typ types.Type) bool {
-	s := typ.String()
-	return rwMutexRE.MatchString(s) || mutexRE.MatchString(s) || lockerRE.MatchString(s)
 }
 
 // hasGuardedField reports whether any field of structType is lock-guarded.
@@ -326,7 +319,7 @@ func guardedFieldAccess(pc *passContext, inst ssa.Instruction, structType *types
 // self-locking accessor is the shape that occurs in practice, and going deeper
 // needs the summary facts that the lock ordering analysis will introduce.
 func (pc *passContext) acquiresOwnLock(fn *ssa.Function, structType *types.Struct, locks map[int]types.Object) (token.Pos, string, bool) {
-	if pos, ok := directlyAcquires(fn, structType, locks); ok {
+	if pos, ok := pc.directlyAcquires(fn, structType, locks); ok {
 		return pos, "", true
 	}
 	for _, block := range fn.Blocks {
@@ -342,7 +335,7 @@ func (pc *passContext) acquiresOwnLock(fn *ssa.Function, structType *types.Struc
 			// Another method of the same type that locks.
 			if callee.Signature.Recv() != nil {
 				if owner, ok := resolveStruct(callee.Signature.Recv().Type()); ok && owner == structType {
-					if _, ok := directlyAcquires(callee, structType, locks); ok {
+					if _, ok := pc.directlyAcquires(callee, structType, locks); ok {
 						return call.Common().Pos(), callee.Name(), true
 					}
 				}
@@ -370,7 +363,7 @@ func (pc *passContext) acquiresOwnLock(fn *ssa.Function, structType *types.Struc
 
 // directlyAcquires reports whether fn contains an acquisition of one of the
 // given lock fields of structType.
-func directlyAcquires(fn *ssa.Function, structType *types.Struct, locks map[int]types.Object) (token.Pos, bool) {
+func (pc *passContext) directlyAcquires(fn *ssa.Function, structType *types.Struct, locks map[int]types.Object) (token.Pos, bool) {
 	for _, block := range fn.Blocks {
 		for _, inst := range block.Instrs {
 			call, ok := inst.(ssa.CallInstruction)
@@ -378,7 +371,7 @@ func directlyAcquires(fn *ssa.Function, structType *types.Struct, locks map[int]
 				continue
 			}
 			common := call.Common()
-			if !isLockAcquire(common) {
+			if !isLockAcquire(pc.pass, common) {
 				continue
 			}
 			// See checkFunctionCall: an interface dispatch carries
@@ -399,7 +392,7 @@ func directlyAcquires(fn *ssa.Function, structType *types.Struct, locks map[int]
 }
 
 // isLockAcquire reports whether the call acquires a lock.
-func isLockAcquire(common *ssa.CallCommon) bool {
+func isLockAcquire(pass *analysis.Pass, common *ssa.CallCommon) bool {
 	var fn *types.Func
 	if common.Method != nil {
 		fn = common.Method
@@ -415,7 +408,14 @@ func isLockAcquire(common *ssa.CallCommon) bool {
 		return false
 	}
 	full := fn.FullName()
-	return rwMutexRE.MatchString(full) || mutexRE.MatchString(full) || lockerRE.MatchString(full)
+	if rwMutexRE.MatchString(full) || mutexRE.MatchString(full) || lockerRE.MatchString(full) {
+		return true
+	}
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		_, declared := lockPrimitiveIn(pass, sig.Recv().Type())
+		return declared
+	}
+	return false
 }
 
 // isLockField reports whether v is one of the lock fields of structType.

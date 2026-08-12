@@ -36,6 +36,7 @@ import (
 	"go/token"
 	"go/types"
 
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -248,7 +249,7 @@ func (pc *lockOrderContext) checkHierarchy(pos token.Pos, acquired ssa.Value, cl
 	}
 	// Normalise both sides to the instance that owns the lock, since the hierarchy is
 	// defined over instances rather than over the lock fields inside them.
-	acquiredOwner := lockOwner(acquired)
+	acquiredOwner := lockOwner(pc.pass, acquired)
 	index, fieldName, ok := pc.edgeFieldIndex(acquiredOwner.Type())
 	if !ok {
 		return
@@ -257,7 +258,7 @@ func (pc *lockOrderContext) checkHierarchy(pos token.Pos, acquired ssa.Value, cl
 		if heldClass != class {
 			continue
 		}
-		heldOwner := lockOwner(held)
+		heldOwner := lockOwner(pc.pass, held)
 		if heldOwner == acquiredOwner {
 			continue
 		}
@@ -277,7 +278,7 @@ func (pc *lockOrderContext) checkHierarchy(pos token.Pos, acquired ssa.Value, cl
 // removing it would erase the very step this analysis looks for.
 //
 // A type that wraps its own lock and forwards to it is already the owner.
-func lockOwner(v ssa.Value) ssa.Value {
+func lockOwner(pass *analysis.Pass, v ssa.Value) ssa.Value {
 	fa, ok := underlyingFieldAddr(v)
 	if !ok {
 		return unwrapConversions(v)
@@ -290,7 +291,7 @@ func lockOwner(v ssa.Value) ssa.Value {
 	if !ok || fa.Field >= st.NumFields() {
 		return unwrapConversions(v)
 	}
-	if !isLockType(st.Field(fa.Field).Type()) {
+	if !isLockTypeIn(pass, st.Field(fa.Field).Type()) {
 		return unwrapConversions(v)
 	}
 	return unwrapConversions(fa.X)

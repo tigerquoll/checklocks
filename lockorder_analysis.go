@@ -208,7 +208,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 			// A lock method of a standard lock type on an object with no class is still a
 			// lock operation, it just does not participate in the order; consuming it here
 			// stops it being treated as an ordinary call.
-			if class != "" || (ok && isStandardLock(obj)) {
+			if class != "" || (ok && isStandardLock(pc.pass, obj)) {
 				switch op {
 				case opAcquire:
 					if class != "" {
