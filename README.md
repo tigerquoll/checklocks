@@ -690,11 +690,22 @@ so including them would report all nesting and say nothing; that nesting is
 
 *   The bit travels through the summaries `lockorder` builds, so a wait three
     of your own calls away is found.
-*   It does not travel out of a dependency. The standard library is full of
-    channel receives no caller can see or avoid, and carrying the bit out of it
-    would make every function that formats a string blocking. Waiting inside a
-    dependency is recognised by the list above, or by the annotation below,
-    which does cross the boundary.
+*   How far it travels depends on whether the wait can be NAMED. A call on the
+    list above, or a function declared `+blocking`, is a statement about that
+    callee: it holds wherever the callee is called from, so it travels without
+    limit, and a caller two packages away from the declaration is still
+    reported. A wait inferred from a bare channel operation travels only as far
+    as this analysis can see the whole picture: within the package, and within
+    the module when the analyser was given packages to work on.
+*   That distinction is what keeps a dependency's internals out. The standard
+    library is full of channel receives no caller can see or avoid — formatting
+    a string reaches one a few layers down — and carrying those out of the
+    package they occur in makes every function that logs a line blocking. On one
+    real code base the difference is 23 diagnostics against 453.
+*   Both modes agree on what they report about a NAMED wait, which matters
+    because a `go vet` driven with a file list rather than with packages has no
+    module to compare against: the unit is `command-line-arguments` and belongs
+    to nothing. Only the inferred waits are narrowed there, to the package.
 *   A wait reached only through an interface, or through a function-valued
     field, has no callee to consult. `+blocking` on the implementation is the
     answer, as it is for `checklocks`.

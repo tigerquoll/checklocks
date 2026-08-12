@@ -35,7 +35,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		// A function declared to block is a sink whatever its body does, which is how a
 		// wait this analysis cannot see through is named: one reached by an indirect call,
 		// or one inside a dependency that is not analyzed.
-		summary.addBlocking(nil)
+		summary.addBlocking(nil, true /* named */)
 	}
 	if fn.Blocks == nil {
 		return
@@ -234,7 +234,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// enough to recognise a client library's round trip.
 	name, isSink := blockingCallee(call, callee)
 	if isSink {
-		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", cur.held(), cur.releasedClasses(), summary, report)
+		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", cur.held(), cur.releasedClasses(), true /* named */, summary, report)
 	}
 
 	// Any other call contributes the classes its callee may acquire. A call into a
@@ -271,7 +271,12 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	released := cur.releasedClasses()
 	// A sink on the list has been reported already; its own summary is very likely to say
 	// it blocks as well, and saying so twice at one call site is noise.
-	if cs.Blocking && !isSink && (pc.blockingInScope(obj) || pc.annotatedBlocking(obj)) {
+	//
+	// A wait the callee's summary NAMES travels however far the callee is: it is a
+	// statement about that function. One the callee only inferred from a channel operation
+	// travels as far as this analysis can see the whole picture, which is what
+	// blockingInScope decides.
+	if cs.Blocking && !isSink && (cs.BlockingNamed || pc.blockingInScope(obj)) {
 		// The callee released these before it waits, so they are not held across the wait,
 		// the same subtraction the acquisitions get.
 		reached := released
@@ -279,7 +284,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 			reached = unionClasses(released, cs.BlockingReleased)
 		}
 		pc.noteBlocking(call.Pos(), "calling "+displayName(callee)+", which may block",
-			subtractClasses(cur.held(), cs.BlockingReleased), reached, summary, report)
+			subtractClasses(cur.held(), cs.BlockingReleased), reached, cs.BlockingNamed, summary, report)
 	}
 	for _, a := range cs.Acquires {
 		// The callee dropped these before it acquired, so they are not held across the
@@ -395,8 +400,8 @@ func (pc *lockOrderContext) annotatedBlocking(obj *types.Func) bool {
 //
 // The record goes into the summary whichever analyzer is walking, so that the bit and the
 // classes released by then travel to the callers of this function in one summary.
-func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, heldClasses, released []string, summary *summaryFact, report bool) {
-	summary.addBlocking(released)
+func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, heldClasses, released []string, named bool, summary *summaryFact, report bool) {
+	summary.addBlocking(released, named)
 	if !report || pc.check != checkBlocking || len(heldClasses) == 0 {
 		return
 	}
@@ -427,7 +432,9 @@ func (pc *lockOrderContext) visitChannelOp(instr ssa.Instruction, cur *classSet,
 	default:
 		return
 	}
-	pc.noteBlocking(instr.Pos(), what, cur.held(), cur.releasedClasses(), summary, report)
+	// A channel operation is a wait this analysis inferred rather than one it can name, so
+	// it does not travel out of the package it occurs in unless the module says otherwise.
+	pc.noteBlocking(instr.Pos(), what, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
 }
 
 // analyzePackage computes the summaries of the package's functions to a fixpoint and then
