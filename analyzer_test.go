@@ -26,6 +26,29 @@ import (
 // corpus is the directory holding the packages the analyzer is run over.
 const corpus = "test"
 
+// expandToFiles replaces the package patterns in a command line with the
+// source files of those packages, which is what turns a package run into a
+// file list run.
+func expandToFiles(t *testing.T, args []string) []string {
+	t.Helper()
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			out = append(out, arg)
+			continue
+		}
+		listed, err := exec.Command("go", "list", "-f",
+			"{{$dir := .Dir}}{{range .GoFiles}}{{$dir}}/{{.}}\n{{end}}", arg).Output()
+		if err != nil {
+			t.Fatalf("listing the files of %s failed: %v", arg, err)
+		}
+		for _, file := range strings.Fields(string(listed)) {
+			out = append(out, file)
+		}
+	}
+	return out
+}
+
 // readCorpus reads every source file in the corpus and returns the number
 // read.
 //
@@ -67,6 +90,14 @@ func readCorpus(t *testing.T) int {
 var analyzerCases = []struct {
 	name string
 	args []string
+
+	// fileList runs the case over the FILES of the named packages rather
+	// than over the packages. That is how a Makefile drives a vet tool
+	// when it wants to choose which files are checked, and it is a
+	// different unit as far as go vet is concerned: the package under
+	// analysis is "command-line-arguments" and it belongs to no module.
+	// An analysis that consults either must behave the same way in both.
+	fileList bool
 }{
 	{
 		name: "checklocks",
@@ -97,6 +128,17 @@ var analyzerCases = []struct {
 		// builds the summaries this reports against.
 		name: "lockblocking",
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/lockblocking"},
+	},
+	{
+		// The same corpus over a file list, which is one package at a
+		// time: go vet takes files from a single directory. What may
+		// cross a package boundary is decided per callee, and a declared
+		// wait must cross it whichever way the analyser was driven;
+		// before that was so, this run reported the cross-package
+		// expectations as unmet while the run above was green.
+		name:     "lockblocking-filelist",
+		args:     []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/lockblocking"},
+		fileList: true,
 	},
 	{
 		// Annotations on function literals.
@@ -143,7 +185,11 @@ func TestAnalyzer(t *testing.T) {
 
 	for _, tc := range analyzerCases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"vet", "-vettool=" + bin}, tc.args...)
+			tcArgs := tc.args
+			if tc.fileList {
+				tcArgs = expandToFiles(t, tcArgs)
+			}
+			args := append([]string{"vet", "-vettool=" + bin}, tcArgs...)
 			// N.B. go vet exits non-zero whenever diagnostics are
 			// reported, so the error is not itself interesting;
 			// the output is.

@@ -24,6 +24,8 @@ import (
 	"os/user"
 	"sync"
 	"time"
+
+	"github.com/tigerquoll/checklocks/test/lockblocking/dep"
 )
 
 // App carries a classed lock, so holding it is what a diagnostic names.
@@ -284,6 +286,40 @@ func annotatedSinkUnderLock(a *App) {
 	a.Lock()
 	resolve("someone") // +lockblockingfail=which may block
 	a.Unlock()
+}
+
+// --- across a package boundary ---------------------------------------------------------
+
+// A wait the analysis can NAME is a statement about the callee, so it holds wherever the
+// callee is called from and crosses the package boundary with it.
+func reachesADeclaredWaitAcrossAPackage(a *App) {
+	a.Lock()
+	dep.Lookup("someone") // +lockblockingfail=which may block
+	a.Unlock()
+}
+
+// The callee itself carries the declaration here, which is the shorter version of the same
+// thing.
+func callsADeclaredWaitAcrossAPackage(a *App) {
+	a.Lock()
+	dep.Resolve("someone") // +lockblockingfail=which may block
+	a.Unlock()
+}
+
+func reachesADeclaredWaitWithNothingHeld() {
+	dep.Lookup("someone")
+}
+
+// A select with a default does not wait, in another package as much as in this one.
+func callsANonBlockingDependency(a *App, c chan int) {
+	a.Lock()
+	dep.Sleeper(c)
+	a.Unlock()
+}
+
+// Not called under a lock: see the comment on dep.Drain.
+func callsAnInferredWaitWithNothingHeld(c chan int) {
+	dep.Drain(c)
 }
 
 func lineIgnoreSuppresses(a *App, c chan int) {

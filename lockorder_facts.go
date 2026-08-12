@@ -113,6 +113,16 @@ type summaryFact struct {
 	// acquisition.ReleasedBefore and intersected over every sink it may reach. It is only
 	// meaningful when Blocking is set.
 	BlockingReleased []string
+
+	// BlockingNamed reports that at least one of the sinks the function may reach is a
+	// NAMED one: a call on the built-in list, or a function declared with +blocking.
+	//
+	// A named wait is a statement about the callee that holds wherever it is called from,
+	// so it crosses a package boundary. A wait inferred from a bare channel operation does
+	// not: the standard library is full of channel receives that no caller can see or
+	// avoid, and carrying those out of the package they occur in makes every function that
+	// formats a string blocking.
+	BlockingNamed bool
 }
 
 func (*summaryFact) AFact() {}
@@ -137,6 +147,9 @@ func (f *summaryFact) String() string {
 	}
 	if f.Blocking {
 		s += " blocking"
+		if f.BlockingNamed {
+			s += "(named)"
+		}
 		if len(f.BlockingReleased) > 0 {
 			s += "(releases:" + strings.Join(f.BlockingReleased, "+") + ")"
 		}
@@ -194,7 +207,7 @@ func (f *summaryFact) merge(other *summaryFact) bool {
 			changed = true
 		}
 	}
-	if other.Blocking && f.addBlocking(other.BlockingReleased) {
+	if other.Blocking && f.addBlocking(other.BlockingReleased, other.BlockingNamed) {
 		changed = true
 	}
 	return changed
@@ -204,7 +217,15 @@ func (f *summaryFact) merge(other *summaryFact) bool {
 // INTERSECTION of what had been released at each of them, for the reason addAcquire keeps
 // it: a sink reachable with the caller's lock still held is not excused by another sink
 // that is reached after releasing it.
-func (f *summaryFact) addBlocking(releasedBefore []string) bool {
+//
+// named says the sink is one this analysis can name, which travels further than one it only
+// inferred; a function that reaches both is named, since one of the waits it reaches is.
+func (f *summaryFact) addBlocking(releasedBefore []string, named bool) bool {
+	changed := false
+	if named && !f.BlockingNamed {
+		f.BlockingNamed = true
+		changed = true
+	}
 	if !f.Blocking {
 		f.Blocking = true
 		f.BlockingReleased = append([]string(nil), releasedBefore...)
@@ -212,7 +233,7 @@ func (f *summaryFact) addBlocking(releasedBefore []string) bool {
 	}
 	kept := intersectClasses(f.BlockingReleased, releasedBefore)
 	if equalClasses(kept, f.BlockingReleased) {
-		return false
+		return changed
 	}
 	f.BlockingReleased = kept
 	return true
@@ -225,6 +246,9 @@ func (f *summaryFact) addBlocking(releasedBefore []string) bool {
 // changing how much is in it.
 func (f *summaryFact) equal(other *summaryFact) bool {
 	if len(f.Acquires) != len(other.Acquires) || len(f.Pairs) != len(other.Pairs) || f.Blocking != other.Blocking {
+		return false
+	}
+	if f.BlockingNamed != other.BlockingNamed {
 		return false
 	}
 	if !equalClasses(f.BlockingReleased, other.BlockingReleased) {

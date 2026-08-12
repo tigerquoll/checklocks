@@ -84,25 +84,58 @@ func TestBlockingFuncNames(t *testing.T) {
 // held is not excused by another sink that is reached after releasing it.
 func TestBlockingReleasedIntersectsOnMerge(t *testing.T) {
 	f := &summaryFact{}
-	if !f.addBlocking([]string{"Context", "Task"}) {
+	if !f.addBlocking([]string{"Context", "Task"}, false) {
 		t.Error("the first sink is a change")
 	}
 	if !f.Blocking {
 		t.Fatal("the bit must be set")
 	}
-	if f.addBlocking([]string{"Context", "Task"}) {
+	if f.addBlocking([]string{"Context", "Task"}, false) {
 		t.Error("the same sink again is not a change")
 	}
-	if !f.addBlocking([]string{"Task"}) {
+	if !f.addBlocking([]string{"Task"}, false) {
 		t.Error("narrowing the released set is a change")
 	}
 	if got, want := f.BlockingReleased, []string{"Task"}; !equalClasses(got, want) {
 		t.Errorf("BlockingReleased = %v, want %v", got, want)
 	}
-	if !f.addBlocking(nil) {
+	if !f.addBlocking(nil, false) {
 		t.Error("a sink reached with nothing released empties the set")
 	}
 	if len(f.BlockingReleased) != 0 {
 		t.Errorf("BlockingReleased = %v, want empty", f.BlockingReleased)
+	}
+}
+
+// TestBlockingNamedSticks pins the reason a function blocks. A named wait is a statement
+// about the callee that holds wherever it is called from, so it must survive being merged
+// with an inferred one, and a function that reaches both is named.
+func TestBlockingNamedSticks(t *testing.T) {
+	f := &summaryFact{}
+	f.addBlocking(nil, false)
+	if f.BlockingNamed {
+		t.Error("a channel operation does not name a wait")
+	}
+	if !f.addBlocking(nil, true) {
+		t.Error("learning that a named wait is reachable is a change")
+	}
+	if !f.BlockingNamed {
+		t.Error("a named wait must be recorded as named")
+	}
+	if f.addBlocking(nil, false) {
+		t.Error("an inferred wait after a named one changes nothing")
+	}
+	if !f.BlockingNamed {
+		t.Error("an inferred wait must not unname a named one")
+	}
+
+	// The bit survives a merge in both directions, since the fixpoint seeds a summary
+	// from the previous round and folds the callees into it.
+	g := &summaryFact{}
+	if !g.merge(f) {
+		t.Error("merging a named blocking summary is a change")
+	}
+	if !g.Blocking || !g.BlockingNamed {
+		t.Errorf("merge lost the blocking state: %s", g)
 	}
 }
