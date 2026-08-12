@@ -69,6 +69,7 @@ go vet -vettool=$HOME/go/bin/checklocks ./...
 | `checklocks` | lock and atomic constraints, from annotations on fields and functions |
 | `lockstringer` | lock hazards in lazily evaluated methods such as `String` |
 | `lockorder` | acquisition order between declared lock classes |
+| `lockblocking` | waiting while a lock class is held |
 
 Each may be turned off by name, which is how a project adopts one at a time:
 
@@ -568,6 +569,87 @@ type as the parent link when nothing is annotated, which is convenient on a code
 base that has not annotated yet, but a self-typed field is not necessarily a
 parent link.
 
+## lockblocking
+
+A lock held across a wait is not a deadlock and breaks no ordering rule, so
+neither `lockorder` nor a runtime cycle detector has anything to say about it.
+What it does is bound the time every other user of that lock waits by the time
+the wait takes, which for a round trip to another process is unbounded: if the
+far side never answers, the lock is never released and the system stops.
+
+`lockblocking` reports reaching a wait while a declared lock class is held. It
+uses the classes `lockorder` declares, and it does not use the order: the
+question is whether a lock is held, not which one.
+
+```go
+// +lockclass:App
+type app struct{ mu sync.Mutex }
+
+func (a *app) release(c chan result) {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    a.notify(c)
+    <-c                          // reported: a channel receive while holding App
+}
+```
+
+### What counts as a wait
+
+A list, not an inference:
+
+*   a channel send or receive, and a `select` **without** a default case,
+*   `time.Sleep`, `sync.WaitGroup.Wait`, `sync.Cond.Wait`,
+*   `net/http` round trips: the `http.Client` methods, the package level
+    helpers and `RoundTrip`,
+*   `os/user` lookups, which go through the name service switch and from there
+    to whatever directory it is configured against,
+*   the kubernetes client calls that talk to the API server: the verbs of the
+    generated clients in `k8s.io/client-go/kubernetes` and the REST client
+    underneath them.
+
+A `select` WITH a default never waits, and the distinction is taken from the
+SSA form rather than guessed at from the syntax. That is what makes the
+non-blocking dispatch idiom usable under a lock, and reporting it would condemn
+the very shape that makes dispatching safe:
+
+```go
+select {
+case events <- e:            // not reported
+default:
+    go retry(e)
+}
+```
+
+The kubernetes listers are deliberately not on the list. A lister reads the
+informer's local store and does no I/O, so reporting one would condemn every
+cache lookup under a lock in a code base built on informers.
+
+Taking a lock is not on the list either. Every acquisition waits in principle,
+so including them would report all nesting and say nothing; that nesting is
+`lockorder`'s subject, with a declared order to judge it by.
+
+### Scope
+
+*   The bit travels through the summaries `lockorder` builds, so a wait three
+    of your own calls away is found.
+*   It does not travel out of a dependency. The standard library is full of
+    channel receives no caller can see or avoid, and carrying the bit out of it
+    would make every function that formats a string blocking. Waiting inside a
+    dependency is recognised by the list above, or by the annotation below,
+    which does cross the boundary.
+*   A wait reached only through an interface, or through a function-valued
+    field, has no callee to consult. `+blocking` on the implementation is the
+    answer, as it is for `checklocks`.
+
+### Annotations
+
+*   `+blocking`: on a function, declares that it waits. Use it for a wait this
+    analysis cannot see: behind an indirect call, or inside a dependency.
+*   `+lockblockingignore`: on a function, drops every diagnostic in its body
+    and at its call sites; on a line, drops the diagnostics on that line.
+*   `+lockblockingfail`: states that a line must be reported, for the test
+    corpus, exactly as `+checklocksfail` does for `checklocks`.
+
 ## Development
 
 ```sh
@@ -576,11 +658,14 @@ go test ./...
 ```
 
 `go test` builds the vettool and runs each analyzer over its own corpus:
-`test/` for `checklocks`, `test/lockstringer/` for `lockstringer`. The corpora
-are self-checking: a case that must be reported carries `+checklocksfail` or
-`+lockstringerfail`, and the analyzer reports a missing expected failure when
-an annotated line produces none. Any output at all fails the test, so both
-unexpected diagnostics and expectations that stopped holding are caught.
+`test/` for `checklocks`, `test/lockstringer/` for `lockstringer`,
+`test/lockorder/` and `test/lockhier/` for `lockorder`, and
+`test/lockblocking/` for `lockblocking`.
+The corpora are self-checking: a case that must be reported carries
+`+checklocksfail` or the analyzer's own equivalent, and the analyzer reports a
+missing expected failure when an annotated line produces none. Any output at
+all fails the test, so both unexpected diagnostics and expectations that
+stopped holding are caught.
 
 Each analyzer is run over its corpus with the others disabled. Most cases are
 violations in more than one analyzer's terms, and an expectation can only be

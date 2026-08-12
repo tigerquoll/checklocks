@@ -88,13 +88,21 @@ var analyzerCases = []struct {
 		// carry checklocks ignores, as the wrappers in a real code base
 		// do, so the guard analysis stays quiet either way.
 		name: "lockorder",
-		args: []string{"-checklocks=false", "-lockstringer=false", "./test/lockorder"},
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "./test/lockorder"},
+	},
+	{
+		// The corpus declares classes but no order: this analysis asks
+		// only whether one is held, so an order would say nothing about
+		// it. lockorder is disabled and still runs, which is what
+		// builds the summaries this reports against.
+		name: "lockblocking",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/lockblocking"},
 	},
 	{
 		// The hierarchical direction check is off by default, so its
 		// corpus is the one place it is turned on.
 		name: "lockhier",
-		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder.hierarchy=true", "./test/lockhier"},
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "-lockorder.hierarchy=true", "./test/lockhier"},
 	},
 }
 

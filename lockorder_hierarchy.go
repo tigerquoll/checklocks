@@ -235,7 +235,9 @@ func (is *instanceSet) merge(other *instanceSet) {
 // checkHierarchy reports an acquisition that runs up the hierarchy while a lower instance is
 // held.
 func (pc *lockOrderContext) checkHierarchy(pos token.Pos, acquired ssa.Value, class, via string, is *instanceSet, report bool) {
-	if !enableHierarchy || !report || acquired == nil {
+	// The walk is shared with the blocking analyzer, which asks its own question of it;
+	// the direction of a nesting is this analyzer's to report on.
+	if !enableHierarchy || !report || pc.check != checkOrder || acquired == nil {
 		return
 	}
 	if !pc.order.hierarchical[class] {

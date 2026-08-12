@@ -66,6 +66,20 @@ var LockOrderAnalyzer = &analysis.Analyzer{
 	},
 }
 
+// checkKind is the question the shared walk is asked to report on.
+//
+// The walk, the lock set and the summaries are the same for both analyzers built on them;
+// what differs is which finding is a diagnostic and which is only recorded.
+type checkKind int
+
+const (
+	// checkOrder reports an acquisition that breaks the declared order.
+	checkOrder checkKind = iota
+
+	// checkBlocking reports reaching a blocking sink while a class is held.
+	checkBlocking
+)
+
 // lockOrderContext carries the per pass state.
 //
 // The expectation machinery is shared with the other analyzers in this package, so a corpus
@@ -77,6 +91,9 @@ type lockOrderContext struct {
 	// order is the taxonomy, assembled from the declarations of this package and the
 	// order facts of its dependencies.
 	order *order
+
+	// check is the analyzer the walk is reporting for.
+	check checkKind
 }
 
 // run is the main entrypoint.
@@ -85,6 +102,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 		expectations: newExpectations(pass, lockOrderAnnotations, true /* reportInvalidPos */),
 		pass:         pass,
 		order:        newOrder(),
+		check:        checkOrder,
 	}
 	pc.extractLineFailures()
 
@@ -241,7 +259,8 @@ func (pc *lockOrderContext) classFromDoc(ts *ast.TypeSpec, doc *ast.CommentGroup
 	}
 }
 
-// loadFunctionAnnotations records the function level annotations of this analyzer.
+// loadFunctionAnnotations records the function level annotations of the analyses built on
+// this summary, so that a call site in another package sees them.
 func (pc *lockOrderContext) loadFunctionAnnotations() {
 	for _, f := range pc.pass.Files {
 		for _, decl := range f.Decls {
@@ -252,10 +271,12 @@ func (pc *lockOrderContext) loadFunctionAnnotations() {
 			var ff funcFact
 			for _, c := range fd.Doc.List {
 				extractAnnotations(c.Text, map[string]func(string){
-					lockOrderIgnore: func(string) { ff.Ignore = true },
+					lockOrderIgnore:    func(string) { ff.Ignore = true },
+					blockingAnnotation: func(string) { ff.Blocking = true },
+					lockBlockingIgnore: func(string) { ff.BlockingIgnore = true },
 				})
 			}
-			if !ff.Ignore {
+			if !ff.Ignore && !ff.Blocking && !ff.BlockingIgnore {
 				continue
 			}
 			if obj, ok := pc.pass.TypesInfo.Defs[fd.Name].(*types.Func); ok {

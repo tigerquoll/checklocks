@@ -18,6 +18,7 @@ import (
 	"go/token"
 	"go/types"
 	"slices"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -30,6 +31,12 @@ import (
 // the outer fixpoint rather than by iterating here: a summary that grows re-runs the
 // function, so a class acquired on the second time round a loop is still seen.
 func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFact, report bool) {
+	if obj := funcObject(fn); obj != nil && pc.annotatedBlocking(obj) {
+		// A function declared to block is a sink whatever its body does, which is how a
+		// wait this analysis cannot see through is named: one reached by an indirect call,
+		// or one inside a dependency that is not analyzed.
+		summary.addBlocking(nil)
+	}
 	if fn.Blocks == nil {
 		return
 	}
@@ -74,6 +81,8 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 				// reporting it would punish exactly that fix.
 			case ssa.CallInstruction:
 				pc.visitCall(fn, t, cur, curInst, summary, report && !ignored)
+			default:
+				pc.visitChannelOp(instr, cur, summary, report && !ignored)
 			}
 		}
 		// A deferred call runs when the function RETURNS, not at the end of the block it
@@ -220,6 +229,14 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		}
 	}
 
+	// A call to a known sink. This is checked before the summaries, since a sink reached
+	// by interface dispatch has no callee to consult: the method the interface declares is
+	// enough to recognise a client library's round trip.
+	name, isSink := blockingCallee(call, callee)
+	if isSink {
+		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", cur.held(), cur.releasedClasses(), summary, report)
+	}
+
 	// Any other call contributes the classes its callee may acquire. A call into a
 	// function this analysis has no summary for contributes nothing, which is the
 	// documented unsoundness of a modular analysis.
@@ -252,6 +269,18 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		onReceiver = isReceiver(fn, recv)
 	}
 	released := cur.releasedClasses()
+	// A sink on the list has been reported already; its own summary is very likely to say
+	// it blocks as well, and saying so twice at one call site is noise.
+	if cs.Blocking && !isSink && (pc.blockingInScope(obj) || pc.annotatedBlocking(obj)) {
+		// The callee released these before it waits, so they are not held across the wait,
+		// the same subtraction the acquisitions get.
+		reached := released
+		if onReceiver {
+			reached = unionClasses(released, cs.BlockingReleased)
+		}
+		pc.noteBlocking(call.Pos(), "calling "+displayName(callee)+", which may block",
+			subtractClasses(cur.held(), cs.BlockingReleased), reached, summary, report)
+	}
 	for _, a := range cs.Acquires {
 		// The callee dropped these before it acquired, so they are not held across the
 		// acquisition however it looks from here: the unlock-relock gap.
@@ -268,10 +297,14 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, heldClasses []string, summary *summaryFact, report bool) {
 	for _, held := range heldClasses {
 		summary.addPair(held, acquired)
+	}
+	// The walk is shared with the blocking analyzer, which builds the same summaries and
+	// asks its own question; the order is this analyzer's to report on.
+	if !report || pc.check != checkOrder {
+		return
+	}
+	for _, held := range heldClasses {
 		if !pc.order.violates(held, acquired) {
-			continue
-		}
-		if !report {
 			continue
 		}
 		if held == acquired {
@@ -308,13 +341,93 @@ func (pc *lockOrderContext) functionIgnored(fn *ssa.Function) bool {
 	return pc.calleeIgnored(obj)
 }
 
-// calleeIgnored reports whether a function carries the ignore annotation.
+// calleeIgnored reports whether a function carries the ignore annotation of the analyzer
+// the walk is running for. Each analyzer has its own: silencing an ordering report is not a
+// statement about waiting under a lock, or the other way round.
 func (pc *lockOrderContext) calleeIgnored(obj *types.Func) bool {
 	var ff funcFact
 	if !pc.pass.ImportObjectFact(obj, &ff) {
 		return false
 	}
+	if pc.check == checkBlocking {
+		return ff.BlockingIgnore
+	}
 	return ff.Ignore
+}
+
+// blockingInScope reports whether a callee's summary may contribute its blocking bit here.
+//
+// Waiting inside a dependency is recognised by the sink list, not by walking into it. The
+// standard library is full of channel receives that no caller can see or avoid: formatting
+// a string reaches one a few layers down, so carrying the bit out of it would make every
+// function that logs a line or builds an error blocking, and an analysis that reports
+// everything reports nothing. Within the module being analyzed the opposite holds, and
+// reaching a wait through three of its own functions is exactly what this is for.
+//
+// A function that carries the annotation is exempt from this, wherever it lives: saying a
+// function blocks is a deliberate statement about it, not an observation of its body.
+func (pc *lockOrderContext) blockingInScope(obj *types.Func) bool {
+	pkg := obj.Pkg()
+	if pkg == nil {
+		return false
+	}
+	if pkg == pc.pass.Pkg {
+		return true
+	}
+	if pc.pass.Module == nil || pc.pass.Module.Path == "" {
+		return false
+	}
+	path := pkg.Path()
+	return path == pc.pass.Module.Path || strings.HasPrefix(path, pc.pass.Module.Path+"/")
+}
+
+// annotatedBlocking reports whether a function is declared to block.
+func (pc *lockOrderContext) annotatedBlocking(obj *types.Func) bool {
+	var ff funcFact
+	if !pc.pass.ImportObjectFact(obj, &ff) {
+		return false
+	}
+	return ff.Blocking
+}
+
+// noteBlocking records that the function may wait here, and reports if a lock is held while
+// it does.
+//
+// The record goes into the summary whichever analyzer is walking, so that the bit and the
+// classes released by then travel to the callers of this function in one summary.
+func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, heldClasses, released []string, summary *summaryFact, report bool) {
+	summary.addBlocking(released)
+	if !report || pc.check != checkBlocking || len(heldClasses) == 0 {
+		return
+	}
+	pc.maybeFail(pos, "%s while holding %s: a wait under a lock stalls every other user of it",
+		what, strings.Join(heldClasses, ", "))
+}
+
+// visitChannelOp handles the channel operations, which are instructions rather than calls.
+//
+// A send or a receive waits for the other side. A select waits too, unless it has a default
+// case, which is what makes the non blocking dispatch idiom safe under a lock; the SSA form
+// records exactly that distinction, so it does not have to be inferred from the syntax.
+func (pc *lockOrderContext) visitChannelOp(instr ssa.Instruction, cur *classSet, summary *summaryFact, report bool) {
+	var what string
+	switch t := instr.(type) {
+	case *ssa.Send:
+		what = "a channel send"
+	case *ssa.UnOp:
+		if t.Op != token.ARROW {
+			return
+		}
+		what = "a channel receive"
+	case *ssa.Select:
+		if !t.Blocking {
+			return
+		}
+		what = "a select with no default case"
+	default:
+		return
+	}
+	pc.noteBlocking(instr.Pos(), what, cur.held(), cur.releasedClasses(), summary, report)
 }
 
 // analyzePackage computes the summaries of the package's functions to a fixpoint and then
