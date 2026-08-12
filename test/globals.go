@@ -52,6 +52,15 @@ var guardedGlobalTrailing int // +checklocks:globalMu
 // +checklocks:globalMu
 var guardedGlobalFirst, guardedGlobalSecond int
 
+// Documentation on a parenthesized declaration applies to every specification
+// within it, as it does for a parenthesized type declaration.
+//
+// +checklocks:globalMu
+var (
+	guardedGlobalBlockOne int
+	guardedGlobalBlockTwo int
+)
+
 // ptrGuarded is used via a pointer-typed global below. Such a variable holds a
 // reference, and must be loaded before the lock is resolved.
 type ptrGuarded struct {
@@ -138,6 +147,8 @@ func testGuardedGlobalValid() {
 	guardedGlobalTrailing = 1
 	guardedGlobalFirst = 1
 	guardedGlobalSecond = 1
+	guardedGlobalBlockOne = 1
+	guardedGlobalBlockTwo = 1
 	globalMu.Unlock()
 }
 
@@ -146,6 +157,8 @@ func testGuardedGlobalInvalid() {
 	guardedGlobalTrailing = 1 // +checklocksfail
 	guardedGlobalFirst = 1    // +checklocksfail
 	guardedGlobalSecond = 1   // +checklocksfail
+	guardedGlobalBlockOne = 1 // +checklocksfail
+	guardedGlobalBlockTwo = 1 // +checklocksfail
 }
 
 func testGlobalPtrValid() {
