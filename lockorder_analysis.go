@@ -42,6 +42,10 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	// The set reaching each block, built up as the blocks are visited.
 	in := make([]*classSet, len(fn.Blocks))
 	in[0] = entry
+
+	// The calls deferred so far. A defer is registered when it is reached and runs at the
+	// return, so the list accumulates across the blocks on the way there.
+	var deferred []ssa.CallInstruction
 	for _, b := range fn.Blocks {
 		cur := in[b.Index]
 		if cur == nil {
@@ -50,10 +54,6 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 			cur = newClassSet()
 		}
 		cur = cur.fork()
-
-		// A deferred call runs when the function exits, so it is evaluated against the
-		// set that holds at the end of the block rather than where it was written.
-		var deferred []ssa.CallInstruction
 
 		for _, instr := range b.Instrs {
 			switch t := instr.(type) {
@@ -68,8 +68,20 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 				pc.visitCall(fn, t, cur, summary, report && !ignored)
 			}
 		}
-		for _, d := range deferred {
-			pc.visitCall(fn, d, cur, summary, report && !ignored)
+		// A deferred call runs when the function RETURNS, not at the end of the block it
+		// was written in, so it is evaluated at the return against the set held there.
+		// Evaluating it where it was written would drop the lock for the rest of the
+		// function, which silently disarms the check for the whole "Lock then defer
+		// Unlock" idiom.
+		//
+		// The order matters too: defers run in reverse registration order, so a
+		// notification deferred BEFORE the lock is taken runs after the deferred unlock,
+		// which is the idiom for notifying listeners safely.
+		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn {
+			exit := cur.fork()
+			for i := len(deferred) - 1; i >= 0; i-- {
+				pc.visitCall(fn, deferred[i], exit, summary, report && !ignored)
+			}
 		}
 
 		// Propagate to the successors.

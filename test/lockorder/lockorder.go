@@ -267,10 +267,42 @@ func goClosureEscapeIsSilent(a *App, p *Partition) {
 
 // --- defer runs at exit, with whatever is held then ---------------------------------------
 
+// The unlock is deferred first, so it runs LAST: the deferred call below it runs with the
+// application lock still held, and is a violation.
 func deferIsCheckedAtExit(a *App, p *Partition) {
+	defer a.Unlock()
 	a.Lock()
 	defer takesThePartition(p) // +lockorderfail=acquiring Partition
+}
+
+// A notification deferred BEFORE the lock is taken runs after the deferred unlock, because
+// defers run in reverse order. That is the idiom for notifying listeners safely, and it must
+// not be reported.
+func deferBeforeLockRunsUnlocked(a *App, p *Partition) {
+	defer takesThePartition(p)
+	a.Lock()
 	defer a.Unlock()
+}
+
+// The lock is held with a deferred unlock and the violation is in a loop, so it is in a
+// later block than the acquisition. A defer evaluated where it was written rather than at
+// the return would drop the class here and silently disarm the check for the whole
+// "Lock then defer Unlock" idiom, which is most of the locking in real code.
+func deferredUnlockHoldsAcrossBlocks(a *App, parts []*Partition) {
+	a.Lock()
+	defer a.Unlock()
+	for _, p := range parts {
+		takesThePartition(p) // +lockorderfail=acquiring Partition
+	}
+}
+
+// The same shape with a branch rather than a loop.
+func deferredUnlockHoldsAcrossBranch(a *App, p *Partition, cond bool) {
+	a.Lock()
+	defer a.Unlock()
+	if cond {
+		takesThePartition(p) // +lockorderfail=acquiring Partition
+	}
 }
 
 // --- suppression -------------------------------------------------------------------------
