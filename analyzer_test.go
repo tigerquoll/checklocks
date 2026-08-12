@@ -99,6 +99,12 @@ var analyzerCases = []struct {
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/lockblocking"},
 	},
 	{
+		// Declared lock primitives. The wrappers carry no ignore, which
+		// is what restores the call site checks.
+		name: "locktype",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/locktype"},
+	},
+	{
 		// The hierarchical direction check is off by default, so its
 		// corpus is the one place it is turned on.
 		name: "lockhier",

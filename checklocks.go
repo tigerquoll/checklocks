@@ -46,6 +46,7 @@ var Analyzer = &analysis.Analyzer{
 		(*atomicAlignment)(nil),
 		(*globalAccessorFacts)(nil),
 		(*lockGuardFacts)(nil),
+		(*lockPrimitiveFacts)(nil),
 		(*lockFunctionFacts)(nil),
 		(*lockTypeFacts)(nil),
 	},
@@ -164,6 +165,7 @@ func run(pass *analysis.Pass) (any, error) {
 			pc.structLockGuardFacts(structType, ss)
 		}
 		pc.typeAliasFacts(ts, decl)
+		pc.lockPrimitiveTypeFacts(ts, decl)
 	})
 
 	// Check all alignments.
@@ -201,6 +203,16 @@ func run(pass *analysis.Pass) (any, error) {
 		if obj == nil {
 			continue
 		}
+		// The body of a lock primitive is the implementation of the
+		// lock, not a critical section: it takes a lock and does not
+		// release it, which is exactly what it is for. Analyzing it
+		// reports a balance error against the wrapper's author, and
+		// silencing that with an ignore would suppress the call site
+		// checks for every user of the lock.
+		if pc.isLockPrimitiveMethod(obj.(*types.Func)) {
+			continue
+		}
+
 		var lff lockFunctionFacts
 		pc.importLockFunctionFacts(obj.(*types.Func), &lff)
 

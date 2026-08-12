@@ -27,6 +27,7 @@ const (
 	checkLocksForce          = "// +checklocksforce"
 	checkLocksFail           = "// +checklocksfail"
 	checkLocksAlias          = "// +checklocksalias:"
+	checkLocksLockType       = "// +checklockslocktype"
 	checkAtomicAnnotation    = "// +checkatomic"
 )
 

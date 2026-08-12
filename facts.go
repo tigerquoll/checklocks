@@ -693,6 +693,15 @@ func (*lockKindRWMutex) isLockKind() {}
 // This function returns nil iff obj is not a supported lock and reports an
 // error at the given position.
 func (pc *passContext) lockKind(pos token.Pos, obj types.Object) lockKind {
+	// A declared lock primitive is whatever it declares itself to be. This
+	// is checked before the name, so that a wrapper is not classified by
+	// what it happens to be called.
+	if lpf, ok := pc.lockPrimitiveFor(obj.Type()); ok {
+		if lpf.Read {
+			return &lockKindRWMutex{}
+		}
+		return &lockKindMutex{}
+	}
 	// Check that it is indeed a mutex.
 	s := obj.Type().String()
 	switch {
