@@ -1,26 +1,67 @@
-# CheckLocks Analyzer
-
-<!--* freshness: { owner: 'gvisor-eng' reviewed: '2022-02-02' } *-->
+# checklocks
 
 Checklocks is an analyzer for lock and atomic constraints. The analyzer relies
 on explicit annotations to identify fields that should be checked for access.
 
-## Installation and Usage
+This is a standalone extraction of gVisor's `tools/checklocks`, which is not
+published as an importable Go module of its own. It is packaged here so that it
+can be installed and pinned like any other tool, with fixes applied that are
+still working their way upstream.
 
-The analyzer is integrated into the gVisor `nogo` framework. It automatically
-applies to all code in this repository.
+> **This is a temporary home.** The repository exists so the analyzer can be
+> consumed by Go module tooling, which requires a public repository. It may move
+> to a permanent home later, so avoid depending on this exact path in anything
+> that would be expensive to change. Fixes made here are intended for upstream.
 
-For external usage and to iterate quickly, it may be used as part of `go vet`.
-You can install the tool separately via:
+## Provenance
+
+Derived from [google/gvisor](https://github.com/google/gvisor) `tools/checklocks`
+at commit
+[`1919d96`](https://github.com/google/gvisor/commit/1919d9633a18b204f8ab29dbae3c3b90bc93f07d),
+Apache License 2.0. Original copyright headers are retained; see `NOTICE`.
+
+The base import is a single commit, and each fix is a separate commit on top, so
+`git log` shows exactly what diverges from upstream. The fixes are:
+
+| Fix | Upstream |
+| --- | --- |
+| Panic on cross-package use of unexported global guards | [google/gvisor#14078](https://github.com/google/gvisor/pull/14078), filed |
+| Pointer-typed global guards resolved through the pointer | [tigerquoll/gvisor#3](https://github.com/tigerquoll/gvisor/pull/3), pending |
+| Guard annotations on package-level variable declarations | [tigerquoll/gvisor#4](https://github.com/tigerquoll/gvisor/pull/4), pending |
+
+Everything else is unmodified apart from what standing alone requires: the
+analyzer package moved to the repository root, import paths were rewritten, and
+the bazel `BUILD` files were dropped.
+
+## Installation
 
 ```sh
-go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@go
+go install github.com/tigerquoll/checklocks/cmd/checklocks@latest
 ```
 
-And, if installed to the default path, run it via:
+## Usage
+
+The analyzer is a `go vet` tool. If installed to the default path:
 
 ```sh
 go vet -vettool=$HOME/go/bin/checklocks ./...
+```
+
+Flags are passed through `go vet` directly:
+
+*   `-inferred` (default true): suggest annotations for fields that are observed
+    to be accessed under a lock most of the time. The suggestions are based on
+    observation ratios and so are sensitive to unrelated nearby changes; a
+    project gating CI on the analyzer will generally want `-inferred=false` plus
+    deliberate annotation.
+*   `-atomic` (default true): enable the atomic access checks.
+*   `-wrappers` (default true): report diagnostics that have no source position.
+    These arise from synthetic wrapper functions and cannot be annotated or
+    suppressed in source, so `-wrappers=false` is usually wanted when the output
+    must be clean. gVisor excludes them by configuration for the same reason.
+
+```sh
+go vet -vettool=$HOME/go/bin/checklocks -inferred=false -wrappers=false ./...
 ```
 
 ## Annotations
@@ -313,3 +354,20 @@ It should be expected that this annotation is also rare. If the field is not
 protected by the mutex, it suggests that the critical section could be made
 smaller by restructuring the code or the structure instead of applying the
 ignore annotation.
+
+## Development
+
+```sh
+go build ./...
+go test ./...
+```
+
+`go test` builds the vettool and runs it over the packages in `test/`, which are
+a self-checking corpus: cases that must be reported carry `+checklocksfail`, and
+the analyzer reports a missing expected failure when an annotated line produces
+no diagnostic. Any output at all fails the test, so both unexpected diagnostics
+and expectations that stopped holding are caught.
+
+## License
+
+Apache License 2.0; see `LICENSE` and `NOTICE`.

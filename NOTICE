@@ -1,0 +1,9 @@
+This product contains code derived from gVisor (https://github.com/google/gvisor),
+tools/checklocks, Copyright Google LLC, licensed under the Apache License 2.0.
+
+The code was taken from google/gvisor at commit
+1919d9633a18b204f8ab29dbae3c3b90bc93f07d and is distributed here under the same
+license. Original copyright headers are retained on all derived files.
+
+Modifications made in this repository are recorded in the git history and
+summarised in README.md.
