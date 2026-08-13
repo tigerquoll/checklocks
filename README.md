@@ -239,6 +239,65 @@ initialiser and then returns the variable, is included.
 
 Like atomic access enforcement, checks may be elided on newly allocated objects.
 
+### Guarding a Whole Structure
+
+A structure whose fields are guarded by one lock can say so once, on the
+structure, instead of once per field:
+
+```go
+// +checklocks:mu
+type queue struct {
+    mu sync.Mutex
+
+    name  string
+    state int
+
+    // +checklocksunguarded
+    parent *queue // set at construction, read without the lock
+}
+```
+
+Every field is guarded by the named lock, except three: the lock itself and any
+other lock in the structure, since a lock is not data and putting one under
+another would declare an order between them; a field carrying its own
+`+checklocks`, which is more specific and wins; and a field carrying
+`+checklocksunguarded`.
+
+This is expansion, not analysis. Each field ends up with the guard a per-field
+annotation would have given it, so everything downstream — the access checks,
+and the analyses that derive preconditions and exclusions from field guards —
+cannot tell the difference. (This is gVisor issue #12648.)
+
+`+checklocksguardedby:mu` is the same expansion stated as the structure's rule
+rather than as shorthand. It differs in one way: a per-field `+checklocks:mu`
+inside such a structure is a restatement of the rule and is reported as
+redundant, so that the annotations the structure guard replaces do not survive
+it unnoticed.
+
+An exemption on a structure that declares no guard is reported: there is nothing
+to opt out of, so either the guard was removed and the field is now unprotected,
+or the annotation was never true.
+
+#### Why opting out is safer than opting in
+
+The two directions fail differently, and only one of them fails loudly.
+
+|  | forgotten annotation | what happens |
+| --- | --- | --- |
+| per-field guards (opt in) | a guarded field with no `+checklocks` | **silence** — the field is checked nowhere, and the omission looks exactly like a field that is deliberately lock-free |
+| structure guard (opt out) | a lock-free field with no `+checklocksunguarded` | **a report at every unlocked access** — a false positive, which looks like one and is fixed by writing the exemption |
+
+Measured on a real scheduler: adding a new field to a structure and writing to
+it without the lock is reported when the structure carries the guard, and is
+silent when its fields carry them one by one. The second is the state that
+annotation drift produces, and it produces it quietly.
+
+The scoping is the structure, and only the structure. A guard on a field means
+"this field", as it always has, so it cannot also mean "and the ones after it":
+a banner over a run of fields would have to guess where the run ends, and the
+boundary would move when someone added a field or a comment. An exemption says
+which fields are outside the rule, in the one place a reader looks for it.
+
 ### Function Annotations
 
 The `+checklocks` annotation may apply to functions. For example:

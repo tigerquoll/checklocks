@@ -162,14 +162,25 @@ func run(pass *analysis.Pass) (any, error) {
 	pc.forAllGlobals(func(vs *ast.ValueSpec, decl *ast.GenDecl) {
 		if ss, ok := vs.Type.(*ast.StructType); ok {
 			structType := pc.pass.TypesInfo.TypeOf(vs.Type).Underlying().(*types.Struct)
-			pc.structLockGuardFacts(structType, ss)
+			docs := []*ast.CommentGroup{vs.Doc}
+			if len(decl.Specs) == 1 {
+				docs = append(docs, decl.Doc)
+			}
+			pc.structLockGuardFacts(structType, ss, docs...)
 		}
 		pc.globalLockGuardFacts(vs, decl)
 	})
 	pc.forAllTypes(func(ts *ast.TypeSpec, decl *ast.GenDecl) {
 		if ss, ok := ts.Type.(*ast.StructType); ok {
 			structType := pc.pass.TypesInfo.TypeOf(ts.Name).Underlying().(*types.Struct)
-			pc.structLockGuardFacts(structType, ss)
+			// A single type declaration attaches its documentation to the
+			// declaration rather than to the specification inside it, so a
+			// guard declared for the structure is looked for in both.
+			docs := []*ast.CommentGroup{ts.Doc}
+			if len(decl.Specs) == 1 {
+				docs = append(docs, decl.Doc)
+			}
+			pc.structLockGuardFacts(structType, ss, docs...)
 		}
 		pc.typeAliasFacts(ts, decl)
 		pc.lockPrimitiveTypeFacts(ts, decl)
