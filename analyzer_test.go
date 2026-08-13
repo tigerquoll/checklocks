@@ -171,6 +171,13 @@ var analyzerCases = []struct {
 		args: []string{"-lockstringer=false", "-lockorder=false", "-checklocks.wrappers=false", "-checklocks.inferred=false", "./test/multiannotation"},
 	},
 	{
+		// Grouped reports. Run with grouping on, so that the
+		// suppression rules are exercised in the mode that changes how
+		// they are emitted.
+		name: "grouping",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "-lockorder.group=true", "./test/grouping"},
+	},
+	{
 		// The hierarchical direction check is off by default, so its
 		// corpus is the one place it is turned on.
 		name: "lockhier",
