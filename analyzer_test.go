@@ -146,6 +146,13 @@ var analyzerCases = []struct {
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/closure"},
 	},
 	{
+		// Objects under construction. The other analyses have nothing
+		// to say about the corpus and are silenced so that the
+		// expectations can be stated for this one.
+		name: "fresh",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "-checklocks.inferred=false", "./test/fresh"},
+	},
+	{
 		// Declared lock primitives. The wrappers carry no ignore, which
 		// is what restores the call site checks.
 		name: "locktype",

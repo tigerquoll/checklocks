@@ -242,6 +242,13 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 		guardsHeld  = make(map[string]struct{}) // Keyed by resolved string.
 	)
 
+	// An object no other goroutine can reach yet has nothing to race with, so its guards
+	// say nothing here. Which objects those are, and up to which instruction, is worked
+	// out in fresh.go; both of the declarations that produce one are checked.
+	if at, ok := inst.(ssa.Instruction); ok && pc.fresh.isFreshAt(from, at, fieldIndexOf(accessObj, from)) {
+		return
+	}
+
 	// Load the facts for the object accessed.
 	pc.importLockGuardFacts(accessObj, &lgf)
 	pc.applyTypeAliases(ls, from)
@@ -535,11 +542,25 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 		}
 	}
 
+	// Check that what is passed to a parameter declared to arrive unpublished is an
+	// object nothing else can reach yet. This is the other half of the check that makes
+	// the declaration mean something; the first half is at the constructor.
+	if inst, ok := call.(ssa.CallInstruction); ok {
+		pc.checkFreshArgs(inst)
+	}
+
 	// Check all guards required are held.
 	for fieldName, fg := range lff.HeldOnEntry {
 		r := resolve(fg)
 		if r.unavailable {
 			// See above; the requirement cannot be checked here.
+			continue
+		}
+		// A lock precondition on an object under construction says nothing: nothing
+		// else can reach it to contend for the lock. This is the same silence the
+		// guarded fields of that object get, and the census showed it is nearly half
+		// of what the suppressions were for.
+		if pc.freshArgument(call, fg) {
 			continue
 		}
 		if s, ok := ls.isHeld(r, fg.Exclusive); !ok {
@@ -900,6 +921,13 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 			pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", fieldName, s, ls.String())
 		}
 	}
+
+	// The objects under construction in this function, which the guard checks below
+	// consult. It belongs to one function at a time: an analysis of another, which
+	// happens for a closure or on a call, gets its own and puts this one back.
+	savedFresh := pc.fresh
+	pc.fresh = pc.computeFresh(fn)
+	defer func() { pc.fresh = savedFresh }()
 
 	// Scan the blocks.
 	seen := make(map[*ssa.BasicBlock]*lockState)

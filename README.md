@@ -468,6 +468,86 @@ The comment must still BEGIN with an annotation. A comment that mentions one in
 passing is prose, and prose about annotations is common in a code base that
 uses them.
 
+## Objects Under Construction
+
+An object nothing else can reach cannot be raced with, so its guards say nothing
+while it is being built. Stating that with an ignore on every line is the largest
+single family of suppressions in an annotated code base, and each one silences a
+line rather than the reason for it.
+
+Two annotations state the reason, and both are checked:
+
+```go
+// +checklocksreturnsfresh
+func newQueue(name string) *Queue {
+    q := &Queue{}
+    q.lock.setClass(1)  // taking the address of a field is not publishing the object
+    q.name = name       // no lock: nothing else can reach q
+    return q
+}
+
+// +checklocksfresh:child
+func (q *Queue) addChild(child *Queue) {
+    q.lock.Lock()
+    defer q.lock.Unlock()
+    q.children[child.name] = child
+    child.parent = q    // no lock on the child: the caller promised it is unpublished
+}
+
+func build(parent *Queue, name string) {
+    child := newQueue(name)  // fresh, because the constructor says so and was checked
+    parent.addChild(child)   // checked here: the argument must be provably unpublished
+}
+```
+
+`+checklocksreturnsfresh` says the returned object cannot be reached by another
+goroutine yet. It is verified in the function that carries it: what is returned
+must itself be freshly allocated, or from another such constructor, and must not
+have been published on the way to the `return`.
+
+`+checklocksfresh:p` says a parameter must arrive unpublished, and is verified at
+every call site. Both the guarded fields of such an object and the lock
+preconditions of what it is passed to are then elided while it stays unpublished.
+
+### What ends it
+
+Freshness is positional: it ends where the object is published, and only for the
+code that can run after that point.
+
+| | |
+| --- | --- |
+| stored in a global, an unguarded field, a channel, an interface | published |
+| captured by a closure or a `go` statement | published |
+| passed to a parameter the callee publishes | published |
+| passed to a function nothing is known about | published |
+| stored into a **lock-guarded** field of an object this function did not build | **not** published for the rest of that critical section |
+| `&obj.field` taken and passed on | publishes that field, not the object |
+
+Every case the table does not name publishes. An unknown callee — an interface
+method, a function outside the analyzed packages — publishes everything it is
+given, so the failure mode of not knowing is a report rather than a silence.
+
+Two of those need a word. **Taking the address of a field is not a handle on the
+object**: a goroutine holding `&q.lock` can lock the queue and cannot read
+`q.name`, and since taking the lock's address is what every lock call does, the
+opposite rule would leave nothing fresh anywhere. **Publishing into a guarded
+container** is safe exactly as long as the lock is held, which is why it holds
+for the rest of that critical section and not beyond it: a callee that inserts
+its argument into a map and returns has published it as far as its caller is
+concerned, and the caller's next unguarded write is reported.
+
+### Limits
+
+*   A call site the analysis cannot see cannot be checked: an interface dispatch,
+    or a caller in a package outside the run. That is the boundary every
+    annotation in this tool has.
+*   A fresh object stored into another fresh object's field is treated as
+    published. Following it would need the container's own publication to end the
+    contained object's freshness, which is a reachability question this does not
+    answer.
+*   A variable captured by a closure is address-taken, and freshness is lost for
+    the whole function rather than from the capture onwards.
+
 ## Testing
 
 Tests can be built using the `+checklocksfail` annotation. When applied after a
