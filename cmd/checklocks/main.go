@@ -30,5 +30,6 @@ func main() {
 		checklocks.LockStringerAnalyzer,
 		checklocks.LockOrderAnalyzer,
 		checklocks.LockBlockingAnalyzer,
+		checklocks.LockGapAnalyzer,
 	)
 }
