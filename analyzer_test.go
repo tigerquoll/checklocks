@@ -141,6 +141,11 @@ var analyzerCases = []struct {
 		fileList: true,
 	},
 	{
+		// Guards naming a value recovered by a type assertion.
+		name: "typeassert",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/typeassert"},
+	},
+	{
 		// Annotations on function literals.
 		name: "closure",
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/closure"},

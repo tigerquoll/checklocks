@@ -254,6 +254,8 @@ The field provided in the `+checklocks` annotation must be resolvable as one of:
 *   A lock resolvable from a parameter, receiver or return value (e.g. f.mu).
 *   A global lock (e.g. globalMu).
 *   A lock resolvable from a global struct (e.g. globalX.mu).
+*   A lock on a value recovered from a parameter by a type assertion (e.g.
+    event.Args[0].(*Application).mu); see below.
 
 This annotation will ensure that the given lock is held for all calls, and all
 analysis of this function will assume that this is the case. The limitation on
@@ -661,6 +663,63 @@ comes to be, since neither locking nor not locking is correct.
     on a line, drops the diagnostics reported on that line.
 *   `+lockstringerfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
+
+## Locks on asserted values
+
+A callback invoked by a library receives its subject as an interface, inside a
+parameter, and recovers it by asserting a type:
+
+```go
+register(fsm.Callbacks{
+    // +checklocks:event.Args[0].(*Application).mu
+    "enter_state": func(_ context.Context, event *fsm.Event) {
+        app := event.Args[0].(*Application)
+        app.state = "entered"
+    },
+})
+```
+
+The lock is held by whoever asked the library to run the callback, which
+nothing here can see, and the subject is not nameable by any other means: it
+exists only as a local of the body, while an annotation is resolved where it is
+written. Without this the only options are to report every access in the body
+or to silence it, and silencing is what a code base actually does.
+
+The guard is written exactly as the Go expression that recovers the value. It
+introduces no second syntax, and it contains no spaces, so it cannot collide
+with the separator that lets one comment carry several annotations. The type
+may be written with or without a package qualifier.
+
+### Binding
+
+The guard is matched against the assertions the body performs. An assertion
+binds when it asserts the named type and its operand is reached from the named
+parameter by the named path; the lock is then recorded against the asserted
+value for the body.
+
+*   **Several assertions bind together.** A body that recovers its subject on
+    more than one path is covered throughout: the first is what the lock is
+    recorded against and the others are aliased to it, so the lock is still
+    counted once and the return balance check is unaffected.
+*   **An assertion to another type does not bind.** It is a different subject.
+*   **A different path does not bind**, including a different constant index.
+*   **A guard that matches no assertion records nothing**, silently. The
+    accesses it was meant to cover are then reported in their own right, which
+    says the same thing where the reader needs it.
+
+### The comma-ok form, and what it costs
+
+`app, ok := event.Args[0].(*Application)` binds as well, and this is the one
+imprecision worth stating: the lock is recorded for the asserted value
+throughout the body, including the branch the assertion failed on, where the
+value is nil. An access there is not reported.
+
+The alternative — recording the lock only where the assertion succeeded —
+needs the guard to be seeded per block rather than at entry, and the block
+walk memoises by block, so a join reached from both branches would take
+whichever state arrived first. The imprecision is confined to a path on which
+any use of the value panics, and the alternative is a false positive on every
+correct comma-ok callback, which is the worse of the two.
 
 ## Hierarchical ordering
 
