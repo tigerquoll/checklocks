@@ -105,7 +105,20 @@ func (pc *passContext) selfLocksOf(fn *ssa.Function, found map[*ssa.Function]map
 		return nil
 	}
 	out := make(map[int]selfLock)
-	for _, block := range fn.Blocks {
+	pc.collectSelfLocks(fn, fn, recv, structType, nil, found, out, 0)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// maxClosureDepth bounds the descent into nested closures.
+const maxClosureDepth = 4
+
+// collectSelfLocks walks a body and the closures it creates, recording the
+// locks of the receiver it takes.
+func (pc *passContext) collectSelfLocks(fn, body *ssa.Function, recv *ssa.Parameter, structType *types.Struct, captured map[*ssa.FreeVar]ssa.Value, found map[*ssa.Function]map[int]selfLock, out map[int]selfLock, depth int) {
+	for _, block := range body.Blocks {
 		for _, inst := range block.Instrs {
 			call, ok := inst.(ssa.CallInstruction)
 			if !ok {
@@ -113,7 +126,7 @@ func (pc *passContext) selfLocksOf(fn *ssa.Function, found map[*ssa.Function]map
 			}
 			common := call.Common()
 			if isLockAcquire(pc.pass, common) {
-				pc.noteDirectSelfLock(common, recv, structType, out)
+				pc.noteDirectSelfLock(common, recv, structType, captured, out)
 				continue
 			}
 			// A method of the same receiver that takes the lock
@@ -122,7 +135,7 @@ func (pc *passContext) selfLocksOf(fn *ssa.Function, found map[*ssa.Function]map
 			if callee == nil || callee == fn {
 				continue
 			}
-			if !callsOwnMethod(common, recv) {
+			if !callsOwnMethod(common, recv, captured) {
 				continue
 			}
 			for index, sl := range pc.calleeSelfLocks(callee, found) {
@@ -130,15 +143,21 @@ func (pc *passContext) selfLocksOf(fn *ssa.Function, found map[*ssa.Function]map
 			}
 		}
 	}
-	if len(out) == 0 {
-		return nil
+	if depth >= maxClosureDepth {
+		return
 	}
-	return out
+	for _, anon := range body.AnonFuncs {
+		captures, spawned := closureCaptures(body, anon, captured)
+		if spawned || captures == nil {
+			continue
+		}
+		pc.collectSelfLocks(fn, anon, recv, structType, captures, found, out, depth+1)
+	}
 }
 
 // noteDirectSelfLock records a lock operation whose receiver is a lock field of
 // this method's receiver.
-func (pc *passContext) noteDirectSelfLock(common *ssa.CallCommon, recv *ssa.Parameter, structType *types.Struct, out map[int]selfLock) {
+func (pc *passContext) noteDirectSelfLock(common *ssa.CallCommon, recv *ssa.Parameter, structType *types.Struct, captured map[*ssa.FreeVar]ssa.Value, out map[int]selfLock) {
 	args := common.Args
 	if common.Method != nil {
 		args = append([]ssa.Value{common.Value}, args...)
@@ -147,7 +166,7 @@ func (pc *passContext) noteDirectSelfLock(common *ssa.CallCommon, recv *ssa.Para
 		return
 	}
 	fa, ok := underlyingFieldAddr(args[0])
-	if !ok || unwrapAssertValue(fa.X) != ssa.Value(recv) {
+	if !ok || !resolvesToReceiver(fa.X, recv, captured) {
 		return
 	}
 	if fa.Field >= structType.NumFields() {
@@ -185,12 +204,12 @@ func merge(out map[int]selfLock, index int, sl selfLock) {
 }
 
 // callsOwnMethod reports whether a call is a method call on this receiver.
-func callsOwnMethod(common *ssa.CallCommon, recv *ssa.Parameter) bool {
+func callsOwnMethod(common *ssa.CallCommon, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
 	args := common.Args
 	if common.Method != nil {
 		args = append([]ssa.Value{common.Value}, args...)
 	}
-	return len(args) > 0 && unwrapAssertValue(args[0]) == ssa.Value(recv)
+	return len(args) > 0 && resolvesToReceiver(args[0], recv, captured)
 }
 
 // lockOpIsWrite reports whether a lock operation takes the lock for writing.
@@ -271,4 +290,134 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 	if changed {
 		pc.pass.ExportObjectFact(funcObj, &lff)
 	}
+}
+
+// The receiver is not always the parameter itself.
+//
+// A method whose body contains a closure capturing the receiver has that
+// receiver spilled to a local by the ssa builder, so an acquisition written
+// plainly in the method reaches the lock through a load of that local rather
+// than through the parameter. A closure may also take the lock itself, in
+// which case the receiver arrives as one of its free variables. Both are the
+// same lock on the same object, and neither was attributed before.
+//
+// The resolution is deliberately narrow: a local is followed only when exactly
+// one value is ever stored into it, so a variable that holds different objects
+// at different times resolves to nothing rather than to the wrong one.
+
+// maxCaptureHops bounds the walk back to the receiver.
+const maxCaptureHops = 16
+
+// resolvesToReceiver reports whether v is the receiver, reached through the
+// spills and captures the ssa builder introduces.
+func resolvesToReceiver(v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
+	cur := v
+	for i := 0; i < maxCaptureHops; i++ {
+		switch x := unwrapAssertValue(cur).(type) {
+		case *ssa.Parameter:
+			return x == recv
+		case *ssa.FreeVar:
+			outer, ok := captured[x]
+			if !ok {
+				return false
+			}
+			cur = outer
+		case *ssa.Alloc:
+			stored, ok := singleStore(x)
+			if !ok {
+				return false
+			}
+			cur = stored
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// singleStore returns the only value ever stored into a local.
+func singleStore(alloc *ssa.Alloc) (ssa.Value, bool) {
+	refs := alloc.Referrers()
+	if refs == nil {
+		return nil, false
+	}
+	var found ssa.Value
+	for _, inst := range *refs {
+		st, ok := inst.(*ssa.Store)
+		if !ok || st.Addr != ssa.Value(alloc) {
+			continue
+		}
+		if found != nil {
+			// More than one value passes through it; which one is
+			// live here is not something this can answer.
+			return nil, false
+		}
+		found = st.Val
+	}
+	return found, found != nil
+}
+
+// closureCaptures returns the free variables of an anonymous function bound to
+// the values the enclosing function passed, along with whether the closure is
+// started on another goroutine.
+//
+// A closure is attributed to the method only when the method runs it: invoked
+// directly or deferred, and not otherwise handed on. One started with "go"
+// belongs to the new goroutine, and one that is returned or stored is run by
+// whoever received it, at a time this cannot see; in neither case is a caller
+// holding the lock deadlocked. This matches how the ordering analysis treats a
+// spawned acquisition, and reporting it would punish the sanctioned way of
+// breaking a nesting.
+func closureCaptures(parent *ssa.Function, anon *ssa.Function, outer map[*ssa.FreeVar]ssa.Value) (map[*ssa.FreeVar]ssa.Value, bool) {
+	for _, block := range parent.Blocks {
+		for _, inst := range block.Instrs {
+			mc, ok := inst.(*ssa.MakeClosure)
+			if !ok || mc.Fn != ssa.Value(anon) {
+				continue
+			}
+			// The closure's acquisitions belong to this method only
+			// if this method runs it. A closure that is returned,
+			// stored or handed on is run by someone else, at a
+			// time this cannot see, and a caller holding the lock
+			// is not deadlocked by it. One started with "go"
+			// likewise belongs to the new goroutine.
+			invoked, escapes := false, false
+			if refs := mc.Referrers(); refs != nil {
+				for _, ref := range *refs {
+					switch r := ref.(type) {
+					case *ssa.Call:
+						if r.Common().Value == ssa.Value(mc) {
+							invoked = true
+						} else {
+							escapes = true
+						}
+					case *ssa.Defer:
+						if r.Common().Value == ssa.Value(mc) {
+							invoked = true
+						} else {
+							escapes = true
+						}
+					default:
+						escapes = true
+					}
+				}
+			}
+			spawned := !invoked || escapes
+			captures := make(map[*ssa.FreeVar]ssa.Value, len(anon.FreeVars))
+			for i, fv := range anon.FreeVars {
+				if i < len(mc.Bindings) {
+					captures[fv] = mc.Bindings[i]
+				}
+			}
+			// A capture may itself be a free variable of the
+			// enclosing closure.
+			for fv, v := range outer {
+				if _, ok := captures[fv]; !ok {
+					captures[fv] = v
+				}
+			}
+			return captures, spawned
+		}
+	}
+	return nil, false
 }

@@ -131,3 +131,88 @@ func callRequiresHeld(t *target) {
 func callRequiresHeldUnlocked(t *target) {
 	t.requiresHeld() // +checklocksfail=must hold
 }
+
+// A closure that captures the receiver makes the ssa builder spill it to a
+// local, so an acquisition written plainly in the method reaches the lock
+// through that local rather than through the parameter. The lock is the same
+// one, and the method is still self locking.
+
+func (t *target) locksWithCapturingClosure() {
+	defer func() {
+		_ = t.other
+	}()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.value++
+}
+
+func callLocksWithCapturingClosure(t *target) {
+	t.mu.Lock()
+	t.locksWithCapturingClosure() // +checklocksfail=must not hold
+	t.mu.Unlock()
+}
+
+// The acquisition may be inside the closure itself.
+
+func (t *target) locksInsideClosure() {
+	f := func() {
+		t.mu.Lock()
+		t.value++
+		t.mu.Unlock()
+	}
+	f()
+}
+
+func callLocksInsideClosure(t *target) {
+	t.mu.Lock()
+	t.locksInsideClosure() // +checklocksfail=must not hold
+	t.mu.Unlock()
+}
+
+func (t *target) locksInsideDeferredClosure() {
+	defer func() {
+		t.mu.Lock()
+		t.value++
+		t.mu.Unlock()
+	}()
+}
+
+func callLocksInsideDeferredClosure(t *target) {
+	t.mu.Lock()
+	t.locksInsideDeferredClosure() // +checklocksfail=must not hold
+	t.mu.Unlock()
+}
+
+// A closure this method does not run is not this method's acquisition.
+
+// locksOnGoroutine hands the lock to a new goroutine. A caller holding it is
+// raced with, not deadlocked, so the exclusion is not derived.
+func (t *target) locksOnGoroutine() {
+	go func() {
+		t.mu.Lock()
+		t.value++
+		t.mu.Unlock()
+	}()
+}
+
+func callLocksOnGoroutine(t *target) {
+	t.mu.Lock()
+	t.locksOnGoroutine()
+	t.mu.Unlock()
+}
+
+// returnsLockingClosure builds a closure and hands it back. Whoever runs it
+// does so at a time this cannot see, so the exclusion is not derived here.
+func (t *target) returnsLockingClosure() func() {
+	return func() {
+		t.mu.Lock()
+		t.value++
+		t.mu.Unlock()
+	}
+}
+
+func callReturnsLockingClosure(t *target) func() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.returnsLockingClosure()
+}

@@ -762,6 +762,20 @@ never from how often the method happens to be called under one; inferring a
 requirement from usage frequency lets code that violates an invariant look like
 evidence against it.
 
+The receiver is not always the parameter itself. A method containing a closure
+that captures the receiver has it spilled to a local by the ssa builder, so an
+acquisition written plainly in the method reaches the lock through that local;
+and a closure may take the lock itself, receiving the receiver as a free
+variable. Both are the same lock on the same object, and both are derived. A
+local is followed only when exactly one value is ever stored into it, so a
+variable holding different objects at different times resolves to nothing
+rather than to the wrong one.
+
+A closure counts only when the method runs it, directly or deferred. One
+started with `go` belongs to the new goroutine, and one that is returned or
+stored is run by whoever receives it, at a time this cannot see; in neither
+case is a caller holding the lock deadlocked by it.
+
 ### What is not derived
 
 *   A lock the method is declared to hold on entry, with `+checklocks`, is not
