@@ -165,6 +165,12 @@ var analyzerCases = []struct {
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "-checklocks.inferred=false", "./test/blockguards"},
 	},
 	{
+		// A lock released and taken again in one function. The analysis
+		// is off unless asked for, so the corpus asks.
+		name: "lockgap",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-lockgap.enable=true", "./test/lockgap"},
+	},
+	{
 		// Objects under construction. The other analyses have nothing
 		// to say about the corpus and are silenced so that the
 		// expectations can be stated for this one.

@@ -1031,6 +1031,82 @@ and every site is still considered individually:
 A `+lockorderfail` expectation is likewise met per site, whether that site ends
 up carrying the message or attached to it.
 
+## lockgap
+
+A critical section is a promise that what was true at the top of it is still
+true at the bottom. Dropping the lock in the middle and taking it again ends
+that promise without ending the section: every invariant established before the
+release has to be established again after it, and the code in between usually
+reads as though it were still holding what it had.
+
+`lockgap` reports that window. It is **off by default** — `-lockgap.enable=true`
+turns it on — because a gap is sometimes deliberate, and those are worth
+reviewing rather than failing a build over on the day the analysis arrives. A
+registered analyzer has no off state in the multi analyzer binary, so an
+analysis that ships opt-in carries its own switch, as the hierarchical ordering
+check does.
+
+Two shapes, both about the same window:
+
+```go
+// The caller's lock, dropped by the callee. Nothing at the call site says so,
+// and the deferred re-acquisition is what makes it look balanced.
+// +checklocks:ctx.lock
+func (ctx *Context) register(nodes []*Node) error {
+    ctx.lock.Unlock()          // reported
+    defer ctx.lock.Lock()
+    return wait(nodes)
+}
+
+// A read lock released and a write lock taken: what was decided under the first
+// may not hold under the second.
+func (c *cache) get(key string) int {
+    c.mu.RLock()
+    v, ok := c.items[key]
+    c.mu.RUnlock()             // reported
+    if !ok {
+        c.mu.Lock()
+        c.items[key] = compute(key)
+        c.mu.Unlock()
+    }
+    return v
+}
+```
+
+A function that declares the handover with `+checklocksrelease` is not
+reported: the split is stated, the caller is told, and the call site is checked
+against the declaration.
+
+### What is not a gap
+
+The shape this looks for — two lock calls in one function — is also every
+correct critical section, so the silences are where the analysis is.
+
+*   `Lock()` … `Unlock()` with nothing taken again. That is a critical section.
+*   A lock taken and released **each time round a loop**. That is a whole
+    critical section per iteration, not a window in one. The release does not
+    *dominate* the next acquisition, because the loop is entered from outside it
+    as well, and dominance rather than reachability is what the analysis asks.
+*   Two different locks, or the same field of two different objects.
+*   A release on one branch and an acquisition on another, where neither
+    follows the other.
+*   A goroutine that takes the lock again: it has a lock state of its own.
+
+The cost of asking for dominance is a real gap on one path among several being
+missed. That is the conservative direction for an analysis pointed at a code
+base for the first time, and it is what keeps every loop in that code base out
+of the output.
+
+### Annotations
+
+*   `+lockgapignore`: on a function, drops every diagnostic in its body; on a
+    line, drops the diagnostics on that line.
+*   `+lockgapfail`: states that a line must be reported, for the test corpus.
+
+Note that `+checklocksignore` does **not** silence this analysis, which is
+deliberate: a gap is usually annotated away for the guard checker precisely
+because the guard checker cannot understand it.
+
 ## Development
 
 ```sh
