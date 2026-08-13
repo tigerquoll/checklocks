@@ -807,8 +807,10 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 			for fieldName, fg := range lff.HeldOnExit {
 				r := fg.Resolver.resolveStatic(pc, ls, fn, rv)
 				if !r.valid() {
-					// This cannot be forced, since we have no reference.
-					pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", fieldName)
+					if !r.unavailable {
+						// This cannot be forced, since we have no reference.
+						pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", fieldName)
+					}
 					continue
 				}
 				if s, ok := rls.isHeld(r, fg.Exclusive); !ok {
@@ -889,8 +891,10 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		// for receiver/function parameters.
 		r := fg.Resolver.resolveStatic(pc, ls, fn, call.Value())
 		if !r.valid() {
-			// See above: this cannot be forced.
-			pc.maybeFail(fn.Pos(), "lock %s cannot be resolved", fieldName)
+			if !r.unavailable {
+				// See above: this cannot be forced.
+				pc.maybeFail(fn.Pos(), "lock %s cannot be resolved", fieldName)
+			}
 			continue
 		}
 		if s, ok := ls.lockField(r, fg.Exclusive); !ok && !lff.Ignore {

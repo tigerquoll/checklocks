@@ -1026,6 +1026,16 @@ func (pc *passContext) resolveFunctionGuard(d *ast.FuncDecl, guardName string, a
 	if d.Type.Params != nil {
 		parameterList = append(parameterList, d.Type.Params.List...)
 	}
+	// A guard naming a value recovered by a type assertion is matched
+	// first: its path is not a field path, so the field matching below
+	// would reject it with a message about the wrong thing.
+	if res, lockObj, handled, ok := pc.resolveTypeAssertGuard(d.Pos(), parameterList, guardName); handled {
+		if !ok {
+			return nil, nil, false
+		}
+		return res, lockObj, true
+	}
+
 	if index, fl, lockObj, reported, ok := pc.matchFieldList(d.Pos(), parameterList, guardName); reported || ok {
 		if !ok {
 			return nil, nil, false
@@ -1128,6 +1138,7 @@ func (pc *passContext) typeAliasFacts(ts *ast.TypeSpec, decl *ast.GenDecl) {
 func init() {
 	gob.Register((*returnGuard)(nil))
 	gob.Register((*globalGuard)(nil))
+	gob.Register((*typeAssertGuard)(nil))
 	gob.Register((*parameterGuard)(nil))
 	gob.Register((*fieldGuard)(nil))
 	gob.Register((*fieldStructPtr)(nil))
