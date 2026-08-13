@@ -80,6 +80,20 @@ const (
 	checkBlocking
 )
 
+var (
+	// groupOrderReports and groupBlockingReports collapse the sites of one
+	// defect into a single report. Off by default: it changes the shape of
+	// the output, which a project may be reading with something other than
+	// its eyes, so it is opted into rather than arriving unannounced.
+	groupOrderReports    = false
+	groupBlockingReports = false
+)
+
+func init() {
+	LockOrderAnalyzer.Flags.BoolVar(&groupOrderReports, "group", false,
+		"report the call sites of one ordering defect as a single grouped diagnostic")
+}
+
 // lockOrderContext carries the per pass state.
 //
 // The expectation machinery is shared with the other analyzers in this package, so a corpus
@@ -131,6 +145,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	pc.analyzePackage(state.SrcFuncs)
 
+	pc.flushGroups()
 	pc.checkFailures()
 	return nil, nil
 }

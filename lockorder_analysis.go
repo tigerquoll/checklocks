@@ -312,11 +312,15 @@ func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, he
 		if !pc.order.violates(held, acquired) {
 			continue
 		}
+		// One callee that acquires a class is one defect however many
+		// call sites reach it, so the sites are grouped by what is
+		// acquired, through what, and what was held.
+		key := "order\x00" + acquired + "\x00" + via + "\x00" + held
 		if held == acquired {
-			pc.maybeFail(pos, "acquiring %s (via %s) while holding %s: two locks of one class must not nest", acquired, via, held)
+			pc.report(key, pos, "acquiring %s (via %s) while holding %s: two locks of one class must not nest", acquired, via, held)
 			continue
 		}
-		pc.maybeFail(pos, "acquiring %s (via %s) while holding %s: the declared order has %s before %s", acquired, via, held, acquired, held)
+		pc.report(key, pos, "acquiring %s (via %s) while holding %s: the declared order has %s before %s", acquired, via, held, acquired, held)
 	}
 }
 
@@ -405,8 +409,9 @@ func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, heldClasses
 	if !report || pc.check != checkBlocking || len(heldClasses) == 0 {
 		return
 	}
-	pc.maybeFail(pos, "%s while holding %s: a wait under a lock stalls every other user of it",
-		what, strings.Join(heldClasses, ", "))
+	held := strings.Join(heldClasses, ", ")
+	pc.report("blocking\x00"+what+"\x00"+held, pos,
+		"%s while holding %s: a wait under a lock stalls every other user of it", what, held)
 }
 
 // visitChannelOp handles the channel operations, which are instructions rather than calls.
@@ -491,4 +496,22 @@ func (pc *lockOrderContext) exportSummary(fn *ssa.Function, summary *summaryFact
 		return
 	}
 	pc.pass.ExportObjectFact(obj, summary)
+}
+
+// report emits a diagnostic, grouped with the other sites of the same defect
+// when grouping is on.
+func (pc *lockOrderContext) report(key string, pos token.Pos, fmtStr string, args ...any) {
+	if pc.grouped() {
+		pc.maybeFailGrouped(key, pos, fmtStr, args...)
+		return
+	}
+	pc.maybeFail(pos, fmtStr, args...)
+}
+
+// grouped reports whether the analyzer being run groups its reports.
+func (pc *lockOrderContext) grouped() bool {
+	if pc.check == checkBlocking {
+		return groupBlockingReports
+	}
+	return groupOrderReports
 }

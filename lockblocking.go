@@ -73,6 +73,11 @@ var LockBlockingAnalyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer, Analyzer, LockOrderAnalyzer},
 }
 
+func init() {
+	LockBlockingAnalyzer.Flags.BoolVar(&groupBlockingReports, "group", false,
+		"report the call sites of one blocking defect as a single grouped diagnostic")
+}
+
 // blockingFuncs are the functions that wait, named as they appear in the type checker.
 //
 // Taking a lock is deliberately absent. Every lock acquisition waits in principle, and
@@ -164,6 +169,7 @@ func runLockBlocking(pass *analysis.Pass) (any, error) {
 		pc.analyzeFunction(fn, &summaryFact{}, true)
 	}
 
+	pc.flushGroups()
 	pc.checkFailures()
 	return nil, nil
 }

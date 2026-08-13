@@ -742,6 +742,46 @@ so including them would report all nesting and say nothing; that nesting is
 *   `+lockblockingfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
 
+## Grouped reports
+
+One callee that acquires a class out of order is one defect, however many call
+sites reach it. Reported per site, a single mistake in a widely used helper
+fills a page.
+
+`-lockorder.group` and `-lockblocking.group` collapse the sites of one defect
+into a single diagnostic, keyed by what is acquired, through which callee, and
+what was held. The first site carries the message; the rest are attached to it
+as related positions, which `go vet` prints beneath it:
+
+```
+queue.go:2554:83: acquiring Application (via injectedTakesApp) while holding Queue: ...
+queue.go:2555:83: 	and reached from here
+queue.go:2556:83: 	and reached from here
+```
+
+**Be clear about what this does and does not save.** The output is not
+shorter — each site is still a line, because each site still has a position
+worth printing. What changes is the number of *diagnostics*: five findings
+become one finding with five sites, which is what the reader needs in order to
+know there is one thing to fix. A tool that counts diagnostics sees the
+difference; a tool that counts lines does not.
+
+Both flags are off by default. Grouping changes the shape of the output, and a
+project may be reading it with something other than its eyes.
+
+### Suppression is unchanged
+
+Grouping decides how diagnostics are printed, never whether they are produced,
+and every site is still considered individually:
+
+*   an ignore applies to the site it is written on, and to nothing else;
+*   a group is reported if any of its sites is unsuppressed, and lists only the
+    sites that are;
+*   a group all of whose sites are suppressed is silent.
+
+A `+lockorderfail` expectation is likewise met per site, whether that site ends
+up carrying the message or attached to it.
+
 ## Development
 
 ```sh

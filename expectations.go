@@ -74,6 +74,11 @@ type expectations struct {
 	failures   map[positionKey]*failData
 	exemptions map[positionKey]struct{}
 	forced     map[positionKey]struct{}
+
+	// groups holds the members of each grouped report until they are
+	// emitted, and groupOrder keeps the emission deterministic.
+	groups     map[string][]groupMember
+	groupOrder []string
 }
 
 // newExpectations returns expectations for the given annotation set.
@@ -122,23 +127,95 @@ func (e *expectations) addForce(pos token.Pos) {
 
 // maybeFail checks a potential failure against a specific failure map.
 func (e *expectations) maybeFail(pos token.Pos, fmtStr string, args ...any) {
+	if msg, ok := e.consider(pos, fmtStr, args...); ok {
+		e.pass.Report(analysis.Diagnostic{Pos: pos, Message: msg})
+	}
+}
+
+// consider decides whether a potential failure is reported, and returns the
+// message it would carry.
+//
+// This is where an expectation is met and where an ignore takes effect, so it
+// runs for every potential failure whether or not one is emitted for it. A
+// caller that groups its reports must still call it for each site, or a
+// suppressed site would stay suppressed while its expectation went unmet.
+func (e *expectations) consider(pos token.Pos, fmtStr string, args ...any) (string, bool) {
+	msg := fmt.Sprintf(fmtStr, args...)
 	if fd, ok := e.failures[e.positionKey(pos)]; ok {
-		msg := fmt.Sprintf(fmtStr, args...)
 		index := slices.IndexFunc(fd.wants, func(want string) bool {
 			return strings.Contains(msg, want)
 		})
 		if index != -1 {
 			fd.wants = slices.Delete(fd.wants, index, index+1)
-			return
+			return "", false
 		}
 	}
 	if _, ok := e.exemptions[e.positionKey(pos)]; ok {
-		return // Ignored, not counted.
+		return "", false // Ignored, not counted.
 	}
 	if !e.reportInvalidPos && !pos.IsValid() {
-		return // Ignored, implicit.
+		return "", false // Ignored, implicit.
 	}
-	e.pass.Reportf(pos, fmtStr, args...)
+	return msg, true
+}
+
+// groupMember is one site of a grouped report.
+type groupMember struct {
+	pos token.Pos
+	msg string
+}
+
+// maybeFailGrouped reports a potential failure as part of a group.
+//
+// One defect that reaches several call sites is one defect, and reporting it
+// once at each site inflates the count of things to look at without adding
+// anything: the sites share a cause and a fix. The members of a group are
+// gathered here and emitted together by flushGroups.
+//
+// Suppression is unchanged, and is decided per site: an ignore on one call
+// site removes that site from its group and nothing else. A group all of whose
+// sites are suppressed is silent, because it has no members left.
+func (e *expectations) maybeFailGrouped(key string, pos token.Pos, fmtStr string, args ...any) {
+	msg, ok := e.consider(pos, fmtStr, args...)
+	if !ok {
+		return
+	}
+	if e.groups == nil {
+		e.groups = make(map[string][]groupMember)
+	}
+	if _, seen := e.groups[key]; !seen {
+		e.groupOrder = append(e.groupOrder, key)
+	}
+	e.groups[key] = append(e.groups[key], groupMember{pos: pos, msg: msg})
+}
+
+// flushGroups emits one diagnostic per group.
+//
+// The first site carries the message and the rest are attached to it as
+// related positions, which go vet prints beneath it, each with its own
+// position. The output is no shorter, but it says which sites are one defect.
+func (e *expectations) flushGroups() {
+	for _, key := range e.groupOrder {
+		members := e.groups[key]
+		if len(members) == 0 {
+			continue
+		}
+		var related []analysis.RelatedInformation
+		for _, m := range members[1:] {
+			related = append(related, analysis.RelatedInformation{
+				Pos:     m.pos,
+				End:     m.pos,
+				Message: "and reached from here",
+			})
+		}
+		e.pass.Report(analysis.Diagnostic{
+			Pos:     members[0].pos,
+			Message: members[0].msg,
+			Related: related,
+		})
+	}
+	e.groups = nil
+	e.groupOrder = nil
 }
 
 // checkFailures checks for the expected failure counts.
