@@ -151,6 +151,14 @@ var analyzerCases = []struct {
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/closure"},
 	},
 	{
+		// A guard declared on a structure. The corpus is about which
+		// fields the expansion reaches, so the inferred suggestions are
+		// off: they would comment on the fields that are deliberately
+		// not covered.
+		name: "blockguards",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "-checklocks.inferred=false", "./test/blockguards"},
+	},
+	{
 		// Objects under construction. The other analyses have nothing
 		// to say about the corpus and are silenced so that the
 		// expectations can be stated for this one.

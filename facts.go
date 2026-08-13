@@ -904,7 +904,10 @@ func (pc *passContext) findGlobalFunctionGuard(pos token.Pos, guardName string) 
 }
 
 // structLockGuardFacts finds all relevant guard information for structures.
-func (pc *passContext) structLockGuardFacts(structType *types.Struct, ss *ast.StructType) {
+//
+// The documentation of the type is passed in because a guard may be declared there for the
+// structure as a whole, which stands for one on each of its fields; see blockguards.go.
+func (pc *passContext) structLockGuardFacts(structType *types.Struct, ss *ast.StructType, docs ...*ast.CommentGroup) {
 	var fieldObj *types.Var
 	findLocal := func(pos token.Pos, guardName string) (fieldGuardResolver, bool) {
 		// Try to resolve from the local structure first.
@@ -922,15 +925,18 @@ func (pc *passContext) structLockGuardFacts(structType *types.Struct, ss *ast.St
 		// Attempt a global resolution.
 		return pc.findGlobalFieldGuard(pos, guardName)
 	}
-	for i, field := range ss.Fields.List {
+	sg := pc.structGuardFor(structType, docs)
+	for _, binding := range structFields(structType, ss) {
 		var lgf lockGuardFacts
-		fieldObj = structType.Field(i) // N.B. Captured above.
+		field := binding.field
+		fieldObj = binding.obj // N.B. Captured above.
 		if field.Doc != nil {
 			pc.fillLockGuardFacts(fieldObj, field.Doc, findLocal, &lgf)
 		}
 		if field.Comment != nil {
 			pc.fillLockGuardFacts(fieldObj, field.Comment, findLocal, &lgf)
 		}
+		pc.applyStructGuard(fieldObj, field, &lgf, sg)
 
 		// See above, for anonymous structure fields.
 		if ss, ok := field.Type.(*ast.StructType); ok {
