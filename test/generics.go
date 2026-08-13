@@ -34,8 +34,13 @@ func (g *genericValueStruct[T]) set(v T) {
 	g.mu.Unlock()
 }
 
+// See methodInvalid: the requirement is the caller's.
 func (g *genericValueStruct[T]) setUnlocked(v T) {
-	g.value = v // +checklocksfail
+	g.value = v
+}
+
+func callSetUnlocked(g *genericValueStruct[int]) {
+	g.setUnlocked(1) // +checklocksfail
 }
 
 // +checklocks:g.mu

@@ -242,6 +242,11 @@ func run(pass *analysis.Pass) (any, error) {
 	// call site.
 	pc.synthesizeExcludes(state.SrcFuncs)
 
+	// Derive the preconditions of the methods that assume their receiver's
+	// lock. This runs after the exclusions, whose result it consults: a
+	// lock a method takes is not one it assumes.
+	pc.synthesizePreconditions(state.SrcFuncs)
+
 	// Scan all code looking for invalid accesses.
 	for _, fn := range state.SrcFuncs {
 		// Import function facts generated above.

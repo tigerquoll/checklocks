@@ -141,6 +141,12 @@ var analyzerCases = []struct {
 		fileList: true,
 	},
 	{
+		// Derived preconditions. The corpus carries no precondition
+		// annotation; every one it relies on is derived.
+		name: "synthprecond",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/synthprecond"},
+	},
+	{
 		// Derived exclusions. The corpus carries no exclusion
 		// annotation; every one it relies on is derived.
 		name: "synthexclude",

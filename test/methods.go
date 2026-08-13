@@ -31,8 +31,15 @@ func (t *testMethods) methodValid() {
 	t.mu.Unlock()
 }
 
+// The lock is not taken here, so the requirement is the caller's; see
+// synthprecond. The violation is reported where the method is called without
+// it rather than where the field is used.
 func (t *testMethods) methodInvalid() {
-	t.guardedField = 2 // +checklocksfail
+	t.guardedField = 2
+}
+
+func callMethodInvalid(t *testMethods) {
+	t.methodInvalid() // +checklocksfail
 }
 
 // +checklocks:t.mu
