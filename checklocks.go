@@ -237,6 +237,11 @@ func run(pass *analysis.Pass) (any, error) {
 		pc.checkFreshReturns(fn)
 	}
 
+	// Derive the exclusions of the methods that take their own receiver's
+	// lock. This must precede the scan, which consults the facts at each
+	// call site.
+	pc.synthesizeExcludes(state.SrcFuncs)
+
 	// Scan all code looking for invalid accesses.
 	for _, fn := range state.SrcFuncs {
 		// Import function facts generated above.

@@ -723,6 +723,57 @@ comes to be, since neither locking nor not locking is correct.
 *   `+lockstringerfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
 
+## Derived exclusions
+
+A method that takes its own receiver's lock cannot be called by anyone already
+holding it: the second acquisition deadlocks. That is what
+`+checklocksexclude` states, and it is derivable from the body, so it is
+derived rather than restated.
+
+```go
+// No annotation. The exclusion is derived from what it does.
+func (t *target) selfLocking() {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+    t.value++
+}
+
+func caller(t *target) {
+    t.mu.Lock()
+    t.selfLocking()   // reported: must not hold t.mu
+    t.mu.Unlock()
+}
+```
+
+A method that takes the **write** lock excludes a caller holding it in any
+mode. One that takes only the **read** lock excludes a caller holding it for
+writing, which is what `+checklocksexcludewrite` says.
+
+The derivation travels: a method that reaches the lock through another method
+of the same receiver takes it too, resolved to a fixpoint over the package.
+
+This is sounder than the annotation it replaces. A self-acquiring method has no
+legitimate caller holding the lock, so a method that was never annotated was
+not exempt from the rule, it was unchecked. Deriving it closes those gaps
+instead of preserving them.
+
+Nothing here counts call sites. The derivation is from the lock the body takes,
+never from how often the method happens to be called under one; inferring a
+requirement from usage frequency lets code that violates an invariant look like
+evidence against it.
+
+### What is not derived
+
+*   A lock the method is declared to hold on entry, with `+checklocks`, is not
+    one it acquires, and is left alone.
+*   A lock on another object. Taking `other.mu` says nothing about the
+    receiver's.
+*   A method carrying `+checklocksignore`.
+*   An exclusion already written by hand, which may be broader than the derived
+    one.
+
+`-checklocks.synthexcludes=false` turns the derivation off.
+
 ## Locks on asserted values
 
 A callback invoked by a library receives its subject as an interface, inside a

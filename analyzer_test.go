@@ -141,6 +141,12 @@ var analyzerCases = []struct {
 		fileList: true,
 	},
 	{
+		// Derived exclusions. The corpus carries no exclusion
+		// annotation; every one it relies on is derived.
+		name: "synthexclude",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/synthexclude"},
+	},
+	{
 		// Guards naming a value recovered by a type assertion.
 		name: "typeassert",
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.wrappers=false", "./test/typeassert"},
