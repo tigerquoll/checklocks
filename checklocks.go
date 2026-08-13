@@ -44,6 +44,7 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 	FactTypes: []analysis.Fact{
 		(*atomicAlignment)(nil),
+		(*freshFacts)(nil),
 		(*globalAccessorFacts)(nil),
 		(*lockGuardFacts)(nil),
 		(*lockPrimitiveFacts)(nil),
@@ -80,6 +81,11 @@ type passContext struct {
 	closures     map[*ast.FuncLit]*lockFunctionFacts
 	functions    map[*ssa.Function]struct{}
 	observations map[types.Object]*objectObservations
+
+	// fresh is what the function being checked knows about the objects under
+	// construction in it, see fresh.go. It belongs to one function at a time and is
+	// saved and restored around the analysis of another.
+	fresh *freshState
 }
 
 // observationsFor retrieves observations for the given object.
@@ -194,6 +200,30 @@ func run(pass *analysis.Pass) (any, error) {
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	for _, fn := range state.SrcFuncs {
 		pc.globalAccessorFactsFor(fn)
+	}
+
+	// Work out which parameters each function publishes, which is what a caller of it
+	// consults to know whether an object it passed is still unreachable afterwards.
+	// This is a fixpoint: a function publishes what its callees publish.
+	for _, fn := range state.SrcFuncs {
+		pc.seedPublishes(fn)
+	}
+	for round := 0; round < maxPublishRounds; round++ {
+		changed := false
+		for _, fn := range state.SrcFuncs {
+			if pc.computePublishes(fn) {
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	// Check the declarations that a function returns an unpublished object. A call site
+	// trusts the annotation, so it is verified where it is written.
+	for _, fn := range state.SrcFuncs {
+		pc.checkFreshReturns(fn)
 	}
 
 	// Scan all code looking for invalid accesses.

@@ -1097,6 +1097,10 @@ func (pc *passContext) functionFacts(d *ast.FuncDecl) {
 		funcObj := pc.pass.TypesInfo.Defs[d.Name].(*types.Func)
 		pc.pass.ExportObjectFact(funcObj, &lff)
 	}
+
+	// The declarations about unpublished objects travel in a fact of their own, since
+	// what they say is about the object rather than about the locks; see fresh.go.
+	pc.freshFunctionFacts(d)
 }
 
 func (pc *passContext) typeAliasFacts(ts *ast.TypeSpec, decl *ast.GenDecl) {
