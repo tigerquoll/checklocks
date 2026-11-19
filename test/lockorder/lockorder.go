@@ -280,8 +280,8 @@ func (n *Node) callsTheOnePathGap(a *App, cond bool) {
 // The caller holds the lock across a loop, which puts the call in a later block than the
 // acquisition: the release has to survive that the same way the lock itself does.
 func loopingCallerOfTheGap(n *Node, apps []*App) {
-	n.Lock()
-	defer n.Unlock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	for _, a := range apps {
 		n.gapThenTakesTheApp(a)
 	}

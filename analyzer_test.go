@@ -223,13 +223,6 @@ func allEnabledArgs(args []string) []string {
 	return out
 }
 
-// allEnabledSkips are the corpus lines TestAnalyzerAllEnabled drops, keyed by
-// file:line. Each is a diagnostic that is wrong about the program, so no marker
-// may pin it; the reason is the finding handed to whoever fixes the analyzer.
-var allEnabledSkips = map[string]string{
-	"test/lockorder/lockorder.go:286": "checklocks does not see n.mu taken through the +checklocksignore forwarder n.Lock, so it calls the lock unheld where it is held",
-}
-
 // TestAnalyzer runs each analyzer over its corpus and requires that it produce
 // no output at all.
 //
@@ -272,13 +265,8 @@ func TestAnalyzer(t *testing.T) {
 	}
 }
 
-// TestAnalyzerAllEnabled runs each case over its corpus with every analyzer
-// enabled, which is how the tool is run outside this test.
-//
-// TestAnalyzer runs each analyzer alone, so it never sees what the others say
-// about the same code. This is where the corpora have to agree: a diagnostic
-// another analyzer raises is either marked for that analyzer or listed in
-// allEnabledSkips.
+// TestAnalyzerAllEnabled runs each case with every analyzer on: a diagnostic one
+// analyzer raises on another's corpus must be marked there.
 func TestAnalyzerAllEnabled(t *testing.T) {
 	if n := readCorpus(t); n == 0 {
 		t.Fatalf("no source files found in %s", corpus)
@@ -297,21 +285,9 @@ func TestAnalyzerAllEnabled(t *testing.T) {
 		}
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"vet", "-vettool=" + bin}, allEnabledArgs(tc.args)...)
-			out, _ := exec.Command("go", args...).CombinedOutput()
-			var kept []string
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				if line == "" {
-					continue
-				}
-				file, rest, _ := strings.Cut(line, ":")
-				number, _, _ := strings.Cut(rest, ":")
-				if _, ok := allEnabledSkips[file+":"+number]; ok {
-					continue
-				}
-				kept = append(kept, line)
-			}
-			if len(kept) != 0 {
-				t.Errorf("analyzer reported unexpected output:\n%s", strings.Join(kept, "\n"))
+			out, err := exec.Command("go", args...).CombinedOutput()
+			if s := strings.TrimSpace(string(out)); s != "" {
+				t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)
 			}
 		})
 	}

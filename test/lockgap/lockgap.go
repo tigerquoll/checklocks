@@ -94,15 +94,15 @@ func dropsTheCallersLock(c *cache) {
 	c.total = 0
 }
 
-// The same without taking it back at all: the caller's section simply ends here. checklocks
-// is silenced rather than told of the release, which would make this the declared handover
-// below; its report of the undeclared release has no position and cannot be annotated.
+// The same without taking it back at all: the caller's section simply ends here.
 //
 // +checklocks:c.mu
-// +checklocksignore
 func endsTheCallersSection(c *cache) {
 	c.mu.Unlock() // +lockgapfail=does not take it back
 	c.total = 0
+	// The explicit return gives checklocks' report of the undeclared release a position to
+	// be annotated at; the implicit one has none.
+	return // +checklocksfail=not held
 }
 
 // A function that says it hands the lock back released has declared the split, and its call
