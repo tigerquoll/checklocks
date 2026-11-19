@@ -221,7 +221,7 @@ func releaseClearsTheClass(p *Partition, a *App) {
 //
 // +checklocks:n.mu
 func (n *Node) gapThenTakesTheApp(a *App) {
-	n.mu.Unlock()
+	n.mu.Unlock() // +lockgapfail=caller's critical section is split
 	defer n.mu.Lock()
 	a.Lock()
 	a.Unlock()
@@ -262,7 +262,7 @@ func (n *Node) callsTheGapHoldingATracker(a *App, t *Tracker) {
 // +checklocks:n.mu
 func (n *Node) gapOnOnePathOnly(a *App, cond bool) {
 	if cond {
-		n.mu.Unlock()
+		n.mu.Unlock() // +lockgapfail=caller's critical section is split
 		a.Lock()
 		a.Unlock()
 		n.mu.Lock()
@@ -296,7 +296,7 @@ func (n *Node) gapAfterAnEarlyReturn(a *App, done bool) {
 	if done {
 		return
 	}
-	n.mu.Unlock()
+	n.mu.Unlock() // +lockgapfail=caller's critical section is split
 	defer n.mu.Lock()
 	a.Lock()
 	a.Unlock()
@@ -315,7 +315,7 @@ func (n *Node) callsTheGapWithAnEarlyReturn(a *App, done bool) {
 //
 // +checklocks:n.mu
 func (n *Node) callsTheGapOnAnotherNode(other *Node, a *App) {
-	other.gapThenTakesTheApp(a)
+	other.gapThenTakesTheApp(a) // +checklocksfail=must hold n.mu
 }
 
 // +checklocks:n.mu

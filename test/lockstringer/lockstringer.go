@@ -35,7 +35,7 @@ type guardedRead struct {
 }
 
 func (g *guardedRead) String() string {
-	return fmt.Sprintf("%s=%d", g.name, g.count) // +lockstringerfail=guarded read races
+	return fmt.Sprintf("%s=%d", g.name, g.count) // +lockstringerfail=guarded read races +checklocksfail=invalid field access
 }
 
 // selfLocking is the recursive acquisition shape: the Stringer takes the
@@ -96,7 +96,7 @@ type nonStringer struct {
 }
 
 func (n *nonStringer) Describe() string {
-	return fmt.Sprintf("%d", n.count)
+	return fmt.Sprintf("%d", n.count) // +checklocksfail=invalid field access
 }
 
 // otherLazy covers the remaining lazily evaluated methods.
@@ -107,18 +107,18 @@ type otherLazy struct {
 }
 
 func (o *otherLazy) Error() string {
-	return fmt.Sprintf("%d", o.count) // +lockstringerfail=guarded read races
+	return fmt.Sprintf("%d", o.count) // +lockstringerfail=guarded read races +checklocksfail=invalid field access
 }
 
 func (o *otherLazy) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("%d", o.count)), nil // +lockstringerfail=guarded read races
+	return []byte(fmt.Sprintf("%d", o.count)), nil // +lockstringerfail=guarded read races +checklocksfail=invalid field access
 }
 
 // unguardedType has a lock but no guarded field, so it has taken no position
 // on what the lock protects and is out of scope.
 type unguardedType struct {
 	mu    sync.Mutex
-	count int
+	count int // +checklocksfail=may require checklocks annotation
 }
 
 func (u *unguardedType) String() string {
@@ -138,7 +138,7 @@ type noLockType struct {
 }
 
 func (n *noLockType) String() string {
-	return fmt.Sprintf("%d", n.count)
+	return fmt.Sprintf("%d", n.count) // +checklocksfail=invalid field access
 }
 
 // ignoredFunc carries a function level ignore.
@@ -150,7 +150,7 @@ type ignoredFunc struct {
 
 // +lockstringerignore
 func (i *ignoredFunc) String() string {
-	return fmt.Sprintf("%d", i.count)
+	return fmt.Sprintf("%d", i.count) // +checklocksfail=invalid field access
 }
 
 // ignoredLine carries a line level ignore.
@@ -161,7 +161,7 @@ type ignoredLine struct {
 }
 
 func (i *ignoredLine) String() string {
-	return fmt.Sprintf("%d", i.count) // +lockstringerignore
+	return fmt.Sprintf("%d", i.count) // +lockstringerignore +checklocksfail=invalid field access
 }
 
 // notLazy is named String but is not a fmt.Stringer, so it is out of scope.
@@ -172,5 +172,5 @@ type notLazy struct {
 }
 
 func (n *notLazy) String(verbose bool) string {
-	return fmt.Sprintf("%v %d", verbose, n.count)
+	return fmt.Sprintf("%v %d", verbose, n.count) // +checklocksfail=invalid field access
 }

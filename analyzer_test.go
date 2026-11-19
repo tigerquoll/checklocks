@@ -205,6 +205,31 @@ var analyzerCases = []struct {
 	},
 }
 
+// allEnabledArgs derives the command line of a case's all-analyzers run. The
+// flags that switch an analyzer off go, lockgap's opt-in comes on, and the mode
+// flags stay: those are what the corpus is written against.
+func allEnabledArgs(args []string) []string {
+	const lockgap = "-lockgap.enable=true"
+	out := make([]string, 0, len(args)+1)
+	out = append(out, lockgap)
+	for _, arg := range args {
+		// An analyzer switch carries no dot in its name, which is what
+		// tells it apart from a mode flag like -checklocks.wrappers.
+		if arg == lockgap || (strings.HasSuffix(arg, "=false") && !strings.Contains(arg, ".")) {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// allEnabledSkips are the corpus lines TestAnalyzerAllEnabled drops, keyed by
+// file:line. Each is a diagnostic that is wrong about the program, so no marker
+// may pin it; the reason is the finding handed to whoever fixes the analyzer.
+var allEnabledSkips = map[string]string{
+	"test/lockorder/lockorder.go:286": "checklocks does not see n.mu taken through the +checklocksignore forwarder n.Lock, so it calls the lock unheld where it is held",
+}
+
 // TestAnalyzer runs each analyzer over its corpus and requires that it produce
 // no output at all.
 //
@@ -242,6 +267,51 @@ func TestAnalyzer(t *testing.T) {
 			out, err := exec.Command("go", args...).CombinedOutput()
 			if s := strings.TrimSpace(string(out)); s != "" {
 				t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)
+			}
+		})
+	}
+}
+
+// TestAnalyzerAllEnabled runs each case over its corpus with every analyzer
+// enabled, which is how the tool is run outside this test.
+//
+// TestAnalyzer runs each analyzer alone, so it never sees what the others say
+// about the same code. This is where the corpora have to agree: a diagnostic
+// another analyzer raises is either marked for that analyzer or listed in
+// allEnabledSkips.
+func TestAnalyzerAllEnabled(t *testing.T) {
+	if n := readCorpus(t); n == 0 {
+		t.Fatalf("no source files found in %s", corpus)
+	}
+
+	bin := filepath.Join(t.TempDir(), "checklocks")
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
+		t.Fatalf("building the vettool failed: %v\n%s", err, out)
+	}
+
+	for _, tc := range analyzerCases {
+		// A file list run is the same corpus by another route, and
+		// says nothing more about how the analyzers agree.
+		if tc.fileList {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"vet", "-vettool=" + bin}, allEnabledArgs(tc.args)...)
+			out, _ := exec.Command("go", args...).CombinedOutput()
+			var kept []string
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if line == "" {
+					continue
+				}
+				file, rest, _ := strings.Cut(line, ":")
+				number, _, _ := strings.Cut(rest, ":")
+				if _, ok := allEnabledSkips[file+":"+number]; ok {
+					continue
+				}
+				kept = append(kept, line)
+			}
+			if len(kept) != 0 {
+				t.Errorf("analyzer reported unexpected output:\n%s", strings.Join(kept, "\n"))
 			}
 		})
 	}

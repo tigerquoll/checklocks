@@ -250,7 +250,7 @@ func shortCircuitConditionKeepsTheLock(a *App, cs []chan int, x, y bool) {
 //
 // +checklocks:a.mu
 func (a *App) waitsWithTheLockReleased(wg *sync.WaitGroup) {
-	a.mu.Unlock()
+	a.mu.Unlock() // +lockgapfail=caller's critical section is split
 	defer a.mu.Lock()
 	wg.Wait()
 }

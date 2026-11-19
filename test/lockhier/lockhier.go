@@ -186,9 +186,9 @@ type Tree struct {
 	sync.RWMutex
 
 	// +lockhierarchyedge
-	up *Tree
+	up *Tree // +checklocksfail=may require checklocks annotation for RWMutex
 
-	kids []*Tree
+	kids []*Tree // +checklocksfail=may require checklocks annotation for RWMutex
 }
 
 func (t *Tree) childThenParent() int {

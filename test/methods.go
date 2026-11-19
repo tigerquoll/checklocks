@@ -111,7 +111,7 @@ func (t *testMethodsWithParameters) methodLockedWithPtrType(a *testMethodsWithPa
 // +checklocks:a.mu
 func standaloneFunctionWithGuard(a *testMethodsWithParameters) {
 	a.guardedField = 1
-	a.mu.Unlock()
+	a.mu.Unlock()      // +lockgapfail=does not take it back
 	a.guardedField = 1 // +checklocksfail
 }
 

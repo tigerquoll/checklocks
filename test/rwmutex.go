@@ -28,7 +28,7 @@ type oneReadGuardStruct struct {
 func testRWAccessValidRead(tc *oneReadGuardStruct) {
 	tc.mu.Lock()
 	_ = tc.guardedField
-	tc.mu.Unlock()
+	tc.mu.Unlock() // +lockgapfail=taken again
 	tc.mu.RLock()
 	_ = tc.guardedField
 	tc.mu.RUnlock()

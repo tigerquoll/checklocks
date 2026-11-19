@@ -88,7 +88,7 @@ func testGlobalValid() {
 
 	globalRWMu.Lock()
 	otherStruct.guardedField2 = 1
-	globalRWMu.Unlock()
+	globalRWMu.Unlock() // +lockgapfail=taken again
 
 	globalRWMu.RLock()
 	_ = otherStruct.guardedField2
