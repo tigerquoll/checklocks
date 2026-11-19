@@ -100,8 +100,7 @@ func dropsTheCallersLock(c *cache) {
 func endsTheCallersSection(c *cache) {
 	c.mu.Unlock() // +lockgapfail=does not take it back
 	c.total = 0
-	// The explicit return gives checklocks' report of the undeclared release a position to
-	// be annotated at; the implicit one has none.
+	// The explicit return gives checklocks' report a position; the implicit one has none.
 	return // +checklocksfail=not held
 }
 
