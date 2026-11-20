@@ -123,6 +123,24 @@ type summaryFact struct {
 	// avoid, and carrying those out of the package they occur in makes every function that
 	// formats a string blocking.
 	BlockingNamed bool
+
+	// Witnesses are the paths to the function's waits, one per set of classes released on the
+	// way, for a call site to choose by what it holds. Derived after the summaries settle, so
+	// they take no part in merge, addBlocking or equal.
+	Witnesses []witnessPath
+}
+
+// witnessPath is one path from a function to a wait it reaches, hop by hop.
+type witnessPath struct {
+	// Released is what the function had released by the time it reaches the wait, in the
+	// sense of acquisition.ReleasedBefore, and the key the paths are kept by.
+	Released []string
+
+	// Named says the wait the path ends at is one this analysis can name, which is the only
+	// kind a caller out of scope can be shown.
+	Named bool
+
+	Hops []string
 }
 
 func (*summaryFact) AFact() {}

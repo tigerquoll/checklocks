@@ -141,6 +141,17 @@ var analyzerCases = []struct {
 		fileList: true,
 	},
 	{
+		// A file list belongs to no module, so this corpus's dependency is out of scope.
+		name:     "lockblocking-scope",
+		args:     []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/lockblockingscope"},
+		fileList: true,
+	},
+	{
+		// Grouped blocking reports: a group names a path only when all its sites share it.
+		name: "lockblocking-grouped",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "-lockblocking.group=true", "./test/lockblockinggroup"},
+	},
+	{
 		// Derived exclusions. The corpus carries no exclusion
 		// annotation; every one it relies on is derived.
 		name: "synthexclude",
@@ -278,13 +289,13 @@ func TestAnalyzerAllEnabled(t *testing.T) {
 	}
 
 	for _, tc := range analyzerCases {
-		// A file list run is the same corpus by another route, and
-		// says nothing more about how the analyzers agree.
-		if tc.fileList {
-			continue
-		}
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"vet", "-vettool=" + bin}, allEnabledArgs(tc.args)...)
+			// A file list case runs over its files here too.
+			tcArgs := allEnabledArgs(tc.args)
+			if tc.fileList {
+				tcArgs = expandToFiles(t, tcArgs)
+			}
+			args := append([]string{"vet", "-vettool=" + bin}, tcArgs...)
 			out, err := exec.Command("go", args...).CombinedOutput()
 			if s := strings.TrimSpace(string(out)); s != "" {
 				t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)

@@ -17,6 +17,12 @@
 // analysis can NAME does, and it does so in every mode the analyser can be driven in.
 package dep
 
+import (
+	"time"
+
+	"github.com/tigerquoll/checklocks/test/lockblocking/dep/inner"
+)
+
 // Resolve stands for a wait that cannot be seen: the work happens behind an indirect call,
 // so the declaration is what says it waits.
 //
@@ -51,4 +57,15 @@ func Sleeper(c chan int) {
 // and it does not. A corpus case would have to expect two different things.
 func Drain(c chan int) {
 	<-c
+}
+
+// SleepsThenSends reaches a named wait and, after it, a channel send.
+func SleepsThenSends(c chan int) {
+	time.Sleep(time.Millisecond)
+	c <- 1
+}
+
+// Mid reaches waits two packages away, which only inner's fact carries.
+func Mid(i *inner.Inner, c chan int) {
+	i.SendsThenSleeps(c)
 }

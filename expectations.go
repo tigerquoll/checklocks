@@ -163,6 +163,11 @@ func (e *expectations) consider(pos token.Pos, fmtStr string, args ...any) (stri
 type groupMember struct {
 	pos token.Pos
 	msg string
+
+	// path is the way to the defect this site names, and plain its message with the path
+	// left out, for the group to fall back on where its sites name different ways.
+	path  string
+	plain string
 }
 
 // maybeFailGrouped reports a potential failure as part of a group.
@@ -175,10 +180,17 @@ type groupMember struct {
 // Suppression is unchanged, and is decided per site: an ignore on one call
 // site removes that site from its group and nothing else. A group all of whose
 // sites are suppressed is silent, because it has no members left.
-func (e *expectations) maybeFailGrouped(key string, pos token.Pos, fmtStr string, args ...any) {
+func (e *expectations) maybeFailGrouped(key string, pos token.Pos, path, plain, fmtStr string, args ...any) {
 	msg, ok := e.consider(pos, fmtStr, args...)
 	if !ok {
 		return
+	}
+	// The flush decides between the two forms, so an expectation copied from the output
+	// matches either one.
+	if plain != msg {
+		if _, ok := e.consider(pos, "%s", plain); !ok {
+			return
+		}
 	}
 	if e.groups == nil {
 		e.groups = make(map[string][]groupMember)
@@ -186,7 +198,7 @@ func (e *expectations) maybeFailGrouped(key string, pos token.Pos, fmtStr string
 	if _, seen := e.groups[key]; !seen {
 		e.groupOrder = append(e.groupOrder, key)
 	}
-	e.groups[key] = append(e.groups[key], groupMember{pos: pos, msg: msg})
+	e.groups[key] = append(e.groups[key], groupMember{pos: pos, msg: msg, path: path, plain: plain})
 }
 
 // flushGroups emits one diagnostic per group.
@@ -200,6 +212,12 @@ func (e *expectations) flushGroups() {
 		if len(members) == 0 {
 			continue
 		}
+		// The one message a group carries names a way to the defect only where every
+		// site it still has reaches it that way.
+		msg := members[0].msg
+		if slices.ContainsFunc(members[1:], func(m groupMember) bool { return m.path != members[0].path }) {
+			msg = members[0].plain
+		}
 		var related []analysis.RelatedInformation
 		for _, m := range members[1:] {
 			related = append(related, analysis.RelatedInformation{
@@ -210,7 +228,7 @@ func (e *expectations) flushGroups() {
 		}
 		e.pass.Report(analysis.Diagnostic{
 			Pos:     members[0].pos,
-			Message: members[0].msg,
+			Message: msg,
 			Related: related,
 		})
 	}

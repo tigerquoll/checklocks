@@ -108,6 +108,10 @@ type lockOrderContext struct {
 
 	// check is the analyzer the walk is reporting for.
 	check checkKind
+
+	// witness collects the waits and the calls that reach one, and is set only for the
+	// extra walk the witness derivation makes.
+	witness *witnessGraph
 }
 
 // run is the main entrypoint.

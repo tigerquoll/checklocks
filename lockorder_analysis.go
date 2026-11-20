@@ -15,9 +15,13 @@
 package checklocks
 
 import (
+	"fmt"
 	"go/token"
 	"go/types"
+	"maps"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -36,6 +40,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		// wait this analysis cannot see through is named: one reached by an indirect call,
 		// or one inside a dependency that is not analyzed.
 		summary.addBlocking(nil, true /* named */)
+		pc.recordWitnessWait(fn, displayName(fn)+" is declared blocking", fn.Pos(), nil, true /* named */, true /* annotated */)
 	}
 	if fn.Blocks == nil {
 		return
@@ -82,7 +87,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 			case ssa.CallInstruction:
 				pc.visitCall(fn, t, cur, curInst, summary, report && !ignored)
 			default:
-				pc.visitChannelOp(instr, cur, summary, report && !ignored)
+				pc.visitChannelOp(fn, instr, cur, summary, report && !ignored)
 			}
 		}
 		// A deferred call runs when the function RETURNS, not at the end of the block it
@@ -234,7 +239,8 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// enough to recognise a client library's round trip.
 	name, isSink := blockingCallee(call, callee)
 	if isSink {
-		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", cur.held(), cur.releasedClasses(), true /* named */, summary, report)
+		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", nil, cur.held(), cur.releasedClasses(), true /* named */, summary, report)
+		pc.recordWitnessWait(fn, "calling "+name, call.Pos(), cur.releasedClasses(), true /* named */, false /* annotated */)
 	}
 
 	// Any other call contributes the classes its callee may acquire. A call into a
@@ -283,8 +289,21 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		if onReceiver {
 			reached = unionClasses(released, cs.BlockingReleased)
 		}
-		pc.noteBlocking(call.Pos(), "calling "+displayName(callee)+", which may block",
-			subtractClasses(cur.held(), cs.BlockingReleased), reached, cs.BlockingNamed, summary, report)
+		// Only a named wait travels to a caller out of scope, so only a path ending at one is
+		// shown there.
+		namedOnly := !pc.blockingInScope(obj)
+		if obj.Pkg() == pc.pass.Pkg {
+			pc.recordWitnessEdge(fn, call, callee, obj, released, onReceiver)
+		} else {
+			pc.recordWitnessPaths(fn, call, callee, cs.Witnesses, released, onReceiver, namedOnly)
+		}
+		reported := subtractClasses(cur.held(), cs.BlockingReleased)
+		var witness []string
+		if report && pc.check == checkBlocking {
+			witness = pickWitness(cs.Witnesses, reported, namedOnly)
+		}
+		pc.noteBlocking(call.Pos(), "calling "+displayName(callee)+", which may block", witness,
+			reported, reached, cs.BlockingNamed, summary, report)
 	}
 	for _, a := range cs.Acquires {
 		// The callee dropped these before it acquired, so they are not held across the
@@ -404,14 +423,22 @@ func (pc *lockOrderContext) annotatedBlocking(obj *types.Func) bool {
 //
 // The record goes into the summary whichever analyzer is walking, so that the bit and the
 // classes released by then travel to the callers of this function in one summary.
-func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, heldClasses, released []string, named bool, summary *summaryFact, report bool) {
+//
+// witness is named in the message but kept out of the key, so the sites of one defect
+// still group together.
+func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, witness, heldClasses, released []string, named bool, summary *summaryFact, report bool) {
 	summary.addBlocking(released, named)
 	if !report || pc.check != checkBlocking || len(heldClasses) == 0 {
 		return
 	}
 	held := strings.Join(heldClasses, ", ")
-	pc.report("blocking\x00"+what+"\x00"+held, pos,
-		"%s while holding %s: a wait under a lock stalls every other user of it", what, held)
+	const format = "%s while holding %s: a wait under a lock stalls every other user of it"
+	plain := fmt.Sprintf(format, what, held)
+	message, path := plain, strings.Join(witness, " -> ")
+	if path != "" {
+		message = fmt.Sprintf(format, what+" ("+path+")", held)
+	}
+	pc.reportPath("blocking\x00"+what+"\x00"+held, pos, path, message, plain)
 }
 
 // visitChannelOp handles the channel operations, which are instructions rather than calls.
@@ -419,7 +446,7 @@ func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, heldClasses
 // A send or a receive waits for the other side. A select waits too, unless it has a default
 // case, which is what makes the non blocking dispatch idiom safe under a lock; the SSA form
 // records exactly that distinction, so it does not have to be inferred from the syntax.
-func (pc *lockOrderContext) visitChannelOp(instr ssa.Instruction, cur *classSet, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instruction, cur *classSet, summary *summaryFact, report bool) {
 	var what string
 	switch t := instr.(type) {
 	case *ssa.Send:
@@ -439,7 +466,8 @@ func (pc *lockOrderContext) visitChannelOp(instr ssa.Instruction, cur *classSet,
 	}
 	// A channel operation is a wait this analysis inferred rather than one it can name, so
 	// it does not travel out of the package it occurs in unless the module says otherwise.
-	pc.noteBlocking(instr.Pos(), what, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
+	pc.noteBlocking(instr.Pos(), what, nil, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
+	pc.recordWitnessWait(fn, what, instr.Pos(), cur.releasedClasses(), false /* named */, false /* annotated */)
 }
 
 // analyzePackage computes the summaries of the package's functions to a fixpoint and then
@@ -479,6 +507,10 @@ func (pc *lockOrderContext) analyzePackage(fns []*ssa.Function) {
 		}
 	}
 
+	// The witness names a path through the settled summaries, so it is derived between the
+	// phases: phase one would name a path through a callee that is still growing.
+	pc.deriveWitnesses(fns, summaries)
+
 	// Phase two: report against the settled summaries.
 	for _, fn := range fns {
 		pc.analyzeFunction(fn, summaries[fn], true)
@@ -498,14 +530,304 @@ func (pc *lockOrderContext) exportSummary(fn *ssa.Function, summary *summaryFact
 	pc.pass.ExportObjectFact(obj, summary)
 }
 
+// witnessCandidate is one path from a function to a wait, ranked against the other paths
+// the function has. A path that leaves this package is complete when it is recorded, since
+// the callee's own fact carries the rest of it.
+type witnessCandidate struct {
+	hops     []string
+	released []string
+
+	// named says the wait the path ends at is one this analysis can name rather than one
+	// it inferred from a channel operation.
+	named bool
+
+	// annotated says the path is the +blocking declaration on the function itself.
+	annotated bool
+}
+
+// witnessEdge is a call whose callee's summary contributed the blocking bit, extended at
+// derivation time by the paths the callee settles on.
+type witnessEdge struct {
+	hop      string
+	target   *types.Func
+	released []string
+
+	// onReceiver says the callee acts on this function's own receiver, which is the only
+	// case in which what the callee releases is released here too.
+	onReceiver bool
+}
+
+// witnessGraph is what one extra walk records: for every function, the waits reached in its
+// own body and the calls that reach one through a callee in this package.
+type witnessGraph struct {
+	paths map[*ssa.Function][]witnessCandidate
+	edges map[*ssa.Function][]witnessEdge
+}
+
+// recordWitnessWait records a wait in a function's own body, or the declaration that makes
+// the function one, as a path of a single hop.
+func (pc *lockOrderContext) recordWitnessWait(fn *ssa.Function, text string, pos token.Pos, released []string, named, annotated bool) {
+	if pc.witness == nil {
+		return
+	}
+	pc.witness.paths[fn] = append(pc.witness.paths[fn], witnessCandidate{
+		hops:      []string{pc.witnessHop(text, pos)},
+		released:  released,
+		named:     named,
+		annotated: annotated,
+	})
+}
+
+// recordWitnessEdge records a call that reaches a wait through a callee of this package,
+// whose own paths are still being derived.
+func (pc *lockOrderContext) recordWitnessEdge(fn *ssa.Function, call ssa.CallInstruction, callee *ssa.Function, obj *types.Func, released []string, onReceiver bool) {
+	if pc.witness == nil {
+		return
+	}
+	pc.witness.edges[fn] = append(pc.witness.edges[fn], witnessEdge{
+		hop:        pc.witnessHop("calling "+displayName(callee), call.Pos()),
+		target:     obj,
+		released:   released,
+		onReceiver: onReceiver,
+	})
+}
+
+// recordWitnessPaths records a call into another package, whose fact carries the callee's
+// paths whole. All of them cross, since this function's callers rank them by what they hold.
+func (pc *lockOrderContext) recordWitnessPaths(fn *ssa.Function, call ssa.CallInstruction, callee *ssa.Function, paths []witnessPath, released []string, onReceiver, namedOnly bool) {
+	if pc.witness == nil {
+		return
+	}
+	hop := pc.witnessHop("calling "+displayName(callee), call.Pos())
+	for _, p := range paths {
+		if namedOnly && !p.Named {
+			continue
+		}
+		pc.witness.paths[fn] = append(pc.witness.paths[fn], witnessExtend(witnessEdge{
+			hop:        hop,
+			released:   released,
+			onReceiver: onReceiver,
+		}, witnessCandidate{hops: p.Hops, released: p.Released, named: p.Named}))
+	}
+}
+
+// pickWitness chooses the path a call site names: the one whose wait still holds the most of
+// the classes the message reports, then a named wait, fewer hops, and the hop text. A path
+// whose wait holds none of them explains nothing, so no path is named then.
+func pickWitness(paths []witnessPath, reported []string, namedOnly bool) []string {
+	var best *witnessPath
+	for i := range paths {
+		p := &paths[i]
+		if namedOnly && !p.Named {
+			continue
+		}
+		if best == nil || siteWitnessBetter(p, best, reported) {
+			best = p
+		}
+	}
+	if best == nil || countIn(best.Released, reported) == len(reported) {
+		return nil
+	}
+	return best.Hops
+}
+
+// siteWitnessBetter reports whether c is preferred over than at a site that reports these
+// classes as held.
+func siteWitnessBetter(c, than *witnessPath, reported []string) bool {
+	if n, m := countIn(c.Released, reported), countIn(than.Released, reported); n != m {
+		return n < m
+	}
+	if c.Named != than.Named {
+		return c.Named
+	}
+	if len(c.Hops) != len(than.Hops) {
+		return len(c.Hops) < len(than.Hops)
+	}
+	return slices.Compare(c.Hops, than.Hops) < 0
+}
+
+// countIn returns how many of the classes are in the set.
+func countIn(classes, set []string) int {
+	return len(classes) - len(subtractClasses(classes, set))
+}
+
+// witnessHop renders one hop of a path.
+func (pc *lockOrderContext) witnessHop(text string, pos token.Pos) string {
+	p := pc.pass.Fset.Position(pos)
+	file, line := "?", "?"
+	if p.Filename != "" {
+		// The package clause names the hop's package: the import path is
+		// "command-line-arguments" over a file list, and the directory a checkout.
+		file = pc.pass.Pkg.Name() + "/" + filepath.Base(p.Filename)
+	}
+	if p.Line > 0 {
+		line = strconv.Itoa(p.Line)
+	}
+	return text + " at " + file + ":" + line
+}
+
+// deriveWitnesses sets each function's Witnesses from the settled summaries, iterating to a
+// fixpoint so that a caller written above its callee, or a cycle of calls, still gets one.
+func (pc *lockOrderContext) deriveWitnesses(fns []*ssa.Function, summaries map[*ssa.Function]*summaryFact) {
+	graph := &witnessGraph{
+		paths: make(map[*ssa.Function][]witnessCandidate),
+		edges: make(map[*ssa.Function][]witnessEdge),
+	}
+	pc.witness = graph
+	for _, fn := range fns {
+		// The summary is a throwaway: this walk is here for what it records, and the
+		// summaries it would produce have settled already.
+		pc.analyzeFunction(fn, &summaryFact{}, false)
+	}
+	pc.witness = nil
+
+	// An edge names its callee's object, which is also what a bound method wrapper and an
+	// instance of a generic function resolve to.
+	byObj := make(map[*types.Func]*ssa.Function, len(fns))
+	for _, fn := range fns {
+		if obj := funcObject(fn); obj != nil {
+			byObj[obj] = fn
+		}
+	}
+
+	// Keep the best path per released set, not one per function: a caller ranks by the set
+	// after unioning its own releases in, so which callee path it needs is not yet known.
+	best := make(map[*ssa.Function]map[string]witnessCandidate, len(fns))
+	callers := make(map[*ssa.Function][]*ssa.Function, len(fns))
+	for _, fn := range fns {
+		keyed := make(map[string]witnessCandidate, len(graph.paths[fn]))
+		for _, c := range graph.paths[fn] {
+			witnessKeep(keyed, c)
+		}
+		best[fn] = keyed
+		for _, e := range graph.edges[fn] {
+			if target, ok := byObj[e.target]; ok && !slices.Contains(callers[target], fn) {
+				callers[target] = append(callers[target], fn)
+			}
+		}
+	}
+	// A function's paths grow only when a callee's do, so each round extends the callers of
+	// what the last one changed. The bound is phase one's, as a guard rather than a limit.
+	work := slices.Clone(fns)
+	for round := 0; len(work) > 0; round++ {
+		var next []*ssa.Function
+		for _, fn := range work {
+			changed := false
+			for _, e := range graph.edges[fn] {
+				target, ok := byObj[e.target]
+				if !ok {
+					continue
+				}
+				// A call into this function itself would otherwise add keys to the
+				// map being read, so the callee's paths are taken as they stand.
+				for _, sub := range slices.Collect(maps.Values(best[target])) {
+					if witnessKeep(best[fn], witnessExtend(e, sub)) {
+						changed = true
+					}
+				}
+			}
+			if !changed {
+				continue
+			}
+			for _, caller := range callers[fn] {
+				if !slices.Contains(next, caller) {
+					next = append(next, caller)
+				}
+			}
+		}
+		work = next
+		if round > maxFixpointRounds {
+			break
+		}
+	}
+
+	for _, fn := range fns {
+		// A closure has no fact to publish on, and a function that does not wait has no
+		// path to publish.
+		summary := summaries[fn]
+		if funcObject(fn) == nil || !summary.Blocking {
+			continue
+		}
+		summary.Witnesses = witnessPaths(best[fn])
+		// A fact is not to change once exported, so the summary is exported again with its
+		// paths rather than relying on the framework holding the same pointer.
+		pc.exportSummary(fn, summary)
+	}
+}
+
+// witnessPaths turns a function's candidates into the paths its fact carries, ordered by the
+// classes they release so that the encoding does not depend on map iteration.
+func witnessPaths(keyed map[string]witnessCandidate) []witnessPath {
+	paths := make([]witnessPath, 0, len(keyed))
+	for _, key := range slices.Sorted(maps.Keys(keyed)) {
+		c := keyed[key]
+		paths = append(paths, witnessPath{Released: c.released, Named: c.named, Hops: c.hops})
+	}
+	return paths
+}
+
+// witnessKeep adds a path to a function's set, keeping the better of the two when the set
+// already holds one releasing the same classes. It reports whether the set changed.
+func witnessKeep(keyed map[string]witnessCandidate, c witnessCandidate) bool {
+	key := strings.Join(c.released, ",")
+	if prev, ok := keyed[key]; ok && !witnessBetter(c, prev) {
+		return false
+	}
+	keyed[key] = c
+	return true
+}
+
+// witnessExtend extends a callee's path through the call that reaches it. What the callee
+// releases is released here only when it acts on this function's receiver, the same rule
+// the call site itself applies.
+func witnessExtend(e witnessEdge, sub witnessCandidate) witnessCandidate {
+	released := e.released
+	if e.onReceiver {
+		released = unionClasses(e.released, sub.released)
+	}
+	hops := make([]string, 0, len(sub.hops)+1)
+	hops = append(hops, e.hop)
+	return witnessCandidate{
+		hops:     append(hops, sub.hops...),
+		released: released,
+		named:    sub.named,
+	}
+}
+
+// witnessBetter reports whether c is preferred over than, which releases the same classes:
+// the function's own +blocking declaration, then a named wait over a channel operation,
+// fewer hops, and the hop text. Ranking the released sets is a call site's to do.
+func witnessBetter(c, than witnessCandidate) bool {
+	if c.annotated != than.annotated {
+		// A declaration is a statement about the whole function, so it stands for
+		// whatever its body does.
+		return c.annotated
+	}
+	if c.named != than.named {
+		return c.named
+	}
+	if len(c.hops) != len(than.hops) {
+		return len(c.hops) < len(than.hops)
+	}
+	return slices.Compare(c.hops, than.hops) < 0
+}
+
 // report emits a diagnostic, grouped with the other sites of the same defect
 // when grouping is on.
 func (pc *lockOrderContext) report(key string, pos token.Pos, fmtStr string, args ...any) {
+	msg := fmt.Sprintf(fmtStr, args...)
+	pc.reportPath(key, pos, "", msg, msg)
+}
+
+// reportPath emits a diagnostic that names the path to the wait it reports, with plain the
+// message that leaves the path out. A grouped report names a path only where every site of
+// the group reaches the wait the same way, which is known once the sites have been seen.
+func (pc *lockOrderContext) reportPath(key string, pos token.Pos, path, msg, plain string) {
 	if pc.grouped() {
-		pc.maybeFailGrouped(key, pos, fmtStr, args...)
+		pc.maybeFailGrouped(key, pos, path, plain, "%s", msg)
 		return
 	}
-	pc.maybeFail(pos, fmtStr, args...)
+	pc.maybeFail(pos, "%s", msg)
 }
 
 // grouped reports whether the analyzer being run groups its reports.
