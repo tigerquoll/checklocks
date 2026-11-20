@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"go/types"
+	"maps"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -25,17 +26,16 @@ import (
 // +checklocksexclude states, and it is derivable from the body, so it is
 // derived rather than restated.
 //
-// This is sounder than the annotation it replaces. A self-acquiring method has
-// no legitimate caller holding the lock, so a method that was never annotated
-// was not exempt, it was unchecked; synthesis closes those gaps rather than
-// preserving them.
+// The derivation reports a caller holding a lock the method takes. It is not a
+// proof: it does not see every way a method can take its lock, so an
+// exclusion can be missed.
 //
 // The derivation is from the lock the body takes, never from how the method
 // happens to be called. Nothing here counts call sites.
 
 var (
 	// enableSynthExcludes derives the exclusion of a self-locking method.
-	// On by default: it is a sound derivation, and it only adds checking.
+	// On by default: it only adds checking.
 	enableSynthExcludes = true
 )
 
@@ -62,8 +62,8 @@ type selfLock struct {
 //
 // A fixpoint is needed because the property travels: a method that calls
 // another method of the same receiver which takes the lock takes it too, and
-// the callee may be analyzed after the caller. The set only grows over a
-// finite set of methods, so it settles.
+// the callee may be analyzed after the caller. The set and each lock's mode
+// only grow over a finite set of methods, so it settles.
 func (pc *passContext) synthesizeExcludes(fns []*ssa.Function) {
 	if !enableSynthExcludes {
 		return
@@ -76,9 +76,9 @@ func (pc *passContext) synthesizeExcludes(fns []*ssa.Function) {
 			if len(locks) == 0 {
 				continue
 			}
-			if before, ok := found[fn]; ok && len(before) == len(locks) {
-				// The set only grows, so an unchanged size is
-				// an unchanged set.
+			// A lock that becomes exclusive in a later round still
+			// has to reach callers, so the mode is compared too.
+			if before, ok := found[fn]; ok && maps.EqualFunc(before, locks, func(a, b selfLock) bool { return a.exclusive == b.exclusive }) {
 				continue
 			}
 			found[fn] = locks
