@@ -250,8 +250,8 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	var cs summaryFact
 	obj := funcObject(callee)
 	if obj == nil {
-		// A closure: it has no fact, but it is analyzed inline by the SSA walk of the
-		// enclosing function, so its effects are already accounted for.
+		// A closure has no fact. It is walked as a function of its own, so a violation
+		// inside it is reported there, but its effects do not reach this call site.
 		return
 	}
 	if !pc.pass.ImportObjectFact(obj, &cs) {
