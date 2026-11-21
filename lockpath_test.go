@@ -18,6 +18,8 @@ import (
 	"go/token"
 	"go/types"
 	"testing"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 type pathCase struct {
@@ -79,5 +81,88 @@ func TestLockPathExtendIndependent(t *testing.T) {
 	}
 	if a.fresh() != a.String() || b.fresh() != b.String() {
 		t.Error("an extension's cached text differs from a fresh render")
+	}
+}
+
+const keySource = `package p
+
+type T struct{ a, b int }
+
+var Mu int
+
+func A(t *T, i *T) {}
+
+func B(t *T) {}
+`
+
+func testParam(t *testing.T, pkg *ssa.Package, fn string, i int) lockPath {
+	t.Helper()
+	p := pkg.Func(fn).Params[i]
+	return newLockPath(pathRootParam, p, p.Object(), p.Name())
+}
+
+// TestLockPathKey pins which paths share a key.
+func TestLockPathKey(t *testing.T) {
+	pkg := buildTestPackage(t, "a", keySource)
+	other := buildTestPackage(t, "b", keySource)
+	aT, aI, bT := testParam(t, pkg, "A", 0), testParam(t, pkg, "A", 1), testParam(t, pkg, "B", 0)
+
+	if aT.String() != bT.String() || aT.Key() == bT.Key() {
+		t.Errorf("two parameters named t: renderings %q and %q, keys %q and %q", aT.String(), bT.String(), aT.Key(), bT.Key())
+	}
+	if aT.Key() != testParam(t, pkg, "A", 0).Key() {
+		t.Error("one parameter rooted twice has two keys")
+	}
+	global := func(p *ssa.Package) lockPath {
+		g := p.Members["Mu"].(*ssa.Global)
+		return newLockPath(pathRootGlobal, g, g.Object(), g.Name())
+	}
+	if g, o := global(pkg), global(other); g.String() != o.String() || g.Key() == o.Key() {
+		t.Errorf("globals of two packages: renderings %q and %q, keys %q and %q", g.String(), o.String(), g.Key(), o.Key())
+	}
+
+	fa := types.NewVar(token.NoPos, nil, "a", types.Typ[types.Int])
+	fb := types.NewVar(token.NoPos, nil, "b", types.Typ[types.Int])
+	distinct := map[string]pathKey{
+		"field and constant index, same n":  aT.extend(lockStep{kind: stepField, field: fa, n: 1}).Key(),
+		"constant index":                    aT.extend(lockStep{kind: stepConstIndex, n: 1}).Key(),
+		"field named b, n 0":                aT.extend(lockStep{kind: stepField, field: fb}).Key(),
+		"field named a, n 0":                aT.extend(lockStep{kind: stepField, field: fa}).Key(),
+		"index of a field":                  aT.extend(lockStep{kind: stepIndex, index: aI.extend(lockStep{kind: stepField, field: fa})}).Key(),
+		"field of an index":                 aT.extend(lockStep{kind: stepIndex, index: aI}).extend(lockStep{kind: stepField, field: fa}).Key(),
+		"nil-value param":                   newLockPath(pathRootParam, nil, nil, "t").Key(),
+		"nil-value free variable":           newLockPath(pathRootFreeVar, nil, nil, "t").Key(),
+		"field address, field a, n 0":       aT.extend(lockStep{kind: stepFieldAddr, field: fa}).Key(),
+		"index address, same index as aT.i": aT.extend(lockStep{kind: stepIndexAddr, index: aI}).Key(),
+		"index, same index as aT.i":         aT.extend(lockStep{kind: stepIndex, index: aI}).Key(),
+	}
+	seen := make(map[pathKey]string)
+	for name, key := range distinct {
+		if prev, ok := seen[key]; ok {
+			t.Errorf("%q and %q share key %q", prev, name, key)
+		}
+		seen[key] = name
+	}
+
+	blockless := newLockPath(pathRootValue, &ssa.Call{}, nil, "{*ssa.Call:7}")
+	if blockless.Key() == "" {
+		t.Error("a value root on a blockless instruction has no key")
+	}
+}
+
+// TestLockPathExtendKey pins that extend builds a key without changing its base.
+func TestLockPathExtendKey(t *testing.T) {
+	base := newLockPath(pathRootParam, nil, nil, "t").extend(lockStep{kind: stepDeref})
+	before := base.Key()
+	a := base.extend(lockStep{kind: stepConstIndex, n: 1})
+	b := base.extend(lockStep{kind: stepConstIndex, n: 2})
+	if base.Key() != before {
+		t.Error("extend changed the base's key")
+	}
+	if a.Key() == b.Key() || a.Key() == before {
+		t.Errorf("extensions share keys: %q %q %q", before, a.Key(), b.Key())
+	}
+	if a.freshKey() != a.Key() || b.freshKey() != b.Key() {
+		t.Error("an extension's cached key differs from a fresh encoding")
 	}
 }

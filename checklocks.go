@@ -97,18 +97,20 @@ type passContext struct {
 	pending []pendingReport
 
 	// counted names the observations already recorded for the inferred hints, so
-	// that a site the walk reaches again adds nothing; see recordObservation.
-	counted map[observationKey]struct{}
+	// that a site the walk reaches again adds nothing; see recordObservation. The value
+	// is the identity summary of the locks held.
+	counted map[observationKey]string
 
 	// returnStates holds the lock states the walk under way has returned in, as
 	// strings because the states themselves are shared and copied on write. It
-	// belongs to one walk and is saved and restored around another, as fresh is.
-	returnStates map[string]struct{}
+	// belongs to one walk and is saved and restored around another, as fresh is. The
+	// value is the identity summary of the state.
+	returnStates map[string]string
 
 	// entryLocks holds, by key and mode, the locks an inline walk was entered
 	// with: those are the caller's, and no return of the body leaves them held.
 	// It is empty for any other walk and is saved and restored as above.
-	entryLocks map[string]bool
+	entryLocks map[string]entryLock
 }
 
 // pendingReport is a report held back by the collector.

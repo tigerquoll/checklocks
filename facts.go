@@ -338,9 +338,7 @@ type returnGuard struct {
 // resolveCommon implements resolution for both cases.
 func (r *returnGuard) resolveCommon(rv any) resolvedValue {
 	if rv == nil {
-		// For defers and other objects, this may be nil. This is
-		// handled in state.go in the actual lock checking logic. This
-		// means that there is no resolvedValue available.
+		// The value may be nil; callers check valid().
 		return resolvedValue{}
 	}
 	// If this is a *ssa.Return object, i.e. we are analyzing the function

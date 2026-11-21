@@ -134,11 +134,11 @@ func TestObservationDedupe(t *testing.T) {
 
 	one := newLockState()
 	one.lockedMutexes["a.mu"] = lockInfo{exclusive: true, object: lock}
-	oneHeld := map[string]struct{}{"a.mu": {}}
+	oneHeld := map[string]pathKey{"a.mu": "a"}
 	two := newLockState()
 	two.lockedMutexes["a.mu"] = lockInfo{exclusive: true, object: lock}
 	two.lockedMutexes["b.mu"] = lockInfo{exclusive: true, object: lock}
-	twoHeld := map[string]struct{}{"a.mu": {}, "b.mu": {}}
+	twoHeld := map[string]pathKey{"a.mu": "a", "b.mu": "b"}
 	inst := fakeInst{}
 
 	pc := &passContext{}

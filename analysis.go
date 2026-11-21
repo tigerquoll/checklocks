@@ -242,7 +242,7 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 	var (
 		lgf         lockGuardFacts
 		guardsFound int
-		guardsHeld  = make(map[string]struct{}) // Keyed by resolved string.
+		guardsHeld  = make(map[string]pathKey) // Keyed by resolved string.
 	)
 
 	// An object no other goroutine can reach yet has nothing to race with, so its guards
@@ -272,20 +272,21 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 			pc.maybeFail(inst.Pos(), "field %s cannot be resolved", guardName)
 			continue
 		}
-		s, ok := ls.isHeld(r, isWrite)
+		p, ok := ls.isHeld(r, isWrite)
+		s := p.String()
 		if ok {
-			guardsHeld[s] = struct{}{}
+			guardsHeld[s] = p.Key()
 			continue
 		}
 		if _, ok := pc.forced[pc.positionKey(inst.Pos())]; ok {
 			// Mark this as locked, since it has been forced. All
 			// forces are treated as an exclusive lock.
-			s, inserted := ls.lockField(r, true /* exclusive */)
+			forcedPath, inserted := ls.lockField(r, true /* exclusive */)
 			if inserted {
 				// The force asserts the lock, it does not take it.
-				ls.setAssumed(s, true)
+				ls.setAssumed(forcedPath.String(), true)
 			}
-			guardsHeld[s] = struct{}{}
+			guardsHeld[forcedPath.String()] = forcedPath.Key()
 			continue
 		}
 		// Note that we may allow this if the disposition is atomic,
@@ -351,15 +352,17 @@ type observationKey struct {
 // recordObservation counts one access towards the inferred lock hints, once per lock
 // and once per site and lock state: a hint is a share of the accesses, and a repeat
 // would raise it above the whole.
-func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[string]struct{}) {
+func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[string]pathKey) {
 	key := observationKey{inst: inst, accessObj: accessObj, locks: ls.String()}
-	if _, ok := pc.counted[key]; ok {
+	summary := twinSummary(ls, func(lockInfo) bool { return true })
+	if old, ok := pc.counted[key]; ok {
+		twinNote("observe", key.locks, pathKey(old), pathKey(summary))
 		return
 	}
 	if pc.counted == nil {
-		pc.counted = make(map[observationKey]struct{})
+		pc.counted = make(map[observationKey]string)
 	}
-	pc.counted[key] = struct{}{}
+	pc.counted[key] = summary
 
 	oo := pc.observationsFor(accessObj)
 	oo.total++
@@ -373,7 +376,8 @@ func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, access
 			continue
 		}
 		// Has this already been held?
-		if _, ok := guardsHeld[s]; ok {
+		if k, ok := guardsHeld[s]; ok {
+			twinNote("guard", s, k, info.path.Key())
 			held[info.object] = struct{}{}
 			continue
 		}
@@ -508,20 +512,32 @@ func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, res
 		})
 	}
 	keys := make([]string, len(resolved))
-	modes := make(map[string]bool, len(resolved))
+	type guardMode struct {
+		exclusive bool
+		key       pathKey
+	}
+	modes := make(map[string]guardMode, len(resolved))
 	for i, g := range resolved {
 		if !g.rv.valid() {
 			continue
 		}
 		path, _ := g.rv.valueAndObject(ls)
-		keys[i] = ls.aliasPath(path).String()
-		modes[keys[i]] = modes[keys[i]] || g.fg.Exclusive
+		path = ls.aliasPath(path)
+		keys[i] = path.String()
+		m, seen := modes[keys[i]]
+		if seen {
+			twinNote("guard", keys[i], m.key, path.Key())
+		} else {
+			m.key = path.Key()
+		}
+		m.exclusive = m.exclusive || g.fg.Exclusive
+		modes[keys[i]] = m
 	}
 	for i := range resolved {
 		if keys[i] == "" {
 			continue
 		}
-		resolved[i].exclusive = modes[keys[i]]
+		resolved[i].exclusive = modes[keys[i]].exclusive
 	}
 	return resolved
 }
@@ -541,9 +557,9 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 			}
 			continue
 		}
-		if s, ok := ls.unlockField(g.rv, g.fg.Exclusive); !ok && !lff.Ignore {
+		if p, ok := ls.unlockField(g.rv, g.fg.Exclusive); !ok && !lff.Ignore {
 			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(call.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, s, ls.String())
+				pc.maybeFail(call.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
 		}
 	}
@@ -557,11 +573,11 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 			continue
 		}
 		// Acquire the lock per the annotation.
-		if s, ok := ls.lockField(g.rv, g.exclusive); !ok {
+		if p, ok := ls.lockField(g.rv, g.exclusive); !ok {
 			// The lock is really taken here, whatever assumed it earlier.
-			ls.setAssumed(s, false)
+			ls.setAssumed(p.String(), false)
 			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(call.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, s, ls.String())
+				pc.maybeFail(call.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
 		}
 	}
@@ -610,12 +626,12 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 			// be held here; see globalGuard.resolveCommon.
 			continue
 		}
-		if s, ok := ls.isHeld(g.rv, g.fg.Exclusive); ok {
+		if p, ok := ls.isHeld(g.rv, g.fg.Exclusive); ok {
 			if !forced && !lff.Ignore {
 				if g.fg.Exclusive {
-					pc.maybeFail(callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", g.fieldName, s, fn.Name(), ls.String())
+					pc.maybeFail(callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
 				} else {
-					pc.maybeFail(callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", g.fieldName, s, fn.Name(), ls.String())
+					pc.maybeFail(callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
 				}
 			}
 		}
@@ -641,12 +657,12 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 		if pc.freshArgument(call, g.fg) {
 			continue
 		}
-		if s, ok := ls.isHeld(g.rv, g.fg.Exclusive); !ok {
+		if p, ok := ls.isHeld(g.rv, g.fg.Exclusive); !ok {
 			if !forced && !lff.Ignore {
-				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), s, fn.Name(), ls.String())
-			} else if key, inserted := ls.lockField(g.rv, g.exclusive); inserted {
+				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), fn.Name(), ls.String())
+			} else if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
 				// The force asserts the lock, it does not take it.
-				ls.setAssumed(key, true)
+				ls.setAssumed(forcedPath.String(), true)
 			}
 		}
 	}
@@ -665,33 +681,33 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 			isExclusive = true
 			fallthrough
 		case "RLock":
-			if s, ok := ls.lockField(rv, isExclusive); !ok {
+			if p, ok := ls.lockField(rv, isExclusive); !ok {
 				// The lock is really taken here, whatever assumed it earlier.
-				ls.setAssumed(s, false)
+				ls.setAssumed(p.String(), false)
 				if !lff.Ignore && !forced {
 					// Double locking a mutex that is already locked.
-					pc.maybeFail(callPos, "%s already locked (locks: %s)", s, ls.String())
+					pc.maybeFail(callPos, "%s already locked (locks: %s)", p.String(), ls.String())
 				}
 			}
 		case "Unlock", "NestedUnlock":
 			isExclusive = true
 			fallthrough
 		case "RUnlock":
-			if s, ok := ls.unlockField(rv, isExclusive); !ok && !lff.Ignore {
+			if p, ok := ls.unlockField(rv, isExclusive); !ok && !lff.Ignore {
 				if !forced {
 					// Unlocking something that is already unlocked.
-					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", s, ls.String())
+					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
 				}
 			}
 		case "DowngradeLock":
-			if s, ok := ls.downgradeField(rv); !ok {
+			if p, ok := ls.downgradeField(rv); !ok {
 				if !forced && !lff.Ignore {
 					// Downgrading something that may not be downgraded.
-					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", s, ls.String())
+					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
 				}
 			} else {
 				// The lock is really held here, whatever assumed it earlier.
-				ls.setAssumed(s, false)
+				ls.setAssumed(p.String(), false)
 			}
 		}
 	}
@@ -931,21 +947,21 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 					}
 					continue
 				}
-				s, held := rls.isHeld(g.rv, g.fg.Exclusive)
+				p, held := rls.isHeld(g.rv, g.fg.Exclusive)
 				if held {
 					// The lock leaves with the caller, so it counts as taken
 					// here however it was first recorded.
-					rls.setAssumed(s, false)
+					rls.setAssumed(p.String(), false)
 					continue
 				}
 				if _, ok := pc.forced[pc.positionKey(rv.Pos())]; !ok && !lff.Ignore {
-					pc.maybeFail(rv.Pos(), "lock %s (%s) not held %s (locks: %s)", g.fieldName, s, exclusiveStr(g.fg.Exclusive), rls.String())
+					pc.maybeFail(rv.Pos(), "lock %s (%s) not held %s (locks: %s)", g.fieldName, p.String(), exclusiveStr(g.fg.Exclusive), rls.String())
 					failed = true
 					continue
 				}
 				// Force the lock to be acquired.
-				if key, inserted := rls.lockField(g.rv, g.exclusive); !inserted {
-					rls.setAssumed(key, false)
+				if forcedPath, inserted := rls.lockField(g.rv, g.exclusive); !inserted {
+					rls.setAssumed(forcedPath.String(), false)
 				}
 			}
 			// Check for other locks, but only if the above didn't trip.
@@ -965,7 +981,12 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		if pls := pc.checkBasicBlock(fn, succ, lff, ls, seen, rg); pls != nil {
 			// The states of one walk are gathered for checkFunction to compare:
 			// which two of them are neighbours here depends on the block graph.
-			pc.returnStates[pls.acquiredString(pc.entryLocks)] = struct{}{}
+			text, summary := pls.acquiredString(pc.entryLocks)
+			if old, ok := pc.returnStates[text]; ok {
+				twinNote("return", text, pathKey(old), pathKey(summary))
+			} else {
+				pc.returnStates[text] = summary
+			}
 			rls = pls
 		}
 	}
@@ -1023,11 +1044,11 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 			}
 			continue
 		}
-		if s, ok := ls.lockField(g.rv, g.exclusive); !ok && !lff.Ignore {
+		if p, ok := ls.lockField(g.rv, g.exclusive); !ok && !lff.Ignore {
 			// This can only happen if the same value is declared
 			// multiple times, and should be caught by the earlier
 			// fact scanning. Keep it here as a sanity check.
-			pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, s, ls.String())
+			pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, p.String(), ls.String())
 		}
 	}
 
@@ -1050,10 +1071,10 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	defer func() { pc.entryLocks = savedEntry }()
 	pc.entryLocks = nil
 	if parent != nil {
-		pc.entryLocks = make(map[string]bool, ls.count())
+		pc.entryLocks = make(map[string]entryLock, ls.count())
 		for key, info := range ls.lockedMutexes {
 			if !info.assumed {
-				pc.entryLocks[key] = info.exclusive
+				pc.entryLocks[key] = entryLock{exclusive: info.exclusive, key: info.path.Key()}
 			}
 		}
 	}
@@ -1065,7 +1086,7 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		roots = append(roots, fn.Recover)
 	}
 	for _, root := range roots {
-		pc.returnStates = make(map[string]struct{})
+		pc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(fn, root, lff, ls, seen, nil)
 		// Two states that cannot both hold are one finding about the function,
 		// however many paths reach them.

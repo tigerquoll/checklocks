@@ -43,10 +43,13 @@ func parityCheck(rv *resolvedValue, ls *lockState, path lockPath, obj types.Obje
 	}
 }
 
-// parityCheckEntry panics unless an entry's path renders as its key.
+// parityCheckEntry panics unless an entry's path renders as its key and carries its identity key.
 func parityCheckEntry(key string, info lockInfo) {
 	if info.path.String() != key {
 		panic(fmt.Sprintf("lock table parity: key %q, path %q", key, info.path.String()))
+	}
+	if fresh := info.path.freshKey(); info.path.Key() != fresh {
+		panic(fmt.Sprintf("lock table parity: identity key %q, fresh %q", info.path.Key(), fresh))
 	}
 }
 

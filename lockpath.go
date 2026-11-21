@@ -17,6 +17,8 @@ package checklocks
 import (
 	"fmt"
 	"go/types"
+	"slices"
+	"strconv"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -38,6 +40,52 @@ type lockRoot struct {
 
 	// name is the variable's name, or for a value root its rendered text.
 	name string
+}
+
+// keyPart writes s length-prefixed, so no text can forge a boundary.
+func keyPart(s string) string {
+	return strconv.Itoa(len(s)) + ":" + s
+}
+
+func (r lockRoot) key() string {
+	switch r.kind {
+	case pathRootParam:
+		if p, ok := r.value.(*ssa.Parameter); ok {
+			fn := p.Parent()
+			return "P" + keyPart(fn.String()) + keyPart(strconv.Itoa(slices.Index(fn.Params, p)))
+		}
+		return "P" + keyPart("") + keyPart(r.name)
+	case pathRootGlobal:
+		if g, ok := r.value.(*ssa.Global); ok {
+			return "G" + keyPart(g.String())
+		}
+		return "G" + keyPart("") + keyPart(r.name)
+	case pathRootFreeVar:
+		if f, ok := r.value.(*ssa.FreeVar); ok {
+			fn := f.Parent()
+			return "F" + keyPart(fn.String()) + keyPart(strconv.Itoa(slices.Index(fn.FreeVars, f)))
+		}
+		return "F" + keyPart("") + keyPart(r.name)
+	}
+	return "V" + keyPart(valuePackage(r.value)) + keyPart(r.name)
+}
+
+// valuePackage is the path of the package of v's function, empty where valueToken
+// does not ask for the parent.
+func valuePackage(v ssa.Value) string {
+	if v == nil {
+		return ""
+	}
+	if _, ok := v.(*ssa.Const); ok {
+		return ""
+	}
+	if inst, ok := v.(ssa.Instruction); ok && inst.Block() == nil {
+		return ""
+	}
+	if fn := v.Parent(); fn != nil && fn.Pkg != nil {
+		return fn.Pkg.Pkg.Path()
+	}
+	return ""
 }
 
 func (r lockRoot) render() string {
@@ -76,6 +124,26 @@ type lockStep struct {
 	index lockPath
 }
 
+func (s lockStep) key(index pathKey) string {
+	switch s.kind {
+	case stepDeref:
+		return "D"
+	case stepField:
+		return "F" + keyPart(strconv.Itoa(s.n)) + keyPart(s.field.Name())
+	case stepFieldAddr:
+		return "A" + keyPart(strconv.Itoa(s.n)) + keyPart(s.field.Name())
+	case stepIndex:
+		return "I" + keyPart(string(index))
+	case stepIndexAddr:
+		return "X" + keyPart(string(index))
+	case stepLookup:
+		return "L" + keyPart(string(index))
+	case stepConstIndex:
+		return "C" + keyPart(strconv.Itoa(s.n))
+	}
+	panic(fmt.Sprintf("unknown lock path step kind %d", s.kind))
+}
+
 // render returns the step applied to base, with index the rendering of the step's index.
 func (s lockStep) render(base, index string) string {
 	switch s.kind {
@@ -97,20 +165,29 @@ func (s lockStep) render(base, index string) string {
 	panic(fmt.Sprintf("unknown lock path step kind %d", s.kind))
 }
 
+// pathKey identifies a lock path: equal keys mean the same root and the same steps. It is
+// never printed.
+type pathKey string
+
 // lockPath names a lock as a root and the steps taken from it. It is immutable.
 type lockPath struct {
 	root  lockRoot
 	steps []lockStep
 	str   string
+	key   pathKey
 }
 
 func newLockPath(kind rootKind, v ssa.Value, obj types.Object, name string) lockPath {
 	root := lockRoot{kind: kind, value: v, object: obj, name: name}
-	return lockPath{root: root, str: root.render()}
+	return lockPath{root: root, str: root.render(), key: pathKey(root.key())}
 }
 
 func (p lockPath) String() string {
 	return p.str
+}
+
+func (p lockPath) Key() pathKey {
+	return p.key
 }
 
 // extend returns p followed by step, sharing no storage with p.
@@ -118,7 +195,7 @@ func (p lockPath) extend(step lockStep) lockPath {
 	steps := make([]lockStep, len(p.steps)+1)
 	copy(steps, p.steps)
 	steps[len(p.steps)] = step
-	return lockPath{root: p.root, steps: steps, str: step.render(p.str, step.index.str)}
+	return lockPath{root: p.root, steps: steps, str: step.render(p.str, step.index.str), key: p.key + pathKey(step.key(step.index.key))}
 }
 
 // fresh renders the path from its root and steps, ignoring the cached text.
@@ -128,4 +205,13 @@ func (p lockPath) fresh() string {
 		s = step.render(s, step.index.fresh())
 	}
 	return s
+}
+
+// freshKey encodes the path from its root and steps, ignoring the cached key.
+func (p lockPath) freshKey() pathKey {
+	k := pathKey(p.root.key())
+	for _, step := range p.steps {
+		k += pathKey(step.key(step.index.freshKey()))
+	}
+	return k
 }

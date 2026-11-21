@@ -39,6 +39,19 @@ type lockInfo struct {
 	path lockPath
 }
 
+// alias is the canonical path a rendering was redirected to, and the key of the path
+// that was redirected.
+type alias struct {
+	left   pathKey
+	target lockPath
+}
+
+// entryLock is a lock an inline walk was entered with.
+type entryLock struct {
+	exclusive bool
+	key       pathKey
+}
+
 // lockState tracks the locking state and aliases.
 type lockState struct {
 	// lockedMutexes is used to track which mutexes in a given struct are
@@ -48,7 +61,7 @@ type lockState struct {
 	// The value indicates whether this is an exclusive lock.
 	lockedMutexes map[string]lockInfo
 
-	aliases map[string]lockPath
+	aliases map[string]alias
 
 	// stored stores values that have been stored in memory, and the values
 	// bound to FreeVars.
@@ -83,7 +96,7 @@ func newLockState() *lockState {
 	refs := int32(1) // Not shared.
 	return &lockState{
 		lockedMutexes: make(map[string]lockInfo),
-		aliases:       make(map[string]lockPath),
+		aliases:       make(map[string]alias),
 		used:          make(map[ssa.Value]struct{}),
 		stored:        make(map[ssa.Value]ssa.Value),
 		bound:         make(map[ssa.Value]ssa.Value),
@@ -147,21 +160,23 @@ func (l *lockState) modify() {
 // isHeld indicates whether the field is held is not.
 //
 // Precondition: rv must be valid.
-func (l *lockState) isHeld(rv resolvedValue, exclusiveRequired bool) (string, bool) {
+func (l *lockState) isHeld(rv resolvedValue, exclusiveRequired bool) (lockPath, bool) {
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
 	path, _ := rv.valueAndObject(l)
-	s := l.aliasPath(path).String()
+	path = l.aliasPath(path)
+	s := path.String()
 	info, ok := l.lockedMutexes[s]
 	if !ok {
-		return s, false
+		return path, false
 	}
+	twinNote("held", s, info.path.Key(), path.Key())
 	// Accept a weaker lock if exclusiveRequired is false.
 	if exclusiveRequired && !info.exclusive {
-		return s, false
+		return path, false
 	}
-	return s, true
+	return path, true
 }
 
 // lockField locks the given field.
@@ -169,15 +184,16 @@ func (l *lockState) isHeld(rv resolvedValue, exclusiveRequired bool) (string, bo
 // If false is returned, the field was already locked.
 //
 // Precondition: rv must be valid.
-func (l *lockState) lockField(rv resolvedValue, exclusive bool) (string, bool) {
+func (l *lockState) lockField(rv resolvedValue, exclusive bool) (lockPath, bool) {
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
 	path, obj := rv.valueAndObject(l)
 	path = l.aliasPath(path)
 	s := path.String()
-	if _, ok := l.lockedMutexes[s]; ok {
-		return s, false
+	if existing, ok := l.lockedMutexes[s]; ok {
+		twinNote("lock", s, existing.path.Key(), path.Key())
+		return path, false
 	}
 	l.modify()
 	info := lockInfo{
@@ -187,7 +203,7 @@ func (l *lockState) lockField(rv resolvedValue, exclusive bool) (string, bool) {
 	}
 	parityCheckEntry(s, info)
 	l.lockedMutexes[s] = info
-	return s, true
+	return path, true
 }
 
 // unlockField unlocks the given field.
@@ -195,22 +211,24 @@ func (l *lockState) lockField(rv resolvedValue, exclusive bool) (string, bool) {
 // If false is returned, the field was not locked.
 //
 // Precondition: rv must be valid.
-func (l *lockState) unlockField(rv resolvedValue, exclusive bool) (string, bool) {
+func (l *lockState) unlockField(rv resolvedValue, exclusive bool) (lockPath, bool) {
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
 	path, _ := rv.valueAndObject(l)
-	s := l.aliasPath(path).String()
+	path = l.aliasPath(path)
+	s := path.String()
 	info, ok := l.lockedMutexes[s]
 	if !ok {
-		return s, false
+		return path, false
 	}
+	twinNote("unlock", s, info.path.Key(), path.Key())
 	if info.exclusive != exclusive {
-		return s, false
+		return path, false
 	}
 	l.modify()
 	delete(l.lockedMutexes, s)
-	return s, true
+	return path, true
 }
 
 // downgradeField downgrades the given field.
@@ -218,24 +236,26 @@ func (l *lockState) unlockField(rv resolvedValue, exclusive bool) (string, bool)
 // If false was returned, the field was not downgraded.
 //
 // Precondition: rv must be valid.
-func (l *lockState) downgradeField(rv resolvedValue) (string, bool) {
+func (l *lockState) downgradeField(rv resolvedValue) (lockPath, bool) {
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
 	path, _ := rv.valueAndObject(l)
-	s := l.aliasPath(path).String()
+	path = l.aliasPath(path)
+	s := path.String()
 	info, ok := l.lockedMutexes[s]
 	if !ok {
-		return s, false
+		return path, false
 	}
+	twinNote("downgrade", s, info.path.Key(), path.Key())
 	if !info.exclusive {
-		return s, false
+		return path, false
 	}
 	l.modify()
 	info.exclusive = false
 	parityCheckEntry(s, info)
 	l.lockedMutexes[s] = info // Downgraded.
-	return s, true
+	return path, true
 }
 
 // setAssumed marks a held lock as assumed or as acquired. The map is shared with the
@@ -282,12 +302,18 @@ func (l *lockState) addAlias(left, right resolvedValue) {
 	rightRoot := l.aliasPath(rightPath)
 	leftKey, rightKey := leftRoot.String(), rightRoot.String()
 	if leftKey == rightKey {
+		twinNote("alias", leftKey, leftRoot.Key(), rightRoot.Key())
 		return
 	}
 	l.modify()
-	l.aliases[leftKey] = rightRoot
+	if old, ok := l.aliases[leftKey]; ok {
+		twinNote("alias", leftKey, old.left, leftRoot.Key())
+	}
+	l.aliases[leftKey] = alias{left: leftRoot.Key(), target: rightRoot}
 	if leftInfo, ok := l.lockedMutexes[leftKey]; ok {
+		twinNote("alias", leftKey, leftInfo.path.Key(), leftRoot.Key())
 		if rightInfo, ok := l.lockedMutexes[rightKey]; ok {
+			twinNote("alias", rightKey, rightInfo.path.Key(), rightRoot.Key())
 			switch {
 			case leftInfo.assumed && !rightInfo.assumed:
 				leftInfo = rightInfo
@@ -309,7 +335,8 @@ func (l *lockState) aliasPath(p lockPath) lockPath {
 		if !ok {
 			return p
 		}
-		p = parent
+		twinNote("aliaspath", p.String(), parent.left, p.Key())
+		p = parent.target
 	}
 }
 
@@ -320,6 +347,7 @@ func (l *lockState) isSubset(other *lockState) bool {
 		if !otherOk {
 			return false
 		}
+		twinNote("subset", k, info.path.Key(), otherInfo.path.Key())
 		// Accept weaker locks as a subset.
 		if info.exclusive && !otherInfo.exclusive {
 			return false
@@ -341,15 +369,18 @@ func (l *lockState) count() int {
 // countOnReturn counts the locks a return leaves held. An assumed lock was never
 // acquired, and a lock in entry arrived with the caller of an inline body, so
 // neither is this return's to release.
-func (l *lockState) countOnReturn(entry map[string]bool) int {
+func (l *lockState) countOnReturn(entry map[string]entryLock) int {
 	n := 0
 	for k, info := range l.lockedMutexes {
 		if info.assumed {
 			continue
 		}
 		// A lock whose mode the body changed is not the one it was entered with.
-		if exclusive, ok := entry[k]; ok && exclusive == info.exclusive {
-			continue
+		if e, ok := entry[k]; ok {
+			twinNote("entry", k, e.key, info.path.Key())
+			if e.exclusive == info.exclusive {
+				continue
+			}
 		}
 		n++
 	}
@@ -571,16 +602,24 @@ func (l *lockState) String() string {
 	return strings.Join(keys, ",")
 }
 
-// acquiredString renders the locks a return state is compared by, in String()'s format.
-// An assumed lock is left out unless an inline body's entry held it in the same mode.
-func (l *lockState) acquiredString(entry map[string]bool) string {
+// acquiredString renders the locks a return state is compared by, in String()'s format,
+// and returns the identity summary of the same locks. An assumed lock is left out unless
+// an inline body's entry held it in the same mode.
+func (l *lockState) acquiredString(entry map[string]entryLock) (string, string) {
+	keep := func(info lockInfo) bool {
+		e, ok := entry[info.path.String()]
+		return !info.assumed || ok && e.exclusive == info.exclusive
+	}
 	held := make(map[string]lockInfo, len(l.lockedMutexes))
 	for k, info := range l.lockedMutexes {
-		if exclusive, ok := entry[k]; !info.assumed || ok && exclusive == info.exclusive {
+		if e, ok := entry[k]; ok {
+			twinNote("entry", k, e.key, info.path.Key())
+		}
+		if keep(info) {
 			held[k] = info
 		}
 	}
-	return (&lockState{lockedMutexes: held}).String()
+	return (&lockState{lockedMutexes: held}).String(), twinSummary(l, keep)
 }
 
 // pushDefer pushes a defer onto the stack.
