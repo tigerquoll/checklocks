@@ -312,13 +312,19 @@ func (l *lockState) count() int {
 }
 
 // countOnReturn counts the locks a return leaves held. An assumed lock was never
-// acquired, so it is nobody's to release.
-func (l *lockState) countOnReturn() int {
+// acquired, and a lock in entry arrived with the caller of an inline body, so
+// neither is this return's to release.
+func (l *lockState) countOnReturn(entry map[string]bool) int {
 	n := 0
-	for _, info := range l.lockedMutexes {
-		if !info.assumed {
-			n++
+	for k, info := range l.lockedMutexes {
+		if info.assumed {
+			continue
 		}
+		// A lock whose mode the body changed is not the one it was entered with.
+		if exclusive, ok := entry[k]; ok && exclusive == info.exclusive {
+			continue
+		}
+		n++
 	}
 	return n
 }
@@ -538,16 +544,16 @@ func (l *lockState) String() string {
 	return strings.Join(keys, ",")
 }
 
-// acquiredString renders the acquired locks in String()'s format, which is what a
-// return state is compared by: an assumed lock is not part of one.
-func (l *lockState) acquiredString() string {
-	acquired := make(map[string]lockInfo, len(l.lockedMutexes))
+// acquiredString renders the locks a return state is compared by, in String()'s format.
+// An assumed lock is left out unless an inline body's entry held it in the same mode.
+func (l *lockState) acquiredString(entry map[string]bool) string {
+	held := make(map[string]lockInfo, len(l.lockedMutexes))
 	for k, info := range l.lockedMutexes {
-		if !info.assumed {
-			acquired[k] = info
+		if exclusive, ok := entry[k]; !info.assumed || ok && exclusive == info.exclusive {
+			held[k] = info
 		}
 	}
-	return (&lockState{lockedMutexes: acquired}).String()
+	return (&lockState{lockedMutexes: held}).String()
 }
 
 // pushDefer pushes a defer onto the stack.

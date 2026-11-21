@@ -14,6 +14,8 @@
 
 package test
 
+import "sync"
+
 // +checklocks:t.mu
 func assumedNeedsLock(t *oneGuardStruct) {
 	t.guardedField = 1
@@ -143,4 +145,101 @@ func testAssumedForcedExit(t *oneGuardStruct) {
 func testAssumedSharedForcedExit(t *oneReadGuardStruct) {
 	assumedNeedsRead(t) // +checklocksforce
 	return              // +checklocksforce
+}
+
+type assumedTwoLocks struct {
+	mu  sync.Mutex
+	mu2 sync.Mutex // +checklocksignore: locked under mu, which would otherwise be inferred as its guard.
+}
+
+// A literal walked under the caller's lock does not leave it held.
+func testAssumedInlineReturn(t *oneGuardStruct) {
+	t.mu.Lock()
+	func() {
+		t.guardedField = 1
+		return
+	}()
+	t.mu.Unlock()
+}
+
+// A lock the body takes itself is the body's to release.
+func testAssumedInlineLeak(t *assumedTwoLocks) {
+	t.mu.Lock()
+	func() {
+		t.mu2.Lock()
+		return // +checklocksfail=return with unexpected locks held
+	}()
+	t.mu.Unlock()
+}
+
+// A lock whose mode the body changed is not the one it was entered with.
+func testAssumedInlineRetake(t *oneReadGuardStruct) {
+	t.mu.RLock()
+	func() {
+		t.mu.RUnlock() // +lockgapfail=taken again
+		t.mu.Lock()
+		t.guardedField = 1
+		return // +checklocksfail=return with unexpected locks held
+	}()
+	t.mu.RUnlock()
+}
+
+// A lock released and taken again in the same mode is still that lock.
+func testAssumedInlineRelock(t *oneGuardStruct) {
+	t.mu.Lock()
+	func() {
+		t.mu.Unlock() // +lockgapfail=taken again
+		t.mu.Lock()
+		return
+	}()
+	t.mu.Unlock()
+}
+
+// A lock the caller only assumed is no cover for one the body takes.
+func testAssumedInlinePromoted(t *oneGuardStruct) {
+	t.guardedField = 1 // +checklocksforce
+	func() {
+		t.mu.Lock() // +checklocksforce
+		return      // +checklocksfail=return with unexpected locks held
+	}()
+}
+
+// The same where the body's lock keeps its own report.
+func testAssumedInlinePromotedReported(t *oneGuardStruct) {
+	t.guardedField = 1 // +checklocksforce
+	func() {
+		t.mu.Lock() // +checklocksfail=already locked
+		return      // +checklocksfail=return with unexpected locks held
+	}()
+}
+
+// A lock the body released and then forced again is the one it was entered with.
+func testAssumedInlineReleaseForce(t *oneGuardStruct, c bool) {
+	t.mu.Lock()
+	func() {
+		if c {
+			t.mu.Unlock()
+			t.guardedField = 1 // +checklocksforce
+			return
+		}
+		return
+	}()
+	t.mu.Unlock()
+}
+
+var assumedMu sync.Mutex
+var assumedSink func() // +checklocksignore: assigned under assumedMu, which would otherwise be inferred as its guard.
+
+// A closure that captures a variable is walked by the nested walk, whose entry locks are empty.
+func testAssumedNestedInline(n *int) {
+	assumedMu.Lock()
+	func() {
+		assumedSink = func() {
+			*n = 1
+			assumedMu.Lock()
+			return // +checklocksfail=return with unexpected locks held
+		}
+		return
+	}()
+	assumedMu.Unlock()
 }

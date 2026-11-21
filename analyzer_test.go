@@ -209,6 +209,11 @@ var analyzerCases = []struct {
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "-lockorder.group=true", "./test/grouping"},
 	},
 	{
+		// Wrappers on, so an implicit return's position-less report is kept.
+		name: "inlinereturn",
+		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "./test/inlinereturn"},
+	},
+	{
 		// The hierarchical direction check is off by default, so its
 		// corpus is the one place it is turned on.
 		name: "lockhier",

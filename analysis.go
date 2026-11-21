@@ -935,7 +935,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 				}
 			}
 			// Check for other locks, but only if the above didn't trip.
-			if !failed && rls.countOnReturn() != len(lff.HeldOnExit) && !lff.Ignore {
+			if !failed && rls.countOnReturn(pc.entryLocks) != len(lff.HeldOnExit) && !lff.Ignore {
 				pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
 			}
 		}
@@ -951,7 +951,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		if pls := pc.checkBasicBlock(fn, succ, lff, ls, seen, rg); pls != nil {
 			// The states of one walk are gathered for checkFunction to compare:
 			// which two of them are neighbours here depends on the block graph.
-			pc.returnStates[pls.acquiredString()] = struct{}{}
+			pc.returnStates[pls.acquiredString(pc.entryLocks)] = struct{}{}
 			rls = pls
 		}
 	}
@@ -1029,6 +1029,20 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	seen := make(map[*ssa.BasicBlock]*lockState)
 	savedReturns := pc.returnStates
 	defer func() { pc.returnStates = savedReturns }()
+
+	// An inline body is entered with the caller's locks held; only what it takes
+	// itself is its own to release, and a lock merely assumed is no cover.
+	savedEntry := pc.entryLocks
+	defer func() { pc.entryLocks = savedEntry }()
+	pc.entryLocks = nil
+	if parent != nil {
+		pc.entryLocks = make(map[string]bool, ls.count())
+		for key, info := range ls.lockedMutexes {
+			if !info.assumed {
+				pc.entryLocks[key] = info.exclusive
+			}
+		}
+	}
 	roots := make([]*ssa.BasicBlock, 0, 2)
 	if len(fn.Blocks) > 0 {
 		roots = append(roots, fn.Blocks[0])

@@ -104,6 +104,11 @@ type passContext struct {
 	// strings because the states themselves are shared and copied on write. It
 	// belongs to one walk and is saved and restored around another, as fresh is.
 	returnStates map[string]struct{}
+
+	// entryLocks holds, by key and mode, the locks an inline walk was entered
+	// with: those are the caller's, and no return of the body leaves them held.
+	// It is empty for any other walk and is saved and restored as above.
+	entryLocks map[string]bool
 }
 
 // pendingReport is a report held back by the collector.
