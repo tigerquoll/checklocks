@@ -276,3 +276,29 @@ func declaredGenericWrapperSplits(g *DGuard[*sync.Mutex]) {
 	g.Lock()
 	g.Unlock()
 }
+
+// --- a method is named with its receiver, a generic wrapper by its declaration ---------------
+
+// +checklocks:c.mu
+func (c *cache) drop() {
+	c.mu.Unlock() // +lockgapfail=(*cache).drop releases a lock its caller holds
+	return        // +checklocksfail=not held
+}
+
+type GM[T any] struct {
+	mu sync.Mutex
+	v  T
+}
+
+// +checklocks:g.mu
+func (g *GM[T]) drop() {
+	g.mu.Unlock() // +lockgapfail=(*GM[T]).drop releases
+	g.mu.Lock()
+}
+
+func instanceWrapperSplits(g *DGuard[*sync.Mutex]) {
+	g.Lock()
+	g.Unlock() // +lockgapfail=the *DGuard[L] lock
+	g.Lock()
+	g.Unlock()
+}

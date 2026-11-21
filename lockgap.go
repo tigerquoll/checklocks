@@ -183,13 +183,13 @@ func (pc *lockGapContext) checkFunction(fn *ssa.Function) {
 		switch {
 		case reacquire != nil && heldOnEntry:
 			pc.maybeFail(rel.inst.Pos(), "%s releases a lock its caller holds and takes it again at %s: the caller's critical section is split, and every invariant it established before the call has to hold again after it",
-				fn.Name(), pc.position(reacquire.inst))
+				displayName(fn), pc.position(reacquire.inst))
 		case reacquire != nil:
 			pc.maybeFail(rel.inst.Pos(), "%s is released here and taken again at %s: %s",
 				rel.name, pc.position(reacquire.inst), gapConsequence(rel, reacquire))
 		case heldOnEntry:
 			pc.maybeFail(rel.inst.Pos(), "%s releases a lock its caller holds and does not take it back: the caller's critical section ends here, and nothing at the call site says so",
-				fn.Name())
+				displayName(fn))
 		}
 	}
 }
@@ -289,8 +289,9 @@ func lockDisplayName(recv ssa.Value, obj *types.Func) string {
 			return "the " + fieldName + " lock"
 		}
 	}
-	if sig, ok := obj.Type().(*types.Signature); ok && sig.Recv() != nil {
-		return "the " + shortType(sig.Recv().Type()) + " lock"
+	// The declaration's receiver: an instance's carries type arguments that shortType cuts into.
+	if recv := obj.Origin().Signature().Recv(); recv != nil {
+		return "the " + shortType(recv.Type()) + " lock"
 	}
 	return "the lock"
 }
