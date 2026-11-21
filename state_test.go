@@ -15,9 +15,13 @@
 package checklocks
 
 import (
+	"go/constant"
+	"go/types"
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 // TestLockStateString pins the text of a lock state, which a map order would vary.
@@ -54,5 +58,35 @@ func TestLockStateString(t *testing.T) {
 	}
 	if len(printed) != len(keys) {
 		t.Errorf("printed %d locks, want %d", len(printed), len(keys))
+	}
+}
+
+// TestAddAliasAssumed pins that a merge keeps an entry acquired unless both were assumed.
+func TestAddAliasAssumed(t *testing.T) {
+	merge := func(left, right lockInfo) lockInfo {
+		ls := newLockState()
+		// Two zero-value values would resolve to one key, so each is named.
+		l := makeResolvedValue(ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int]), nil)
+		r := makeResolvedValue(ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int]), nil)
+		ls.substitute(l.value, "left", nil)
+		ls.substitute(r.value, "right", nil)
+		ls.lockedMutexes["left"] = left
+		ls.lockedMutexes["right"] = right
+		ls.addAlias(l, r)
+		return ls.lockedMutexes["right"]
+	}
+	assumedExclusive := lockInfo{exclusive: true, assumed: true}
+	acquiredShared := lockInfo{exclusive: false}
+	if got := merge(assumedExclusive, acquiredShared); got != acquiredShared {
+		t.Errorf("an assumed left merged with an acquired right is %+v, want the acquired entry", got)
+	}
+	if got := merge(acquiredShared, assumedExclusive); got != acquiredShared {
+		t.Errorf("an acquired left merged with an assumed right is %+v, want the acquired entry", got)
+	}
+	if got := merge(assumedExclusive, assumedExclusive); !got.assumed {
+		t.Error("two assumed entries merged to an acquired one")
+	}
+	if got := merge(lockInfo{exclusive: true}, acquiredShared); !got.exclusive || got.assumed {
+		t.Errorf("two acquired entries merged to %+v, want exclusive acquired", got)
 	}
 }

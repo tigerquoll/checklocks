@@ -30,6 +30,10 @@ import (
 type lockInfo struct {
 	exclusive bool
 	object    types.Object
+
+	// assumed marks a lock held by assertion rather than by acquisition: a force
+	// or an ignore inserted it, so a return does not count it as left held.
+	assumed bool
 }
 
 // lockState tracks the locking state and aliases.
@@ -218,6 +222,18 @@ func (l *lockState) downgradeField(rv resolvedValue) (string, bool) {
 	return s, true
 }
 
+// setAssumed marks a held lock as assumed or as acquired. The map is shared with the
+// block memo and with sibling branches, so the write copies it first.
+func (l *lockState) setAssumed(s string, assumed bool) {
+	info, ok := l.lockedMutexes[s]
+	if !ok || info.assumed == assumed {
+		return
+	}
+	l.modify()
+	info.assumed = assumed
+	l.lockedMutexes[s] = info
+}
+
 // store records an alias.
 func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 	l.modify()
@@ -248,7 +264,12 @@ func (l *lockState) addAlias(left, right resolvedValue) {
 	l.aliases[leftRoot] = rightRoot
 	if leftInfo, ok := l.lockedMutexes[leftRoot]; ok {
 		if rightInfo, ok := l.lockedMutexes[rightRoot]; ok {
-			leftInfo.exclusive = leftInfo.exclusive || rightInfo.exclusive
+			switch {
+			case leftInfo.assumed && !rightInfo.assumed:
+				leftInfo = rightInfo
+			case leftInfo.assumed == rightInfo.assumed:
+				leftInfo.exclusive = leftInfo.exclusive || rightInfo.exclusive
+			}
 		}
 		l.lockedMutexes[rightRoot] = leftInfo
 		delete(l.lockedMutexes, leftRoot)
@@ -276,6 +297,11 @@ func (l *lockState) isSubset(other *lockState) bool {
 		if info.exclusive && !otherInfo.exclusive {
 			return false
 		}
+		// An assumed lock and an acquired one part ways at the return, so a block
+		// reached with one is not covered by a walk that reached it with the other.
+		if info.assumed != otherInfo.assumed {
+			return false
+		}
 	}
 	return true
 }
@@ -283,6 +309,18 @@ func (l *lockState) isSubset(other *lockState) bool {
 // count indicates the number of locks held.
 func (l *lockState) count() int {
 	return len(l.lockedMutexes)
+}
+
+// countOnReturn counts the locks a return leaves held. An assumed lock was never
+// acquired, so it is nobody's to release.
+func (l *lockState) countOnReturn() int {
+	n := 0
+	for _, info := range l.lockedMutexes {
+		if !info.assumed {
+			n++
+		}
+	}
+	return n
 }
 
 // isCompatible returns true if the states are compatible.
@@ -498,6 +536,18 @@ func (l *lockState) String() string {
 	}
 	slices.Sort(keys) // The map order is not an order; the text must be one.
 	return strings.Join(keys, ",")
+}
+
+// acquiredString renders the acquired locks in String()'s format, which is what a
+// return state is compared by: an assumed lock is not part of one.
+func (l *lockState) acquiredString() string {
+	acquired := make(map[string]lockInfo, len(l.lockedMutexes))
+	for k, info := range l.lockedMutexes {
+		if !info.assumed {
+			acquired[k] = info
+		}
+	}
+	return (&lockState{lockedMutexes: acquired}).String()
 }
 
 // pushDefer pushes a defer onto the stack.

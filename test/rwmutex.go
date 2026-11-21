@@ -66,3 +66,23 @@ func testRWExcludeWriteViolated(tc *oneReadGuardStruct) {
 	testRWExcludeWrite(tc) // +checklocksfail
 	tc.mu.Unlock()
 }
+
+// downgradeRWMutex names the downgrade a standard RWMutex has no method for.
+type downgradeRWMutex struct {
+	sync.RWMutex
+}
+
+func (m *downgradeRWMutex) DowngradeLock() {}
+
+type oneDowngradeGuardStruct struct {
+	mu downgradeRWMutex
+	// +checklocks:mu
+	guardedField int
+}
+
+// A downgrade takes over a lock a force only asserted.
+func testRWForcedDowngrade(tc *oneDowngradeGuardStruct) {
+	tc.guardedField = 1 // +checklocksforce
+	tc.mu.DowngradeLock()
+	return // +checklocksfail=return with unexpected locks held
+}
