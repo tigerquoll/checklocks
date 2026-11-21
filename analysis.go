@@ -15,8 +15,11 @@
 package checklocks
 
 import (
+	"cmp"
 	"go/token"
 	"go/types"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -254,7 +257,8 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 	pc.applyTypeAliases(ls, from)
 
 	// Check guards held.
-	for guardName, fgr := range lgf.GuardedBy {
+	for _, guardName := range slices.Sorted(maps.Keys(lgf.GuardedBy)) {
+		fgr := lgf.GuardedBy[guardName]
 		r := fgr.resolveField(pc, ls, from)
 		if r.unavailable {
 			// The guard has no object in this package, so it can
@@ -446,42 +450,85 @@ func (pc *passContext) checkCall(call callCommon, lff *lockFunctionFacts, ls *lo
 	}
 }
 
-// postFunctionCallUpdate updates all conditions.
-func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunctionFacts, ls *lockState) {
-	// Release all locks not still held.
-	for fieldName, fg := range lff.HeldOnEntry {
-		if _, ok := lff.HeldOnExit[fieldName]; ok {
+// resolvedGuard is one guard of a call or an entry, resolved against the lock state.
+type resolvedGuard struct {
+	fieldName string
+	fg        functionGuardInfo
+	rv        resolvedValue
+
+	// exclusive is the mode to record for the lock this guard names, which is not
+	// necessarily the mode the guard itself asks for. See resolveGuards.
+	exclusive bool
+}
+
+// resolveGuards resolves one call's or entry's guards in name order, skipping those in skip.
+// A lock's mode is combined over the guards naming it, exclusive winning as in addAlias,
+// so map order cannot decide how an aliased lock is held.
+func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, resolve func(functionGuardInfo) resolvedValue) []resolvedGuard {
+	resolved := make([]resolvedGuard, 0, len(guards))
+	for _, fieldName := range slices.Sorted(maps.Keys(guards)) {
+		if _, ok := skip[fieldName]; ok {
 			continue
 		}
-		r := fg.Resolver.resolveCall(pc, ls, call.Common().Args, call.Value())
-		if !r.valid() {
-			if !r.unavailable {
+		fg := guards[fieldName]
+		resolved = append(resolved, resolvedGuard{
+			fieldName: fieldName,
+			fg:        fg,
+			rv:        resolve(fg),
+			exclusive: fg.Exclusive,
+		})
+	}
+	keys := make([]string, len(resolved))
+	modes := make(map[string]bool, len(resolved))
+	for i, g := range resolved {
+		if !g.rv.valid() {
+			continue
+		}
+		key, _ := g.rv.valueAndObject(ls)
+		keys[i] = ls.aliasKey(key)
+		modes[keys[i]] = modes[keys[i]] || g.fg.Exclusive
+	}
+	for i := range resolved {
+		if keys[i] == "" {
+			continue
+		}
+		resolved[i].exclusive = modes[keys[i]]
+	}
+	return resolved
+}
+
+// postFunctionCallUpdate updates all conditions.
+func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunctionFacts, ls *lockState) {
+	resolve := func(fg functionGuardInfo) resolvedValue {
+		return fg.Resolver.resolveCall(pc, ls, call.Common().Args, call.Value())
+	}
+
+	// Release all locks not still held.
+	for _, g := range resolveGuards(ls, lff.HeldOnEntry, lff.HeldOnExit, resolve) {
+		if !g.rv.valid() {
+			if !g.rv.unavailable {
 				// See above: this cannot be forced.
-				pc.maybeFail(call.Pos(), "field %s cannot be resolved", fieldName)
+				pc.maybeFail(call.Pos(), "field %s cannot be resolved", g.fieldName)
 			}
 			continue
 		}
-		if s, ok := ls.unlockField(r, fg.Exclusive); !ok && !lff.Ignore {
+		if s, ok := ls.unlockField(g.rv, g.fg.Exclusive); !ok && !lff.Ignore {
 			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(call.Pos(), "attempt to release %s (%s), but not held (locks: %s)", fieldName, s, ls.String())
+				pc.maybeFail(call.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, s, ls.String())
 			}
 		}
 	}
 
 	// Update all held locks if acquired.
-	for fieldName, fg := range lff.HeldOnExit {
-		if _, ok := lff.HeldOnEntry[fieldName]; ok {
-			continue
-		}
-		// Acquire the lock per the annotation.
-		r := fg.Resolver.resolveCall(pc, ls, call.Common().Args, call.Value())
-		if r.unavailable {
+	for _, g := range resolveGuards(ls, lff.HeldOnExit, lff.HeldOnEntry, resolve) {
+		if g.rv.unavailable {
 			// The lock cannot be tracked here; see above.
 			continue
 		}
-		if s, ok := ls.lockField(r, fg.Exclusive); !ok && !lff.Ignore {
+		// Acquire the lock per the annotation.
+		if s, ok := ls.lockField(g.rv, g.exclusive); !ok && !lff.Ignore {
 			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(call.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", fieldName, s, ls.String())
+				pc.maybeFail(call.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, s, ls.String())
 			}
 		}
 	}
@@ -524,19 +571,18 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	}
 
 	// Check that excluded locks are not held on entry.
-	for fieldName, fg := range lff.ExcludedOnEntry {
-		r := resolve(fg)
-		if r.unavailable {
+	for _, g := range resolveGuards(ls, lff.ExcludedOnEntry, nil, resolve) {
+		if g.rv.unavailable {
 			// The lock has no object in this package, so it cannot
 			// be held here; see globalGuard.resolveCommon.
 			continue
 		}
-		if s, ok := ls.isHeld(r, fg.Exclusive); ok {
+		if s, ok := ls.isHeld(g.rv, g.fg.Exclusive); ok {
 			if !forced && !lff.Ignore {
-				if fg.Exclusive {
-					pc.maybeFail(callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", fieldName, s, fn.Name(), ls.String())
+				if g.fg.Exclusive {
+					pc.maybeFail(callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", g.fieldName, s, fn.Name(), ls.String())
 				} else {
-					pc.maybeFail(callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", fieldName, s, fn.Name(), ls.String())
+					pc.maybeFail(callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", g.fieldName, s, fn.Name(), ls.String())
 				}
 			}
 		}
@@ -550,9 +596,8 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	}
 
 	// Check all guards required are held.
-	for fieldName, fg := range lff.HeldOnEntry {
-		r := resolve(fg)
-		if r.unavailable {
+	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
+		if g.rv.unavailable {
 			// See above; the requirement cannot be checked here.
 			continue
 		}
@@ -560,15 +605,15 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 		// else can reach it to contend for the lock. This is the same silence the
 		// guarded fields of that object get, and the census showed it is nearly half
 		// of what the suppressions were for.
-		if pc.freshArgument(call, fg) {
+		if pc.freshArgument(call, g.fg) {
 			continue
 		}
-		if s, ok := ls.isHeld(r, fg.Exclusive); !ok {
+		if s, ok := ls.isHeld(g.rv, g.fg.Exclusive); !ok {
 			if !forced && !lff.Ignore {
-				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", fieldName, exclusiveStr(fg.Exclusive), s, fn.Name(), ls.String())
+				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), s, fn.Name(), ls.String())
 			} else {
 				// Force the lock to be acquired.
-				ls.lockField(r, fg.Exclusive)
+				ls.lockField(g.rv, g.exclusive)
 			}
 		}
 	}
@@ -825,22 +870,24 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		if rls != nil {
 			failed := false
 			// Validate held locks.
-			for fieldName, fg := range lff.HeldOnExit {
-				r := fg.Resolver.resolveStatic(pc, ls, fn, rv)
-				if !r.valid() {
-					if !r.unavailable {
+			resolve := func(fg functionGuardInfo) resolvedValue {
+				return fg.Resolver.resolveStatic(pc, ls, fn, rv)
+			}
+			for _, g := range resolveGuards(rls, lff.HeldOnExit, nil, resolve) {
+				if !g.rv.valid() {
+					if !g.rv.unavailable {
 						// This cannot be forced, since we have no reference.
-						pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", fieldName)
+						pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", g.fieldName)
 					}
 					continue
 				}
-				if s, ok := rls.isHeld(r, fg.Exclusive); !ok {
+				if s, ok := rls.isHeld(g.rv, g.fg.Exclusive); !ok {
 					if _, ok := pc.forced[pc.positionKey(rv.Pos())]; !ok && !lff.Ignore {
-						pc.maybeFail(rv.Pos(), "lock %s (%s) not held %s (locks: %s)", fieldName, s, exclusiveStr(fg.Exclusive), rls.String())
+						pc.maybeFail(rv.Pos(), "lock %s (%s) not held %s (locks: %s)", g.fieldName, s, exclusiveStr(g.fg.Exclusive), rls.String())
 						failed = true
 					} else {
 						// Force the lock to be acquired.
-						rls.lockField(r, fg.Exclusive)
+						rls.lockField(g.rv, g.exclusive)
 					}
 				}
 			}
@@ -900,6 +947,7 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	// of cases, parent will be nil. However, in the case of closures and
 	// anonymous functions, we may start with a non-nil lock state.
 	ls := parent.fork()
+	ls.nameConstants(fn)
 	for _, param := range fn.Params {
 		pc.applyTypeAliases(ls, param)
 	}
@@ -907,22 +955,24 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		pc.applyTypeAliases(ls, fv)
 	}
 
-	for fieldName, fg := range lff.HeldOnEntry {
-		// The first is the method object itself so we skip that when looking
-		// for receiver/function parameters.
-		r := fg.Resolver.resolveStatic(pc, ls, fn, call.Value())
-		if !r.valid() {
-			if !r.unavailable {
+	// The first is the method object itself so we skip that when
+	// looking for receiver/function parameters.
+	resolve := func(fg functionGuardInfo) resolvedValue {
+		return fg.Resolver.resolveStatic(pc, ls, fn, call.Value())
+	}
+	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
+		if !g.rv.valid() {
+			if !g.rv.unavailable {
 				// See above: this cannot be forced.
-				pc.maybeFail(fn.Pos(), "lock %s cannot be resolved", fieldName)
+				pc.maybeFail(fn.Pos(), "lock %s cannot be resolved", g.fieldName)
 			}
 			continue
 		}
-		if s, ok := ls.lockField(r, fg.Exclusive); !ok && !lff.Ignore {
+		if s, ok := ls.lockField(g.rv, g.exclusive); !ok && !lff.Ignore {
 			// This can only happen if the same value is declared
 			// multiple times, and should be caught by the earlier
 			// fact scanning. Keep it here as a sanity check.
-			pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", fieldName, s, ls.String())
+			pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, s, ls.String())
 		}
 	}
 
@@ -953,10 +1003,24 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 
 // checkInferred checks for any inferred lock annotations.
 func (pc *passContext) checkInferred() {
-	for obj, oo := range pc.observations {
+	// Resolved positions order these as a reader meets them; a raw token.Pos depends on how the
+	// file set was filled. Package and name separate objects that share a position.
+	pkgPath := func(o types.Object) string {
+		if o.Pkg() == nil {
+			return ""
+		}
+		return o.Pkg().Path()
+	}
+	byPosition := func(a, b types.Object) int {
+		return cmp.Or(comparePos(pc.pass.Fset, a.Pos(), b.Pos()),
+			strings.Compare(pkgPath(a), pkgPath(b)), strings.Compare(a.Name(), b.Name()))
+	}
+	for _, obj := range slices.SortedFunc(maps.Keys(pc.observations), byPosition) {
+		oo := pc.observations[obj]
 		var lgf lockGuardFacts
 		pc.importLockGuardFacts(obj, &lgf)
-		for other, count := range oo.counts {
+		for _, other := range slices.SortedFunc(maps.Keys(oo.counts), byPosition) {
+			count := oo.counts[other]
 			// Is this already a guard?
 			if _, ok := lgf.GuardedBy[other.Name()]; ok {
 				continue

@@ -237,9 +237,9 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// A call to a known sink. This is checked before the summaries, since a sink reached
 	// by interface dispatch has no callee to consult: the method the interface declares is
 	// enough to recognise a client library's round trip.
-	name, isSink := blockingCallee(call, callee)
+	name, sinkKey, isSink := blockingCallee(call, callee)
 	if isSink {
-		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", nil, cur.held(), cur.releasedClasses(), true /* named */, summary, report)
+		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", sinkKey, nil, cur.held(), cur.releasedClasses(), true /* named */, summary, report)
 		pc.recordWitnessWait(fn, "calling "+name, call.Pos(), cur.releasedClasses(), true /* named */, false /* annotated */)
 	}
 
@@ -302,7 +302,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		if report && pc.check == checkBlocking {
 			witness = pickWitness(cs.Witnesses, reported, namedOnly)
 		}
-		pc.noteBlocking(call.Pos(), "calling "+displayName(callee)+", which may block", witness,
+		pc.noteBlocking(call.Pos(), "calling "+displayName(callee)+", which may block", calleeKey(callee), witness,
 			reported, reached, cs.BlockingNamed, summary, report)
 	}
 	for _, a := range cs.Acquires {
@@ -424,9 +424,10 @@ func (pc *lockOrderContext) annotatedBlocking(obj *types.Func) bool {
 // The record goes into the summary whichever analyzer is walking, so that the bit and the
 // classes released by then travel to the callers of this function in one summary.
 //
-// witness is named in the message but kept out of the key, so the sites of one defect
-// still group together.
-func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, witness, heldClasses, released []string, named bool, summary *summaryFact, report bool) {
+// witness and what are named in the message but kept out of the key, so the sites of one
+// defect group together even where one method prints two ways, as it does when it is
+// reached through two interface types. waitKey identifies the wait: two callees print alike.
+func (pc *lockOrderContext) noteBlocking(pos token.Pos, what, waitKey string, witness, heldClasses, released []string, named bool, summary *summaryFact, report bool) {
 	summary.addBlocking(released, named)
 	if !report || pc.check != checkBlocking || len(heldClasses) == 0 {
 		return
@@ -438,7 +439,7 @@ func (pc *lockOrderContext) noteBlocking(pos token.Pos, what string, witness, he
 	if path != "" {
 		message = fmt.Sprintf(format, what+" ("+path+")", held)
 	}
-	pc.reportPath("blocking\x00"+what+"\x00"+held, pos, path, message, plain)
+	pc.reportPath("blocking\x00"+waitKey+"\x00"+held, pos, path, message, plain)
 }
 
 // visitChannelOp handles the channel operations, which are instructions rather than calls.
@@ -466,7 +467,7 @@ func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instructi
 	}
 	// A channel operation is a wait this analysis inferred rather than one it can name, so
 	// it does not travel out of the package it occurs in unless the module says otherwise.
-	pc.noteBlocking(instr.Pos(), what, nil, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
+	pc.noteBlocking(instr.Pos(), what, what /* waitKey: its kind is all that identifies it */, nil, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
 	pc.recordWitnessWait(fn, what, instr.Pos(), cur.releasedClasses(), false /* named */, false /* annotated */)
 }
 

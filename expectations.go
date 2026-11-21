@@ -15,8 +15,10 @@
 package checklocks
 
 import (
+	"cmp"
 	"fmt"
 	"go/token"
+	"maps"
 	"slices"
 	"strings"
 
@@ -100,6 +102,12 @@ func newExpectations(pass *analysis.Pass, set annotationSet, reportInvalidPos bo
 func (e *expectations) positionKey(pos token.Pos) positionKey {
 	position := e.pass.Fset.Position(pos)
 	return positionKey(fmt.Sprintf("%s:%d", position.Filename, position.Line))
+}
+
+// comparePos orders two positions as a reader meets them: by file, then line, then column.
+func comparePos(fset *token.FileSet, a, b token.Pos) int {
+	pa, pb := fset.Position(a), fset.Position(b)
+	return cmp.Or(strings.Compare(pa.Filename, pb.Filename), cmp.Compare(pa.Line, pb.Line), cmp.Compare(pa.Column, pb.Column))
 }
 
 // addFailures adds an expected failure.
@@ -237,8 +245,14 @@ func (e *expectations) flushGroups() {
 }
 
 // checkFailures checks for the expected failure counts.
+//
+// The unmet expectations are reported in position order: they are held in a map, which
+// offers them in a different order in every run.
 func (e *expectations) checkFailures() {
-	for _, fd := range e.failures {
+	unmet := slices.SortedFunc(maps.Values(e.failures), func(a, b *failData) int {
+		return comparePos(e.pass.Fset, a.pos, b.pos)
+	})
+	for _, fd := range unmet {
 		wildcards := 0
 		for _, want := range fd.wants {
 			if want == "" {

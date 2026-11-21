@@ -14,7 +14,19 @@
 
 package checklocks
 
-import "testing"
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"slices"
+	"strings"
+	"testing"
+
+	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
+)
 
 // TestK8sRequest pins the rule that separates a call to the API server from getting hold of
 // a client. It is a unit test because the corpus cannot exercise it: the kubernetes client
@@ -137,5 +149,233 @@ func TestBlockingNamedSticks(t *testing.T) {
 	}
 	if !g.Blocking || !g.BlockingNamed {
 		t.Errorf("merge lost the blocking state: %s", g)
+	}
+}
+
+// TestBlockingGroupKey pins the group key; corpus expectations are consumed per site, before grouping.
+func TestBlockingGroupKey(t *testing.T) {
+	fset := token.NewFileSet()
+	file := fset.AddFile("group.go", -1, 1000)
+	lines := make([]int, 100)
+	for i := range lines {
+		lines[i] = i * 10
+	}
+	file.SetLines(lines)
+	var got []string
+	pass := &analysis.Pass{
+		Fset:   fset,
+		Report: func(d analysis.Diagnostic) { got = append(got, d.Message) },
+	}
+	defer func(prev bool) { groupBlockingReports = prev }(groupBlockingReports)
+	groupBlockingReports = true
+	pc := &lockOrderContext{
+		expectations: newExpectations(pass, lockBlockingAnnotations, true),
+		pass:         pass,
+		order:        newOrder(),
+		check:        checkBlocking,
+	}
+
+	// Two callees of one name, each reaching its wait its own way.
+	const what = "calling (Queue).Drain, which may block"
+	var summary summaryFact
+	pc.noteBlocking(file.LineStart(10), what, "(a.Queue).Drain", []string{"a wait at a.go:1"},
+		[]string{"Grouped"}, nil, true /* named */, &summary, true /* report */)
+	pc.noteBlocking(file.LineStart(20), what, "(b.Queue).Drain", []string{"a wait at b.go:1"},
+		[]string{"Grouped"}, nil, true /* named */, &summary, true /* report */)
+	pc.flushGroups()
+
+	const tail = ") while holding Grouped: a wait under a lock stalls every other user of it"
+	want := []string{what + " (a wait at a.go:1" + tail, what + " (a wait at b.go:1" + tail}
+	if !slices.Equal(got, want) {
+		t.Errorf("reported\n%q\nwant\n%q", got, want)
+	}
+}
+
+// buildTestPackage builds one file under path, which decides whether a sink matches.
+func buildTestPackage(t *testing.T, path, src string) *ssa.Package {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path+"/x.go", src, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{}, fset, types.NewPackage(path, f.Name.Name), []*ast.File{f}, ssa.BuilderMode(0))
+	if err != nil {
+		t.Fatalf("building %s: %v", path, err)
+	}
+	return pkg
+}
+
+// ssaMethod returns the declared method typeName.name.
+func ssaMethod(t *testing.T, pkg *ssa.Package, typeName, name string) *ssa.Function {
+	t.Helper()
+	obj := pkg.Pkg.Scope().Lookup(typeName)
+	if obj == nil {
+		t.Fatalf("no type %s in %s", typeName, pkg.Pkg.Path())
+	}
+	sel := types.NewMethodSet(obj.Type()).Lookup(pkg.Pkg, name)
+	if sel == nil {
+		t.Fatalf("no method %s on %s", name, typeName)
+	}
+	return pkg.Prog.MethodValue(sel)
+}
+
+// ssaWrapper returns the wrapper ssa built whose name ends in suffix.
+func ssaWrapper(t *testing.T, pkg *ssa.Package, suffix string) *ssa.Function {
+	t.Helper()
+	for fn := range ssautil.AllFunctions(pkg.Prog) {
+		if strings.HasSuffix(fn.Name(), suffix) {
+			return fn
+		}
+	}
+	t.Fatalf("no %s wrapper in %s", suffix, pkg.Pkg.Path())
+	return nil
+}
+
+// TestCalleeKey pins callee identity: same-named methods differ, wrappers equal their method.
+func TestCalleeKey(t *testing.T) {
+	// The method value and the method expression are what make ssa build the wrappers.
+	const src = `package q
+
+type Queue struct{}
+
+func (Queue) Drain(c chan int) {}
+
+func drainers(q Queue) (func(chan int), func(Queue, chan int)) { return q.Drain, Queue.Drain }
+`
+	a := buildTestPackage(t, "example.com/a", src)
+	b := buildTestPackage(t, "example.com/b", src)
+	drainA, drainB := ssaMethod(t, a, "Queue", "Drain"), ssaMethod(t, b, "Queue", "Drain")
+	if displayName(drainA) != displayName(drainB) {
+		t.Fatalf("the two methods must print alike: %s, %s", displayName(drainA), displayName(drainB))
+	}
+	if calleeKey(drainA) == calleeKey(drainB) {
+		t.Errorf("two methods of one name share the key %q", calleeKey(drainA))
+	}
+	for _, suffix := range []string{"$bound", "$thunk"} {
+		wrapper := ssaWrapper(t, a, suffix)
+		if got, want := calleeKey(wrapper), calleeKey(drainA); got != want {
+			t.Errorf("calleeKey(%s) = %q, want %q", wrapper.Name(), got, want)
+		}
+	}
+}
+
+// TestInterfaceSinkKey pins one key for one method reached through two interface types.
+func TestInterfaceSinkKey(t *testing.T) {
+	// A generated client's verb, whose path is what marks it as a round trip.
+	const src = `package v1
+
+type Reader interface{ Get() }
+
+type ReadCloser interface {
+	Reader
+	Close()
+}
+
+func read(r Reader)           { r.Get() }
+func readClose(c ReadCloser)  { c.Get() }
+`
+	pkg := buildTestPackage(t, "k8s.io/client-go/kubernetes/typed/core/v1", src)
+	type sink struct {
+		name, key string
+		pos       token.Pos
+	}
+	var sinks []sink
+	for _, name := range []string{"read", "readClose"} {
+		fn := pkg.Func(name)
+		if fn == nil {
+			t.Fatalf("no function %s", name)
+		}
+		found := false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				call, ok := instr.(ssa.CallInstruction)
+				if !ok {
+					continue
+				}
+				what, key, isSink := blockingCallee(call, nil)
+				if !isSink {
+					continue
+				}
+				sinks, found = append(sinks, sink{what, key, call.Pos()}), true
+			}
+		}
+		if !found {
+			t.Fatalf("the call in %s is not recognised as a sink", name)
+		}
+	}
+	if len(sinks) != 2 {
+		t.Fatalf("got %d sinks, want 2", len(sinks))
+	}
+	if sinks[0].name == sinks[1].name {
+		t.Fatalf("each call must print through its own interface type, got %q for both", sinks[0].name)
+	}
+	if sinks[0].key != sinks[1].key {
+		t.Errorf("one method through two interfaces has two keys: %q, %q", sinks[0].key, sinks[1].key)
+	}
+
+	// The two sites are one defect, so grouped mode reports them once.
+	var got []string
+	pass := &analysis.Pass{
+		Fset:   pkg.Prog.Fset,
+		Report: func(d analysis.Diagnostic) { got = append(got, d.Message) },
+	}
+	defer func(prev bool) { groupBlockingReports = prev }(groupBlockingReports)
+	groupBlockingReports = true
+	pc := &lockOrderContext{
+		expectations: newExpectations(pass, lockBlockingAnnotations, true),
+		pass:         pass,
+		order:        newOrder(),
+		check:        checkBlocking,
+	}
+	var summary summaryFact
+	for _, s := range sinks {
+		pc.noteBlocking(s.pos, "calling "+s.name+", which blocks", s.key, nil,
+			[]string{"Grouped"}, nil, true /* named */, &summary, true /* report */)
+	}
+	pc.flushGroups()
+	if len(got) != 1 {
+		t.Errorf("reported %q, want one group", got)
+	}
+}
+
+// TestChannelOpKey pins the key of a channel operation: a send and a receive are two defects.
+func TestChannelOpKey(t *testing.T) {
+	const src = `package c
+
+func f(c chan int) {
+	c <- 1
+	<-c
+}
+`
+	pkg := buildTestPackage(t, "example.com/c", src)
+	fn := pkg.Func("f")
+	if fn == nil {
+		t.Fatal("no function f")
+	}
+	var got []string
+	pass := &analysis.Pass{
+		Fset:   pkg.Prog.Fset,
+		Report: func(d analysis.Diagnostic) { got = append(got, d.Message) },
+	}
+	defer func(prev bool) { groupBlockingReports = prev }(groupBlockingReports)
+	groupBlockingReports = true
+	pc := &lockOrderContext{
+		expectations: newExpectations(pass, lockBlockingAnnotations, true),
+		pass:         pass,
+		order:        newOrder(),
+		check:        checkBlocking,
+	}
+	cur := newClassSet()
+	cur.acquire("Grouped")
+	var summary summaryFact
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			pc.visitChannelOp(fn, instr, cur, &summary, true /* report */)
+		}
+	}
+	pc.flushGroups()
+	if len(got) != 2 {
+		t.Errorf("reported %q, want the send and the receive", got)
 	}
 }

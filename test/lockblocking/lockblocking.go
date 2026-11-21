@@ -493,7 +493,7 @@ func callsABoundMethod(a *App, c chan int) {
 
 func reachesABoundMethodUnderLock(a *App, c chan int) {
 	a.Lock()
-	callsABoundMethod(a, c) // +lockblockingfail=which may block (calling methodWaits$bound at lockblocking/lockblocking.go:491 -> a channel receive at lockblocking/lockblocking.go:486)
+	callsABoundMethod(a, c) // +lockblockingfail=which may block (calling (*App).methodWaits at lockblocking/lockblocking.go:491 -> a channel receive at lockblocking/lockblocking.go:486)
 	a.Unlock()
 }
 
@@ -690,5 +690,52 @@ func (w *sideWaiter) sendsThenSleepsOnSide(c chan int) {
 func (w *sideWaiter) callsSideWaiterHoldingApp(a *App, c chan int) {
 	a.Lock()
 	w.sendsThenSleepsOnSide(c) // +checklocksfail=must hold w.side.mu exclusively +lockblockingfail=which may block (calling Sleep at lockblocking/lockblocking.go:686) while holding App
+	a.Unlock()
+}
+
+// A method expression is a thunk, which stands for the method it was written as.
+func (a *App) thunkWaits(c chan int) {
+	<-c
+}
+
+func reachesAThunkUnderLock(a *App, c chan int) {
+	f := (*App).thunkWaits
+	a.Lock()
+	f(a, c) // +lockblockingfail=calling (*App).thunkWaits, which may block (a channel receive at lockblocking/lockblocking.go:698)
+	a.Unlock()
+}
+
+// elem is the type argument below, so that the instance's name is a qualified one.
+type elem struct{}
+
+func waitForElem[E any](c chan E) {
+	<-c
+}
+
+func reachesAnInstanceUnderLock(a *App, c chan elem) {
+	a.Lock()
+	waitForElem(c) // +lockblockingfail=calling waitForElem, which may block (a channel receive at lockblocking/lockblocking.go:712)
+	a.Unlock()
+}
+
+// Two waits one call away, which the witness tie-break decides between by their text.
+type tied struct{}
+
+func (tied) zz(c chan int) { <-c }
+
+func tiedHelper(c chan int) { <-c }
+
+func reachesTwoWaits(c chan int, cond bool) {
+	g := tied{}.zz
+	if cond {
+		tiedHelper(c)
+	} else {
+		g(c)
+	}
+}
+
+func reachesTwoWaitsUnderLock(a *App, c chan int, cond bool) {
+	a.Lock()
+	reachesTwoWaits(c, cond) // +lockblockingfail=which may block (calling (tied).zz at lockblocking/lockblocking.go:733 -> a channel receive at lockblocking/lockblocking.go:724)
 	a.Unlock()
 }

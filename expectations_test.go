@@ -15,6 +15,7 @@
 package checklocks
 
 import (
+	"fmt"
 	"go/token"
 	"slices"
 	"testing"
@@ -100,5 +101,36 @@ func TestGroupedPath(t *testing.T) {
 				t.Errorf("reported %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+// TestFailureOrder pins the order unmet expectations are reported in, which a map would vary.
+func TestFailureOrder(t *testing.T) {
+	fset := token.NewFileSet()
+	file := fset.AddFile("fail.go", -1, 1000)
+	lines := make([]int, 100)
+	for i := range lines {
+		lines[i] = i * 10
+	}
+	file.SetLines(lines)
+	var got []string
+	pass := &analysis.Pass{
+		Fset:   fset,
+		Report: func(d analysis.Diagnostic) { got = append(got, d.Message) },
+	}
+	e := newExpectations(pass, checkLocksAnnotations, true)
+
+	// Stated back to front, so only a sort yields the order below.
+	const sites = 9
+	var want []string
+	for i := sites; i >= 1; i-- {
+		e.addFailures(file.LineStart(2*i), fmt.Sprintf("=want%d", i))
+	}
+	for i := 1; i <= sites; i++ {
+		want = append(want, fmt.Sprintf("missing expected failure %q", fmt.Sprintf("want%d", i)))
+	}
+	e.checkFailures()
+	if !slices.Equal(got, want) {
+		t.Errorf("reported\n%q\nwant\n%q", got, want)
 	}
 }

@@ -174,24 +174,24 @@ func runLockBlocking(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// blockingCallee reports whether a call is a call to a known sink, and names it for the
-// diagnostic.
+// blockingCallee reports whether a call is a call to a known sink, names it for the
+// diagnostic and returns the identity its sites are grouped by.
 //
 // A call through an interface has no callee, which is the usual shape of a client library
 // call: the method the interface declares is what is matched then.
-func blockingCallee(call ssa.CallInstruction, callee *ssa.Function) (string, bool) {
+func blockingCallee(call ssa.CallInstruction, callee *ssa.Function) (string, string, bool) {
 	common := call.Common()
 	if common.Method != nil {
 		if isBlockingFunc(common.Method) {
-			return "(" + shortType(common.Value.Type()) + ")." + common.Method.Name(), true
+			return "(" + shortType(common.Value.Type()) + ")." + common.Method.Name(), funcKey(common.Method), true
 		}
-		return "", false
+		return "", "", false
 	}
 	obj := funcObject(callee)
 	if obj == nil || !isBlockingFunc(obj) {
-		return "", false
+		return "", "", false
 	}
-	return displayName(callee), true
+	return displayName(callee), calleeKey(callee), true
 }
 
 // isBlockingFunc reports whether a function is on the built-in sink list.

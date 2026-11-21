@@ -234,6 +234,15 @@ func displayName(fn *ssa.Function) string {
 	if fn == nil {
 		return "an indirect call"
 	}
+	// A wrapper, a thunk and an instance carry the object of the function they stand
+	// for, whose declared name is the one the source uses.
+	if obj := funcObject(fn); obj != nil {
+		obj = obj.Origin()
+		if recv := obj.Signature().Recv(); recv != nil {
+			return "(" + shortType(recv.Type()) + ")." + obj.Name()
+		}
+		return obj.Name()
+	}
 	name := fn.String()
 	if recv := fn.Signature.Recv(); recv != nil {
 		return "(" + shortType(recv.Type()) + ")." + fn.Name()
@@ -242,6 +251,25 @@ func displayName(fn *ssa.Function) string {
 		name = name[i+1:]
 	}
 	return name
+}
+
+// calleeKey identifies a callee for grouping, where two callees that display alike must
+// stay apart and one callee reached through a wrapper or an instance must not split.
+func calleeKey(fn *ssa.Function) string {
+	if obj := funcObject(fn); obj != nil {
+		return funcKey(obj)
+	}
+	if fn == nil {
+		return ""
+	}
+	return fn.String()
+}
+
+// funcKey identifies a declared function or method. An instance stands for the generic it
+// came from, so the instances of one function are one callee; an interface call stands for
+// the interface method it reaches.
+func funcKey(obj *types.Func) string {
+	return obj.Origin().FullName()
 }
 
 // shortType renders a receiver type without its package path.

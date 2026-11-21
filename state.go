@@ -56,6 +56,10 @@ type lockState struct {
 	// variable, which resolves to that variable. See accessor.go.
 	substitutions map[ssa.Value]substitution
 
+	// consts names the constants reached by the functions analyzed so far.
+	// It is read-only here and shared by every fork; see nameConstants.
+	consts map[*ssa.Const]string
+
 	// defers are the stack of defers that have been pushed.
 	defers []*ssa.Defer
 
@@ -91,6 +95,7 @@ func (l *lockState) fork() *lockState {
 		used:          make(map[ssa.Value]struct{}),
 		stored:        l.stored,
 		substitutions: l.substitutions,
+		consts:        l.consts,
 		defers:        l.defers,
 		refs:          l.refs,
 	}
@@ -397,11 +402,88 @@ func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
 		return fmt.Sprintf("%s[%d]", s, x.Index), nil
 	}
 
-	// In the case of any other type (e.g. this may be an alloc, a return
-	// value, etc.), just return the literal pointer value to the Value.
-	// This will be unique within the ssa graph, and so if two values are
-	// equal, they are from the same type.
-	return fmt.Sprintf("{%T:%p}", v, v), nil
+	// Any other value (an alloc, a return value, ...) is named by its place in the
+	// ssa graph, which is unique and the same in every run.
+	return l.valueToken(v), nil
+}
+
+// valueToken names a value that decomposes no further.
+//
+// The name is the identity of a lock rooted at the value, so it must be distinct for
+// distinct values, and it is printed in diagnostics, so it must not vary between runs.
+func (l *lockState) valueToken(v ssa.Value) string {
+	if c, ok := v.(*ssa.Const); ok {
+		if token, ok := l.consts[c]; ok {
+			return token
+		}
+		// A constant no analyzed function reached is named by its value, which can
+		// merge two of them; nameConstants covers every function that is walked.
+		return fmt.Sprintf("{%T:%s}", v, c.String())
+	}
+	if inst, ok := v.(ssa.Instruction); ok && inst.Block() == nil {
+		// Parent panics on an instruction outside a block, which a built function
+		// has none of; the position is all there is to name such a value by.
+		return fmt.Sprintf("{%T:%d}", v, int(v.Pos()))
+	}
+	if fn := v.Parent(); fn != nil {
+		// A register is unique only within its function: without the function, a
+		// closure's t2 would be the same lock as its caller's t2.
+		return fmt.Sprintf("{%T:%s:%s}", v, relFuncName(fn), v.Name())
+	}
+	// A top-level function or a builtin belongs to no function, and its own name is
+	// already unique.
+	return fmt.Sprintf("{%T:%s}", v, v.String())
+}
+
+// nameConstants names fn's constants by order of first use, the same in every run. A lifted
+// local's constant serves all its uses, so naming by site would split one lock. Names a caller
+// recorded are kept: a constant passed into a closure is one constant.
+func (l *lockState) nameConstants(fn *ssa.Function) {
+	var (
+		stackLocal [16]*ssa.Value
+		named      map[*ssa.Const]string
+	)
+	for _, block := range fn.Blocks {
+		for _, inst := range block.Instrs {
+			for _, v := range inst.Operands(stackLocal[:0]) {
+				if v == nil {
+					continue
+				}
+				c, ok := (*v).(*ssa.Const)
+				if !ok {
+					continue
+				}
+				if _, ok := l.consts[c]; ok {
+					continue
+				}
+				if _, ok := named[c]; ok {
+					continue
+				}
+				if named == nil {
+					named = make(map[*ssa.Const]string)
+				}
+				named[c] = fmt.Sprintf("{%T:%s:k%d}", c, relFuncName(fn), len(named))
+			}
+		}
+	}
+	if named == nil {
+		return
+	}
+	// The table is shared with every state forked from this one, so it is replaced
+	// rather than written to.
+	consts := make(map[*ssa.Const]string, len(l.consts)+len(named))
+	maps.Copy(consts, l.consts)
+	maps.Copy(consts, named)
+	l.consts = consts
+}
+
+// relFuncName names a function relative to its own package, which keeps the package path
+// out of the name without dropping the receiver or the enclosing function.
+func relFuncName(fn *ssa.Function) string {
+	if fn.Pkg != nil {
+		return fn.RelString(fn.Pkg.Pkg)
+	}
+	return fn.String()
 }
 
 // String returns the full lock state.
@@ -414,6 +496,7 @@ func (l *lockState) String() string {
 		// Include the exclusive status of each lock.
 		keys = append(keys, fmt.Sprintf("%s %s", k, exclusiveStr(info.exclusive)))
 	}
+	slices.Sort(keys) // The map order is not an order; the text must be one.
 	return strings.Join(keys, ",")
 }
 

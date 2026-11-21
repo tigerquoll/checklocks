@@ -55,12 +55,12 @@ type clock struct{}
 
 func (clock) drain(c chan int) { time.Sleep(time.Millisecond) }
 
-// Bound method values drop the receiver from the name: one group, two paths, no path named.
+// Bound method values name the method they stand for: two groups, each naming its path.
 func twoCalleesOfOneName(g *Grouped, c chan int) {
 	fromQueue, fromClock := queue{}.drain, clock{}.drain
 	g.Lock()
-	fromQueue(c) // +lockblockingfail=calling drain$bound, which may block (a channel receive at lockblockinggroup/lockblockinggroup.go:52) while holding Grouped
-	fromClock(c) // +lockblockingfail=calling drain$bound, which may block (calling Sleep at lockblockinggroup/lockblockinggroup.go:56) while holding Grouped
+	fromQueue(c) // +lockblockingfail=calling (queue).drain, which may block (a channel receive at lockblockinggroup/lockblockinggroup.go:52) while holding Grouped
+	fromClock(c) // +lockblockingfail=calling (clock).drain, which may block (calling Sleep at lockblockinggroup/lockblockinggroup.go:56) while holding Grouped
 	g.Unlock()
 }
 
@@ -72,11 +72,11 @@ type sleeper struct{}
 
 func (sleeper) fetch(c chan int) { time.Sleep(time.Millisecond) }
 
-// An ignored site of the same name does not change the path this site names.
+// An ignored site of another callee of the same name says nothing about this one.
 func anIgnoredSiteDoesNotVote(g *Grouped, c chan int) {
 	fromReader, fromSleeper := reader{}.fetch, sleeper{}.fetch
 	g.Lock()
-	fromReader(c)  // +lockblockingfail=calling fetch$bound, which may block (a channel receive at lockblockinggroup/lockblockinggroup.go:69) while holding Grouped
+	fromReader(c)  // +lockblockingfail=calling (reader).fetch, which may block (a channel receive at lockblockinggroup/lockblockinggroup.go:69) while holding Grouped
 	fromSleeper(c) // +lockblockingignore
 	g.Unlock()
 }
