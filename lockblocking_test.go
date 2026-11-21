@@ -232,7 +232,7 @@ func ssaWrapper(t *testing.T, pkg *ssa.Package, suffix string) *ssa.Function {
 	return nil
 }
 
-// TestFuncObjectOrigin pins that fact lookups use the declaration and lock classification the instance.
+// TestFuncObjectOrigin pins that funcObject returns the declaration and calledFunc the instance.
 func TestFuncObjectOrigin(t *testing.T) {
 	const src = `package q
 

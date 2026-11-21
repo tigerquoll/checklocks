@@ -223,7 +223,7 @@ func buildDescribeWrite(name string) {
 
 // --- a method of a generic type is consulted on its declaration ---------------------------------
 
-// plainHelper does not publish what it is given, which is what a missing fact would assume.
+// plainHelper does not publish what it is given; a callee with no fact is assumed to.
 type plainHelper struct{ n int }
 
 func (h *plainHelper) use(q *Queue) int {
