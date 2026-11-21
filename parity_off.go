@@ -16,8 +16,20 @@
 
 package checklocks
 
-import "go/types"
+import (
+	"go/token"
+	"go/types"
+)
 
 func parityCheck(*resolvedValue, *lockState, lockPath, types.Object) {}
 
 func parityCheckEntry(pathKey, lockInfo) {}
+
+const replayRuns = 1
+
+type blockParity struct{}
+
+func (blockParity) walked(*lockState)                                       {}
+func (blockParity) replayed(*blockRecord, *lockState, bool)                 {}
+func (*passContext) parityFinding(token.Pos, string, ...any)                {}
+func (*passContext) parityObservation(almostInst, types.Object, *lockState) {}

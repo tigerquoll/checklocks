@@ -94,7 +94,26 @@ type passContext struct {
 	// counted names the observations already recorded for the inferred hints, so
 	// that a site the walk reaches again adds nothing; see recordObservation.
 	counted map[observationKey]struct{}
+
+	// emit says where reports and observations go; see emitMode.
+	emit emitMode
+
+	// records holds the blocks the walk entered, for the replay, and current the one
+	// being walked or replayed.
+	records []*blockRecord
+	current *blockRecord
 }
+
+// emitMode says what maybeFail and recordObservation do with what they are given.
+type emitMode int
+
+const (
+	// emitDirect reports at once, or holds the report for flushReports.
+	emitDirect emitMode = iota
+	// emitWalk drops the report: the replay raises it.
+	emitWalk
+	emitReplay
+)
 
 // pendingReport is a report held back by the collector.
 type pendingReport struct {
@@ -105,6 +124,10 @@ type pendingReport struct {
 // maybeFail collects a potential failure where this pass collects, and otherwise
 // reports it immediately as the embedded expectations do.
 func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...any) {
+	pc.parityFinding(pos, fmtStr, args...)
+	if pc.emit == emitWalk {
+		return
+	}
 	if !pc.collect {
 		pc.expectations.maybeFail(pos, fmtStr, args...)
 		return

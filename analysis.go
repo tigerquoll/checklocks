@@ -354,6 +354,10 @@ type observationKey struct {
 // and once per site and lock state: a hint is a share of the accesses, and a repeat
 // would raise it above the whole.
 func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[pathKey]struct{}) {
+	pc.parityObservation(inst, accessObj, ls)
+	if pc.emit == emitWalk {
+		return
+	}
 	key := observationKey{inst: inst, accessObj: accessObj, locks: ls.identitySummary(func(lockInfo) bool { return true })}
 	if _, ok := pc.counted[key]; ok {
 		return
@@ -963,47 +967,19 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 	return nil, nil
 }
 
-// checkBasicBlock traverses the control flow graph starting at a set of given
-// block and checks each instruction for allowed operations.
-func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
-	// Check for cached results from entering this block from a *different*
-	// execution path. Note that this is not the same path, which is
-	// checked with the recursion guard below.
-	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) {
-		return nil
-	}
+// blockRecord is the input a walk entered a block with, kept for the replay.
+type blockRecord struct {
+	wc     *walkContext
+	block  *ssa.BasicBlock
+	parent *lockState
+	parity blockParity
+}
 
-	// Prevent recursion. If the lock state is constantly changing and we
-	// are a recursive path, then there will never be a return block.
-	if rg == nil {
-		rg = make(map[*ssa.BasicBlock]struct{})
-	}
-	if _, ok := rg[block]; ok {
-		return nil
-	}
-	rg[block] = struct{}{}
-	defer func() { delete(rg, block) }()
-
-	// If the lock state is not compatible, then we need to do the
-	// recursive analysis to ensure that it is still sane. For example, the
-	// following is guaranteed to generate incompatible locking states:
-	//
-	//	if foo {
-	//		mu.Lock()
-	//	}
-	//	other stuff ...
-	//	if foo {
-	//		mu.Unlock()
-	//	}
-
-	var (
-		rv  *ssa.Return
-		rls *lockState
-	)
-
-	// Analyze this block.
-	seen[block] = parent
-	ls := parent.fork()
+// transferBlock runs the instructions of a block on a fork of parent. It returns
+// the resulting state and, when the block returns, that state again.
+func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState) (ls, rls *lockState) {
+	var rv *ssa.Return
+	ls = parent.fork()
 	for _, inst := range block.Instrs {
 		rv, rls = pc.checkInstruction(inst, wc, ls)
 		if rls != nil {
@@ -1043,6 +1019,67 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 			}
 		}
 	}
+	return ls, rls
+}
+
+// replay runs every recorded block again on its recorded input, which is where the
+// reports raised inside blocks come from.
+func (pc *passContext) replay() {
+	outerEmit := pc.emit
+	pc.emit = emitReplay
+	for _, r := range pc.records {
+		for run := 0; run < replayRuns; run++ {
+			pc.current = r
+			n := len(pc.records)
+			ls, _ := pc.transferBlock(r.wc, r.block, r.parent)
+			r.parity.replayed(r, ls, len(pc.records) != n)
+		}
+	}
+	pc.current, pc.emit, pc.records = nil, outerEmit, nil
+}
+
+// checkBasicBlock traverses the control flow graph starting at a set of given
+// block and checks each instruction for allowed operations.
+func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
+	// Check for cached results from entering this block from a *different*
+	// execution path. Note that this is not the same path, which is
+	// checked with the recursion guard below.
+	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) {
+		return nil
+	}
+
+	// Prevent recursion. If the lock state is constantly changing and we
+	// are a recursive path, then there will never be a return block.
+	if rg == nil {
+		rg = make(map[*ssa.BasicBlock]struct{})
+	}
+	if _, ok := rg[block]; ok {
+		return nil
+	}
+	rg[block] = struct{}{}
+	defer func() { delete(rg, block) }()
+
+	// If the lock state is not compatible, then we need to do the
+	// recursive analysis to ensure that it is still sane. For example, the
+	// following is guaranteed to generate incompatible locking states:
+	//
+	//	if foo {
+	//		mu.Lock()
+	//	}
+	//	other stuff ...
+	//	if foo {
+	//		mu.Unlock()
+	//	}
+
+	// Analyze this block.
+	seen[block] = parent
+	rec := &blockRecord{wc: wc, block: block, parent: parent}
+	pc.records = append(pc.records, rec)
+	outerRec, outerEmit := pc.current, pc.emit
+	pc.current, pc.emit = rec, emitWalk
+	ls, rls := pc.transferBlock(wc, block, parent)
+	pc.current, pc.emit = outerRec, outerEmit
+	rec.parity.walked(ls)
 
 	// Analyze all successors.
 	for _, succ := range block.Succs {
@@ -1064,6 +1101,12 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 
 // checkFunction checks a function invocation, typically starting with nil lockState.
 func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, parent *lockState, force bool) {
+	if pc.emit == emitReplay {
+		return
+	}
+	outerEmit := pc.emit
+	pc.emit = emitDirect
+	defer func() { pc.emit = outerEmit }()
 	defer func() {
 		// Mark this function as checked. This is used by the top-level
 		// loop to ensure that all anonymous functions are scanned, if
@@ -1158,6 +1201,10 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", wc.returnStates[states[0]], wc.returnStates[states[1]])
 			}
 		}
+	}
+
+	if outer == nil {
+		pc.replay()
 	}
 
 	// Update all lock state accordingly. This will be called only if we

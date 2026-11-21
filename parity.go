@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -161,4 +162,83 @@ func (l *lockState) oldValueToken(v ssa.Value) string {
 		return fmt.Sprintf("{%T:%s:%s}", v, relFuncName(fn), v.Name())
 	}
 	return fmt.Sprintf("{%T:%s}", v, v.String())
+}
+
+const replayRuns = 2
+
+// blockCapture is what one transfer of a block produced.
+type blockCapture struct {
+	findings     []string
+	observations []string
+	state        string
+}
+
+// blockParity holds the walk's capture of a block and that of the replay run in progress.
+type blockParity struct {
+	walk, run blockCapture
+}
+
+func (pc *passContext) capture() *blockCapture {
+	switch pc.emit {
+	case emitWalk:
+		return &pc.current.parity.walk
+	case emitReplay:
+		return &pc.current.parity.run
+	}
+	return nil
+}
+
+func (pc *passContext) parityFinding(pos token.Pos, fmtStr string, args ...any) {
+	if c := pc.capture(); c != nil {
+		c.findings = append(c.findings, fmt.Sprintf("%d: %s", pos, fmt.Sprintf(fmtStr, args...)))
+	}
+}
+
+func (pc *passContext) parityObservation(inst almostInst, accessObj types.Object, ls *lockState) {
+	if c := pc.capture(); c != nil {
+		c.observations = append(c.observations, fmt.Sprintf("%d %v %s", inst.Pos(), accessObj, ls.identitySummary(func(lockInfo) bool { return true })))
+	}
+}
+
+func (p *blockParity) walked(ls *lockState) {
+	p.walk.state = ls.identitySummary(func(lockInfo) bool { return true })
+}
+
+// replayed panics unless the replay run that just ended matches the walk's capture.
+func (p *blockParity) replayed(r *blockRecord, ls *lockState, grew bool) {
+	where := fmt.Sprintf("%s block %d", r.wc.fn.String(), r.block.Index)
+	if grew {
+		panic(fmt.Sprintf("block replay parity: %s: replay entered a nested walk", where))
+	}
+	p.run.state = ls.identitySummary(func(lockInfo) bool { return true })
+	run, walk := p.run, p.walk
+	p.run = blockCapture{}
+	slices.Sort(run.findings)
+	slices.Sort(walk.findings)
+	slices.Sort(run.observations)
+	slices.Sort(walk.observations)
+	if d := firstDifference(walk.findings, run.findings); d != "" {
+		panic(fmt.Sprintf("block replay parity: %s: findings: %s", where, d))
+	}
+	if d := firstDifference(walk.observations, run.observations); d != "" {
+		panic(fmt.Sprintf("block replay parity: %s: observations: %s", where, d))
+	}
+	if run.state != walk.state {
+		panic(fmt.Sprintf("block replay parity: %s: state: walk %q, replay %q", where, walk.state, run.state))
+	}
+}
+
+// firstDifference describes the first place two sorted lists differ, or returns "".
+func firstDifference(walk, run []string) string {
+	for i := 0; i < max(len(walk), len(run)); i++ {
+		switch {
+		case i >= len(walk):
+			return fmt.Sprintf("replay has extra %q", run[i])
+		case i >= len(run):
+			return fmt.Sprintf("replay lacks %q", walk[i])
+		case walk[i] != run[i]:
+			return fmt.Sprintf("walk %q, replay %q", walk[i], run[i])
+		}
+	}
+	return ""
 }
