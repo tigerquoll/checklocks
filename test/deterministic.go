@@ -118,11 +118,11 @@ type detAlias struct {
 	x int
 }
 
-// Two entry guards name one lock and the exclusive one sorts last, so first-wins fails the write.
+// Two entry guards name one lock: the second is reported and the exclusive mode is kept.
 //
 // +checklocksread:a.inner.mu
 // +checklocks:a.mu
-func detNeedsBothAliased(a *detAlias) { // +checklocksfail=acquired multiple times or differently (locks: &({param:a}.mu) exclusively)
+func detNeedsBothAliased(a *detAlias) { // +checklocksfail=annotation a.mu specified more than once, already required
 	a.x = 1
 }
 
@@ -144,16 +144,16 @@ func testDetForcedKeepsMode(a *detAlias) {
 // The requirement itself still holds: shared is not enough for the exclusive guard.
 func testDetCallNeedsExclusive(a *detAlias) {
 	a.mu.RLock()
-	detNeedsBothAliased(a) // +checklocksfail=must hold a.mu exclusively
+	detNeedsBothAliased(a) // +checklocksfail=must hold a.inner.mu exclusively
 	a.mu.RUnlock()
 }
 
-// Two acquisitions naming one lock, the exclusive one sorting last.
+// Two acquisitions naming one lock: the second is reported and the exclusive mode is kept.
 //
 // +checklocksacquireread:a.inner.mu
 // +checklocksacquire:a.mu
 // +checklocksignore
-func detAcquiresBothAliased(a *detAlias) {
+func detAcquiresBothAliased(a *detAlias) { // +checklocksfail=annotation a.mu specified more than once, already acquired
 	a.mu.Lock()
 }
 
@@ -167,8 +167,8 @@ func testDetAcquiredAliased(a *detAlias) {
 //
 // +checklocksacquireread:a.inner.mu
 // +checklocksacquire:a.mu
-func detExitForcedAliased(a *detAlias) {
-	return // +checklocksforce +checklocksfail=return with unexpected locks held (locks: &({param:a}.mu) exclusively)
+func detExitForcedAliased(a *detAlias) { // +checklocksfail=annotation a.mu specified more than once, already acquired
+	return // +checklocksforce
 }
 
 // +checklocksacquire:a.mu

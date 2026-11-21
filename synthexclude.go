@@ -263,9 +263,24 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 	if !ok {
 		return
 	}
+	fk := &frameKeys{fn: fn}
+	taken := make(map[pathKey]struct{})
+	for _, m := range []map[string]functionGuardInfo{lff.HeldOnEntry, lff.HeldOnExit, lff.ExcludedOnEntry} {
+		for _, g := range m {
+			if key, ok := fk.key(pc, g.Resolver); ok {
+				taken[key] = struct{}{}
+			}
+		}
+	}
 	changed := false
 	for index, sl := range locks {
 		name := recv.Name() + "." + structType.Field(index).Name()
+		guard := &parameterGuard{Index: 0, FieldList: sl.fieldList}
+		if key, ok := fk.key(pc, guard); ok {
+			if _, dup := taken[key]; dup {
+				continue
+			}
+		}
 		if _, held := lff.HeldOnEntry[name]; held {
 			continue
 		}
@@ -279,7 +294,7 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 			lff.ExcludedOnEntry = make(map[string]functionGuardInfo)
 		}
 		lff.ExcludedOnEntry[name] = functionGuardInfo{
-			Resolver: &parameterGuard{Index: 0, FieldList: sl.fieldList},
+			Resolver: guard,
 			// A writer excludes a caller holding the lock in any
 			// mode; a reader only excludes one holding it for
 			// writing.

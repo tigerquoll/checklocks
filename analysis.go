@@ -243,6 +243,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 	var (
 		lgf         lockGuardFacts
 		guardsFound int
+		heldCount   int
 		guardsHeld  = make(map[pathKey]struct{})
 	)
 
@@ -277,6 +278,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		s := p.String()
 		if ok {
 			guardsHeld[p.Key()] = struct{}{}
+			heldCount++
 			continue
 		}
 		if _, ok := pc.forced[pc.positionKey(inst.Pos())]; ok {
@@ -288,12 +290,13 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 				ls.setAssumed(forcedPath, true)
 			}
 			guardsHeld[forcedPath.Key()] = struct{}{}
+			heldCount++
 			continue
 		}
 		// Note that we may allow this if the disposition is atomic,
 		// and we are allowing atomic reads only. This will fall into
 		// the atomic disposition check below, which asserts that the
-		// access is atomic. Further, len(guardsHeld) < guardsFound
+		// access is atomic. Further, heldCount < guardsFound
 		// will be true for this case, so we require it to be
 		// read-only.
 		if lgf.AtomicDisposition != atomicRequired {
@@ -308,7 +311,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		// Check that this is used safely as an input.
 		ar := readWriteAtomic
 		if guardsFound > 0 {
-			if len(guardsHeld) < guardsFound {
+			if heldCount < guardsFound {
 				ar = readOnlyAtomic
 			} else {
 				ar = mixedAtomic

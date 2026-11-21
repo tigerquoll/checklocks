@@ -97,3 +97,22 @@ type GenericGuard[T any] struct {
 	// +checklocks:Mu
 	Value T
 }
+
+type AliasInner struct {
+	Mu *sync.Mutex
+}
+
+// +checklocksalias:In.Mu=Mu
+type AliasPair struct {
+	Mu sync.Mutex
+	In AliasInner
+
+	// +checklocks:Mu
+	V int
+}
+
+// +checklocks:o.Mu
+// +checklocks:o.In.Mu
+func AliasedReq(o *AliasPair) { // +checklocksfail=annotation o.In.Mu specified more than once, already required
+	o.V = 1
+}

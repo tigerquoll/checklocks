@@ -126,35 +126,35 @@ func (pc *passContext) closureFacts(fl *ast.FuncLit, cg *ast.CommentGroup) *lock
 				found = true
 			},
 			checkLocksAnnotation: func(g string) {
-				lff.addGuardedBy(pc, d, g, true /* exclusive */)
+				lff.addGuardedBy(pc, d, nil, g, true /* exclusive */)
 				found = true
 			},
 			checkLocksAnnotationRead: func(g string) {
-				lff.addGuardedBy(pc, d, g, false /* exclusive */)
+				lff.addGuardedBy(pc, d, nil, g, false /* exclusive */)
 				found = true
 			},
 			checkLocksAcquires: func(g string) {
-				lff.addAcquires(pc, d, g, true /* exclusive */)
+				lff.addAcquires(pc, d, nil, g, true /* exclusive */)
 				found = true
 			},
 			checkLocksAcquiresRead: func(g string) {
-				lff.addAcquires(pc, d, g, false /* exclusive */)
+				lff.addAcquires(pc, d, nil, g, false /* exclusive */)
 				found = true
 			},
 			checkLocksReleases: func(g string) {
-				lff.addReleases(pc, d, g, true /* exclusive */)
+				lff.addReleases(pc, d, nil, g, true /* exclusive */)
 				found = true
 			},
 			checkLocksReleasesRead: func(g string) {
-				lff.addReleases(pc, d, g, false /* exclusive */)
+				lff.addReleases(pc, d, nil, g, false /* exclusive */)
 				found = true
 			},
 			checkLocksExcludes: func(g string) {
-				lff.addExcludes(pc, d, g, false /* exclusiveOnly */)
+				lff.addExcludes(pc, d, nil, g, false /* exclusiveOnly */)
 				found = true
 			},
 			checkLocksExcludesWrite: func(g string) {
-				lff.addExcludes(pc, d, g, true /* exclusiveOnly */)
+				lff.addExcludes(pc, d, nil, g, true /* exclusiveOnly */)
 				found = true
 			},
 		})

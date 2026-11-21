@@ -431,8 +431,66 @@ type lockFunctionFacts struct {
 // AFact implements analysis.Fact.AFact.
 func (*lockFunctionFacts) AFact() {}
 
-// checkGuard validates the guardName.
-func (lff *lockFunctionFacts) checkGuard(pc *passContext, d *ast.FuncDecl, guardName string, exclusive bool, allowReturn bool) (functionGuardInfo, bool) {
+// frameKeys gives the lock a guard names in one function's own frame, so that two
+// names for one lock can be told apart from two parameters that merely hold equal values.
+type frameKeys struct {
+	fn *ssa.Function
+	ls *lockState
+
+	// names holds the key of every annotation name accepted so far.
+	names map[string]pathKey
+}
+
+// key returns the frame key of a guard. Only a parameter guard has one at fact time.
+func (fk *frameKeys) key(pc *passContext, g functionGuardResolver) (pathKey, bool) {
+	pg, ok := g.(*parameterGuard)
+	if !ok || fk.fn == nil {
+		return "", false
+	}
+	if fk.ls == nil {
+		fk.ls = newLockState()
+		for _, p := range fk.fn.Params {
+			pc.applyTypeAliases(fk.ls, p)
+		}
+	}
+	rv := pg.resolveStatic(pc, fk.ls, fk.fn, nil)
+	if !rv.valid() {
+		return "", false
+	}
+	p, _ := rv.valueAndObject(fk.ls)
+	return fk.ls.aliasPath(p).Key(), true
+}
+
+// withKey returns the entry of m that holds the lock key.
+func (fk *frameKeys) withKey(m map[string]functionGuardInfo, key pathKey) (string, functionGuardInfo, bool) {
+	for name, info := range m {
+		if k, ok := fk.names[name]; ok && k == key {
+			return name, info, true
+		}
+	}
+	return "", functionGuardInfo{}, false
+}
+
+// merge makes the entry holding the lock key in each map at least as strong as a
+// dropped annotation: exclusive wins in a held map, the any-mode exclude in an excluded one.
+func (fk *frameKeys) merge(key pathKey, exclusive, anyModeWins bool, maps ...map[string]functionGuardInfo) {
+	for _, m := range maps {
+		name, info, ok := fk.withKey(m, key)
+		if !ok {
+			continue
+		}
+		if anyModeWins {
+			info.Exclusive = info.Exclusive && exclusive
+		} else {
+			info.Exclusive = info.Exclusive || exclusive
+		}
+		m[name] = info
+	}
+}
+
+// checkGuard validates the guardName. A name that is another name's lock in the
+// function's frame is reported and dropped; into are the maps the name would join.
+func (lff *lockFunctionFacts) checkGuard(pc *passContext, d *ast.FuncDecl, fk *frameKeys, guardName string, exclusive bool, allowReturn bool, into ...map[string]functionGuardInfo) (functionGuardInfo, bool) {
 	if fg, ok := lff.ExcludedOnEntry[guardName]; ok {
 		if exclusive || !fg.Exclusive {
 			pc.maybeFail(d.Pos(), "annotation %s cannot be both required and forbidden", guardName)
@@ -454,13 +512,32 @@ func (lff *lockFunctionFacts) checkGuard(pc *passContext, d *ast.FuncDecl, guard
 	if !exclusive && !pc.validateMutex(d.Pos(), lockObj, false /* exclusive */) {
 		return functionGuardInfo{}, false
 	}
+	if fk != nil {
+		if key, ok := fk.key(pc, res); ok {
+			if _, fg, ok := fk.withKey(lff.ExcludedOnEntry, key); ok && (exclusive || !fg.Exclusive) {
+				pc.maybeFail(d.Pos(), "annotation %s cannot be both required and forbidden", guardName)
+				return functionGuardInfo{}, false
+			}
+			if _, _, ok := fk.withKey(lff.HeldOnEntry, key); ok {
+				pc.maybeFail(d.Pos(), "annotation %s specified more than once, already required", guardName)
+				fk.merge(key, exclusive, false /* anyModeWins */, into...)
+				return functionGuardInfo{}, false
+			}
+			if _, _, ok := fk.withKey(lff.HeldOnExit, key); ok {
+				pc.maybeFail(d.Pos(), "annotation %s specified more than once, already acquired", guardName)
+				fk.merge(key, exclusive, false /* anyModeWins */, into...)
+				return functionGuardInfo{}, false
+			}
+			fk.names[guardName] = key
+		}
+	}
 	return functionGuardInfo{
 		Resolver:  res,
 		Exclusive: exclusive,
 	}, true
 }
 
-func (lff *lockFunctionFacts) addExcludes(pc *passContext, d *ast.FuncDecl, guardName string, exclusiveOnly bool) {
+func (lff *lockFunctionFacts) addExcludes(pc *passContext, d *ast.FuncDecl, fk *frameKeys, guardName string, exclusiveOnly bool) {
 	if _, ok := lff.ExcludedOnEntry[guardName]; ok {
 		pc.maybeFail(d.Pos(), "annotation %s specified more than once, already forbidden", guardName)
 		return
@@ -476,6 +553,20 @@ func (lff *lockFunctionFacts) addExcludes(pc *passContext, d *ast.FuncDecl, guar
 	if !ok {
 		return
 	}
+	if fk != nil {
+		if key, ok := fk.key(pc, res); ok {
+			if _, _, ok := fk.withKey(lff.ExcludedOnEntry, key); ok {
+				pc.maybeFail(d.Pos(), "annotation %s specified more than once, already forbidden", guardName)
+				fk.merge(key, exclusiveOnly, true /* anyModeWins */, lff.ExcludedOnEntry)
+				return
+			}
+			if _, fg, ok := fk.withKey(lff.HeldOnEntry, key); ok && (!exclusiveOnly || fg.Exclusive) {
+				pc.maybeFail(d.Pos(), "annotation %s cannot be both required and forbidden", guardName)
+				return
+			}
+			fk.names[guardName] = key
+		}
+	}
 	if lff.ExcludedOnEntry == nil {
 		lff.ExcludedOnEntry = make(map[string]functionGuardInfo)
 	}
@@ -486,8 +577,8 @@ func (lff *lockFunctionFacts) addExcludes(pc *passContext, d *ast.FuncDecl, guar
 }
 
 // addGuardedBy adds a field to both HeldOnEntry and HeldOnExit.
-func (lff *lockFunctionFacts) addGuardedBy(pc *passContext, d *ast.FuncDecl, guardName string, exclusive bool) {
-	if fg, ok := lff.checkGuard(pc, d, guardName, exclusive, false /* allowReturn */); ok {
+func (lff *lockFunctionFacts) addGuardedBy(pc *passContext, d *ast.FuncDecl, fk *frameKeys, guardName string, exclusive bool) {
+	if fg, ok := lff.checkGuard(pc, d, fk, guardName, exclusive, false /* allowReturn */, lff.HeldOnEntry, lff.HeldOnExit); ok {
 		if lff.HeldOnEntry == nil {
 			lff.HeldOnEntry = make(map[string]functionGuardInfo)
 		}
@@ -500,8 +591,8 @@ func (lff *lockFunctionFacts) addGuardedBy(pc *passContext, d *ast.FuncDecl, gua
 }
 
 // addAcquires adds a field to HeldOnExit.
-func (lff *lockFunctionFacts) addAcquires(pc *passContext, d *ast.FuncDecl, guardName string, exclusive bool) {
-	if fg, ok := lff.checkGuard(pc, d, guardName, exclusive, true /* allowReturn */); ok {
+func (lff *lockFunctionFacts) addAcquires(pc *passContext, d *ast.FuncDecl, fk *frameKeys, guardName string, exclusive bool) {
+	if fg, ok := lff.checkGuard(pc, d, fk, guardName, exclusive, true /* allowReturn */, lff.HeldOnExit); ok {
 		if lff.HeldOnExit == nil {
 			lff.HeldOnExit = make(map[string]functionGuardInfo)
 		}
@@ -510,8 +601,8 @@ func (lff *lockFunctionFacts) addAcquires(pc *passContext, d *ast.FuncDecl, guar
 }
 
 // addReleases adds a field to HeldOnEntry.
-func (lff *lockFunctionFacts) addReleases(pc *passContext, d *ast.FuncDecl, guardName string, exclusive bool) {
-	if fg, ok := lff.checkGuard(pc, d, guardName, exclusive, false /* allowReturn */); ok {
+func (lff *lockFunctionFacts) addReleases(pc *passContext, d *ast.FuncDecl, fk *frameKeys, guardName string, exclusive bool) {
+	if fg, ok := lff.checkGuard(pc, d, fk, guardName, exclusive, false /* allowReturn */, lff.HeldOnEntry); ok {
 		if lff.HeldOnEntry == nil {
 			lff.HeldOnEntry = make(map[string]functionGuardInfo)
 		}
@@ -1091,6 +1182,11 @@ func (pc *passContext) functionFacts(d *ast.FuncDecl) {
 		return
 	}
 	var lff lockFunctionFacts
+	fk := &frameKeys{names: make(map[string]pathKey)}
+	if funcObj, ok := pc.pass.TypesInfo.Defs[d.Name].(*types.Func); ok {
+		state := pc.pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+		fk.fn = state.Pkg.Prog.FuncValue(funcObj)
+	}
 	for _, l := range d.Doc.List {
 		pc.extractAnnotations(l.Text, map[string]func(string){
 			checkLocksIgnore: func(string) {
@@ -1101,14 +1197,14 @@ func (pc *passContext) functionFacts(d *ast.FuncDecl) {
 				// extremely rare.
 				lff.Ignore = true
 			},
-			checkLocksAnnotation:     func(guardName string) { lff.addGuardedBy(pc, d, guardName, true /* exclusive */) },
-			checkLocksAnnotationRead: func(guardName string) { lff.addGuardedBy(pc, d, guardName, false /* exclusive */) },
-			checkLocksAcquires:       func(guardName string) { lff.addAcquires(pc, d, guardName, true /* exclusive */) },
-			checkLocksAcquiresRead:   func(guardName string) { lff.addAcquires(pc, d, guardName, false /* exclusive */) },
-			checkLocksReleases:       func(guardName string) { lff.addReleases(pc, d, guardName, true /* exclusive */) },
-			checkLocksReleasesRead:   func(guardName string) { lff.addReleases(pc, d, guardName, false /* exclusive */) },
-			checkLocksExcludes:       func(guardName string) { lff.addExcludes(pc, d, guardName, false /* exclusiveOnly */) },
-			checkLocksExcludesWrite:  func(guardName string) { lff.addExcludes(pc, d, guardName, true /* exclusiveOnly */) },
+			checkLocksAnnotation:     func(guardName string) { lff.addGuardedBy(pc, d, fk, guardName, true /* exclusive */) },
+			checkLocksAnnotationRead: func(guardName string) { lff.addGuardedBy(pc, d, fk, guardName, false /* exclusive */) },
+			checkLocksAcquires:       func(guardName string) { lff.addAcquires(pc, d, fk, guardName, true /* exclusive */) },
+			checkLocksAcquiresRead:   func(guardName string) { lff.addAcquires(pc, d, fk, guardName, false /* exclusive */) },
+			checkLocksReleases:       func(guardName string) { lff.addReleases(pc, d, fk, guardName, true /* exclusive */) },
+			checkLocksReleasesRead:   func(guardName string) { lff.addReleases(pc, d, fk, guardName, false /* exclusive */) },
+			checkLocksExcludes:       func(guardName string) { lff.addExcludes(pc, d, fk, guardName, false /* exclusiveOnly */) },
+			checkLocksExcludesWrite:  func(guardName string) { lff.addExcludes(pc, d, fk, guardName, true /* exclusiveOnly */) },
 		})
 	}
 
