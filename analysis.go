@@ -529,7 +529,7 @@ func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, res
 // postFunctionCallUpdate updates all conditions.
 func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunctionFacts, ls *lockState) {
 	resolve := func(fg functionGuardInfo) resolvedValue {
-		return fg.Resolver.resolveCall(pc, ls, call.Common().Args, call.Value())
+		return fg.Resolver.resolveCall(pc, ls, call.Common().Args, callResult(call))
 	}
 
 	// Release all locks not still held.
@@ -550,8 +550,10 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 
 	// Update all held locks if acquired.
 	for _, g := range resolveGuards(ls, lff.HeldOnExit, lff.HeldOnEntry, resolve) {
-		if g.rv.unavailable {
-			// The lock cannot be tracked here; see above.
+		if !g.rv.valid() {
+			if !g.rv.unavailable {
+				pc.maybeFail(call.Pos(), "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
+			}
 			continue
 		}
 		// Acquire the lock per the annotation.
@@ -593,7 +595,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	callPos := call.Pos()
 	posKey := pc.positionKey(callPos)
 	_, forced := pc.forced[posKey]
-	callValue := call.Value()
+	callValue := callResult(call)
 	resolve := func(fg functionGuardInfo) resolvedValue {
 		return fg.Resolver.resolveCall(pc, ls, args, callValue)
 	}
@@ -761,11 +763,20 @@ func isWrite(v ssa.Value) bool {
 	return false
 }
 
-// callCommon is an ssa.Value that also implements Common.
+// callCommon is an *ssa.Call or an *ssa.Defer; Value is nil for a defer.
 type callCommon interface {
 	Pos() token.Pos
 	Common() *ssa.CallCommon
 	Value() *ssa.Call
+}
+
+// callResult returns the call's value, or an untyped nil for a defer, where
+// Value is a nil *ssa.Call that would otherwise pass as a non-nil interface.
+func callResult(call callCommon) ssa.Value {
+	if v := call.Value(); v != nil {
+		return v
+	}
+	return nil
 }
 
 // checkInstruction checks the legality the single instruction based on the
@@ -999,7 +1010,7 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	// The first is the method object itself so we skip that when
 	// looking for receiver/function parameters.
 	resolve := func(fg functionGuardInfo) resolvedValue {
-		return fg.Resolver.resolveStatic(pc, ls, fn, call.Value())
+		return fg.Resolver.resolveStatic(pc, ls, fn, callResult(call))
 	}
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
 		if !g.rv.valid() {

@@ -157,3 +157,19 @@ func TestObservationDedupe(t *testing.T) {
 		t.Errorf("for a second object: total %d, count %d; want 1, 1", oo.total, oo.counts[lock])
 	}
 }
+
+type fakeCall struct{ value *ssa.Call }
+
+func (fakeCall) Pos() token.Pos          { return token.NoPos }
+func (fakeCall) Common() *ssa.CallCommon { return nil }
+func (f fakeCall) Value() *ssa.Call      { return f.value }
+
+func TestCallResult(t *testing.T) {
+	if got := callResult(fakeCall{}); got != nil {
+		t.Errorf("nil *ssa.Call: got %#v, want a nil ssa.Value", got)
+	}
+	c := &ssa.Call{}
+	if got := callResult(fakeCall{c}); got != ssa.Value(c) {
+		t.Errorf("real *ssa.Call: got %#v, want the call", got)
+	}
+}

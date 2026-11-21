@@ -59,3 +59,29 @@ func testReturnNestedAcquireCall() {
 	tc.val.mu.Unlock()
 	tc.ptr.mu.Unlock()
 }
+
+// +checklocksacquire:r.mu
+func testReturnDeferredAcquireOne() (r *oneGuardStruct) {
+	r = new(oneGuardStruct)
+	r.mu.Lock()
+	return r
+}
+
+// +checklocksacquire:r.mu
+func testReturnDeferredAcquireTuple() (r *oneGuardStruct, err error) {
+	r = new(oneGuardStruct)
+	r.mu.Lock()
+	return r, nil
+}
+
+func testReturnDeferAcquireOne() {
+	defer testReturnDeferredAcquireOne() // +checklocksfail=acquired through a discarded result
+}
+
+func testReturnDeferAcquireTuple() {
+	defer testReturnDeferredAcquireTuple() // +checklocksfail=acquired through a discarded result
+}
+
+func testReturnDiscardAcquireTuple() {
+	testReturnDeferredAcquireTuple() // +checklocksfail=acquired through a discarded result
+}
