@@ -890,7 +890,9 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 			continue
 		}
 		_, isWrite := inst.(*ssa.Store)
-		pc.checkGlobalAccess(wc, inst, g, ls, isWrite)
+		if !wc.lff.Ignore {
+			pc.checkGlobalAccess(wc, inst, g, ls, isWrite)
+		}
 	}
 
 	// Process the instruction.
