@@ -797,7 +797,6 @@ func newCallSite(instr ssa.CallInstruction) callSite {
 	panic(fmt.Sprintf("newCallSite: unexpected instruction %T", instr))
 }
 
-// Pos returns the position of the instruction, or token.NoPos for an entry.
 func (s callSite) Pos() token.Pos {
 	if s.instr == nil {
 		return token.NoPos
@@ -805,7 +804,6 @@ func (s callSite) Pos() token.Pos {
 	return s.instr.Pos()
 }
 
-// Common returns the call of the instruction, or nil for an entry.
 func (s callSite) Common() *ssa.CallCommon {
 	if s.instr == nil {
 		return nil
@@ -830,12 +828,10 @@ type walkContext struct {
 	// fresh is what the walk knows about the objects under construction in fn.
 	fresh *freshState
 
-	// entryLocks holds, by identity, the mode of each lock an inline walk was entered
-	// with: those are the caller's, and no return of the body leaves them held.
+	// entryLocks holds, by identity, the mode of each caller's lock an inline walk was entered with.
 	entryLocks map[pathKey]bool
 
-	// returnStates holds, by identity summary, the text of each lock state the walk
-	// has returned in; the states themselves are shared and copied on write.
+	// returnStates holds, by identity summary, the text of each lock state the walk returned in.
 	returnStates map[string]string
 }
 
@@ -1093,8 +1089,6 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	}
 	wc := &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh)}
 
-	// The body and the recover block are separate walks: a state one returns in is no
-	// alternative to a state the other returns in, nor to a nested function's.
 	seen := make(map[*ssa.BasicBlock]*lockState)
 
 	// An inline body is entered with the caller's locks held; only what it takes
@@ -1115,6 +1109,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		roots = append(roots, fn.Recover)
 	}
 	for _, root := range roots {
+		// A state the body returns in is no alternative to one the recover block returns in.
 		wc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(wc, root, ls, seen, nil)
 		// Two states that cannot both hold are one finding about the function,
