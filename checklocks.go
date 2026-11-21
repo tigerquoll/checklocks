@@ -105,6 +105,9 @@ type passContext struct {
 	records []*blockRecord
 	current *blockRecord
 
+	// panicked is set when a function's analysis failed; its observations are partial.
+	panicked bool
+
 	// decisions is what the tagged build keeps about check decisions; see decide.
 	decisions decisionState
 }
@@ -160,18 +163,21 @@ type decisionAt struct {
 	context string
 }
 
-// contained runs the check of one top-level function. A panic in it fails that function
-// alone, with the walk state reset; with recoverPanics off the panic propagates.
+// contained runs the check of one top-level function; only the top-level loops call it.
+// A panic in it fails that function alone, with the walk state reset; with recoverPanics
+// off the panic propagates.
 func (pc *passContext) contained(fn *ssa.Function, check func()) {
 	if !recoverPanics {
 		check()
 		return
 	}
+	done := false
 	defer func() {
 		r := recover()
-		if r == nil {
+		if done {
 			return
 		}
+		pc.panicked = true
 		pc.current, pc.emit, pc.records = nil, emitDirect, nil
 		// Loop B must not analyze the closures of a failed function out of context.
 		for work := []*ssa.Function{fn}; len(work) > 0; {
@@ -186,6 +192,7 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 		})
 	}()
 	check()
+	done = true
 }
 
 // pendingReport is a report held back by the collector.
@@ -429,7 +436,8 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	// Check for inferred checklocks annotations.
-	if enableInferred {
+	// A failed function's partial observations would skew the hints for other functions' fields.
+	if enableInferred && !pc.panicked {
 		pc.checkInferred()
 	}
 

@@ -61,7 +61,7 @@ func other() {}
 		functions:    make(map[*ssa.Function]struct{}),
 	}
 	pc.addExemption(fn.Pos())
-	pc.addFailures(fn.Pos(), "=anything")
+	pc.addFailures(fn.Pos(), "")
 	pc.maybeFail(token.Pos(1), "held")
 
 	recoverPanics = true
@@ -73,6 +73,9 @@ func other() {}
 	want := []string{fmt.Sprintf("%v: analysis of %s failed with an internal error; its diagnostics may be incomplete", fn.Pos(), fn)}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("reported\n%q\nwant\n%q", got, want)
+	}
+	if !pc.panicked {
+		t.Error("panicked not set")
 	}
 	if pc.records != nil || pc.current != nil || pc.emit != emitDirect {
 		t.Errorf("walk state not reset: %v %v %v", pc.records, pc.current, pc.emit)
