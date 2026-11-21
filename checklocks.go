@@ -148,11 +148,12 @@ const (
 )
 
 // decisionAt says where a check was made: the instruction checked or, for a check of a
-// whole function, the function and a label; the position it reports at; and its context.
+// whole function, the function, a label and an index; the position it reports at; and its context.
 type decisionAt struct {
 	inst    ssa.Instruction
 	fn      *ssa.Function
 	label   string
+	index   int
 	pos     token.Pos
 	context string
 }

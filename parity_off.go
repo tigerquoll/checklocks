@@ -41,7 +41,10 @@ type decisionState struct{}
 func (*decisionState) enter() {}
 func (*decisionState) leave() {}
 
-func (*passContext) decide(decisionAt, decisionKind, bool, ...string) {}
-func (*passContext) writeDecisions()                                  {}
+func (*passContext) decide(decisionAt, decisionKind, bool, ...any) {}
+func (*passContext) suppressed()                                   {}
+func (*passContext) writeDecisions()                               {}
 
 func inlineContext(*walkContext, callSite, *ssa.Function) string { return "" }
+
+func qualifiedName(ssa.Value, types.Object) string { return "" }

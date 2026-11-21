@@ -63,7 +63,7 @@ func TestDecisionLog(t *testing.T) {
 	}
 
 	bin := filepath.Join(t.TempDir(), "checklocks")
-	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-tags=checklocks_parity", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
 		t.Fatalf("building the vettool failed: %v\n%s", err, out)
 	}
 	first := decisionLogOf(t, bin)

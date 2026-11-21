@@ -21,7 +21,6 @@ import (
 	"go/types"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -107,26 +106,32 @@ const (
 
 // checkAtomicCall checks for an atomic access.
 //
-// inst is the instruction analyzed, obj names the field in the decision log.
-func (pc *passContext) checkAtomicCall(inst ssa.Instruction, obj types.Object, ar atomicRules, context string) {
+// inst is the instruction analyzed, object names the field in the decision log.
+func (pc *passContext) checkAtomicCall(inst ssa.Instruction, object string, ar atomicRules, context string) {
 	checked, ok, forceable, msg := pc.atomicVerdict(inst, ar)
 	if checked == nil {
 		return
 	}
-	pc.decide(decisionAt{inst: checked, pos: checked.Pos(), context: context}, atomicAccess, ok, obj.Name())
+	pc.decide(decisionAt{inst: checked, pos: checked.Pos(), context: context}, atomicAccess, ok, object)
 	if ok {
 		return
 	}
 	if forceable {
 		if _, forced := pc.forced[pc.positionKey(checked.Pos())]; forced {
+			pc.suppressed()
 			return
 		}
+	}
+	if msg == "" {
+		pc.maybeFail(checked.Pos(), "illegal use of atomic-only field by %T instruction", checked)
+		return
 	}
 	pc.maybeFail(checked.Pos(), "%s", msg)
 }
 
 // atomicVerdict says whether an atomic access is legal. It returns the instruction the
 // verdict is about, nil when the access cannot fail, and whether a force silences a failure.
+// A failure with no message is an illegal use of the field by that instruction.
 func (pc *passContext) atomicVerdict(inst ssa.Instruction, ar atomicRules) (checked ssa.Instruction, ok, forceable bool, msg string) {
 	switch x := inst.(type) {
 	case *ssa.Call:
@@ -194,7 +199,7 @@ func (pc *passContext) atomicVerdict(inst ssa.Instruction, ar atomicRules) (chec
 	}
 	if ar != nonAtomic {
 		// This is something else entirely.
-		return inst, false, true, fmt.Sprintf("illegal use of atomic-only field by %T instruction", inst)
+		return inst, false, true, ""
 	}
 	return nil, true, false, ""
 }
@@ -270,6 +275,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		return
 	}
 	where := decisionAt{inst: instr, pos: inst.Pos(), context: wc.context}
+	object := qualifiedName(from, accessObj)
 
 	// Load the facts for the object accessed.
 	pc.importLockGuardFacts(accessObj, &lgf)
@@ -287,14 +293,14 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		}
 		guardsFound++
 		resolved := r.valid()
-		pc.decide(where, guardResolve, resolved, guardName, accessObj.Name())
+		pc.decide(where, guardResolve, resolved, guardName, object)
 		if !resolved {
 			// See above; this cannot be forced.
 			pc.maybeFail(inst.Pos(), "field %s cannot be resolved", guardName)
 			continue
 		}
 		p, ok := ls.isHeld(r, isWrite)
-		pc.decide(where, guardHeld, ok, guardName, accessObj.Name())
+		pc.decide(where, guardHeld, ok, guardName, object)
 		s := p.String()
 		if ok {
 			guardsHeld[p.Key()] = struct{}{}
@@ -302,6 +308,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 			continue
 		}
 		if _, ok := pc.forced[pc.positionKey(inst.Pos())]; ok {
+			pc.suppressed()
 			// Mark this as locked, since it has been forced. All
 			// forces are treated as an exclusive lock.
 			forcedPath, inserted := ls.lockField(r, true /* exclusive */)
@@ -322,6 +329,8 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		if lgf.AtomicDisposition != atomicRequired {
 			// There is no force key, no atomic access and no lock held.
 			pc.maybeFail(inst.Pos(), "invalid field access, %s (%s) must be locked when accessing %s (locks: %s)", guardName, s, accessObj.Name(), ls.String())
+		} else {
+			pc.suppressed()
 		}
 	}
 
@@ -339,12 +348,12 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		}
 		if refs := inst.Referrers(); refs != nil {
 			for _, otherInst := range *refs {
-				pc.checkAtomicCall(otherInst, accessObj, ar, wc.context)
+				pc.checkAtomicCall(otherInst, object, ar, wc.context)
 			}
 		}
 		// Check that this is not otherwise written non-atomically,
 		// even if we do hold all the locks.
-		pc.decide(where, atomicWrite, !isWrite, accessObj.Name())
+		pc.decide(where, atomicWrite, !isWrite, object)
 		if isWrite {
 			pc.maybeFail(inst.Pos(), "non-atomic write of field %s, writes must still be atomic with locks held (locks: %s)", accessObj.Name(), ls.String())
 		}
@@ -356,7 +365,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		// Check that this is *not* used atomically.
 		if refs := inst.Referrers(); refs != nil {
 			for _, otherInst := range *refs {
-				pc.checkAtomicCall(otherInst, accessObj, nonAtomic, wc.context)
+				pc.checkAtomicCall(otherInst, object, nonAtomic, wc.context)
 			}
 		}
 	}
@@ -615,9 +624,11 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		}
 		p, ok := ls.unlockField(g.rv, g.fg.Exclusive)
 		pc.decide(at, release, ok, g.fieldName)
-		if !ok && !lff.Ignore {
+		if !ok {
 			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
 				pc.maybeFail(site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
+			} else {
+				pc.suppressed()
 			}
 		}
 	}
@@ -641,6 +652,8 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			ls.setAssumed(p, false)
 			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
 				pc.maybeFail(site.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
+			} else {
+				pc.suppressed()
 			}
 		}
 	}
@@ -699,6 +712,8 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				} else {
 					pc.maybeFail(callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
 				}
+			} else {
+				pc.suppressed()
 			}
 		}
 	}
@@ -726,9 +741,12 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 		if !ok {
 			if !forced && !lff.Ignore {
 				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), fn.Name(), ls.String())
-			} else if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
-				// The force asserts the lock, it does not take it.
-				ls.setAssumed(forcedPath, true)
+			} else {
+				pc.suppressed()
+				if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
+					// The force asserts the lock, it does not take it.
+					ls.setAssumed(forcedPath, true)
+				}
 			}
 		}
 	}
@@ -755,6 +773,8 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				if !lff.Ignore && !forced {
 					// Double locking a mutex that is already locked.
 					pc.maybeFail(callPos, "%s already locked (locks: %s)", p.String(), ls.String())
+				} else {
+					pc.suppressed()
 				}
 			}
 		case "Unlock", "NestedUnlock":
@@ -763,10 +783,12 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 		case "RUnlock":
 			p, ok := ls.unlockField(rv, isExclusive)
 			pc.decide(at, lockOpUnlock, ok)
-			if !ok && !lff.Ignore {
-				if !forced {
+			if !ok {
+				if !forced && !lff.Ignore {
 					// Unlocking something that is already unlocked.
 					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
+				} else {
+					pc.suppressed()
 				}
 			}
 		case "DowngradeLock":
@@ -776,6 +798,8 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				if !forced && !lff.Ignore {
 					// Downgrading something that may not be downgraded.
 					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
+				} else {
+					pc.suppressed()
 				}
 			} else {
 				// The lock is really held here, whatever assumed it earlier.
@@ -1066,6 +1090,7 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 					failed = true
 					continue
 				}
+				pc.suppressed()
 				// Force the lock to be acquired.
 				if forcedPath, inserted := rls.lockField(g.rv, g.exclusive); !inserted {
 					rls.setAssumed(forcedPath, false)
@@ -1077,6 +1102,8 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 				pc.decide(at, returnCount, counted)
 				if !counted && !wc.lff.Ignore {
 					pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
+				} else if !counted {
+					pc.suppressed()
 				}
 			}
 		}
@@ -1223,11 +1250,15 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		}
 		p, ok := ls.lockField(g.rv, g.exclusive)
 		pc.decide(entry, entryDuplicate, ok, g.fieldName)
-		if !ok && !lff.Ignore {
-			// This can only happen if the same value is declared
-			// multiple times, and should be caught by the earlier
-			// fact scanning. Keep it here as a sanity check.
-			pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, p.String(), ls.String())
+		if !ok {
+			if !lff.Ignore {
+				// This can only happen if the same value is declared
+				// multiple times, and should be caught by the earlier
+				// fact scanning. Keep it here as a sanity check.
+				pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, p.String(), ls.String())
+			} else {
+				pc.suppressed()
+			}
 		}
 	}
 
@@ -1265,13 +1296,15 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		// Two states that cannot both hold are one finding about the function,
 		// however many paths reach them. Sorting by text first keeps the order the messages had.
 		compatible := len(wc.returnStates) <= 1
-		pc.decide(decisionAt{fn: fn, label: "exit:" + strconv.Itoa(root.Index), pos: fn.Pos(), context: context}, incompatibleReturn, compatible)
+		pc.decide(decisionAt{fn: fn, label: "exit", index: root.Index, pos: fn.Pos(), context: context}, incompatibleReturn, compatible)
 		if !compatible {
 			states := slices.SortedFunc(maps.Keys(wc.returnStates), func(a, b string) int {
 				return cmp.Or(strings.Compare(wc.returnStates[a], wc.returnStates[b]), strings.Compare(a, b))
 			})
 			if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
 				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", wc.returnStates[states[0]], wc.returnStates[states[1]])
+			} else {
+				pc.suppressed()
 			}
 		}
 	}

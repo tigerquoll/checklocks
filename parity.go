@@ -283,9 +283,12 @@ type decisionState struct {
 func (d *decisionState) enter() { d.region++ }
 func (d *decisionState) leave() { d.region-- }
 
+// suppressed closes the last decision, whose failure is silenced and so has no report.
+func (pc *passContext) suppressed() { pc.decisions.last.open = false }
+
 // decide records the answer of one check. A walk keeps it for the block's parity; a
 // replay run keeps it too and, like a direct check, logs it.
-func (pc *passContext) decide(at decisionAt, kind decisionKind, ok bool, subject ...string) {
+func (pc *passContext) decide(at decisionAt, kind decisionKind, ok bool, subject ...any) {
 	line := pc.decisionLine(at, kind, ok, subject)
 	pc.decisions.last.pos, pc.decisions.last.open = at.pos, !ok
 	if c := pc.capture(); c != nil {
@@ -299,17 +302,23 @@ func (pc *passContext) decide(at decisionAt, kind decisionKind, ok bool, subject
 	}
 }
 
-func (pc *passContext) decisionLine(at decisionAt, kind decisionKind, ok bool, subject []string) string {
+func (pc *passContext) decisionLine(at decisionAt, kind decisionKind, ok bool, subject []any) string {
 	fn, coord := at.fn, at.label
 	if at.inst != nil {
 		fn, coord = instCoord(at.inst)
+	} else if at.label == "exit" {
+		coord += ":" + strconv.Itoa(at.index)
 	}
 	pos := "-:0:0"
 	if at.pos.IsValid() {
 		p := pc.pass.Fset.PositionFor(at.pos, true)
 		pos = fmt.Sprintf("%s:%d:%d", filepath.Base(p.Filename), p.Line, p.Column)
 	}
-	return strings.Join([]string{pos, relFuncName(fn), coord, string(kind), strings.Join(subject, " "), at.context, strconv.FormatBool(ok)}, "\t")
+	parts := make([]string, len(subject))
+	for i, s := range subject {
+		parts[i] = fmt.Sprint(s)
+	}
+	return strings.Join([]string{pos, relFuncName(fn), coord, string(kind), strings.Join(parts, " "), at.context, strconv.FormatBool(ok)}, "\t")
 }
 
 // instCoord returns the function holding inst and its place in it as block and index.
@@ -318,6 +327,19 @@ func instCoord(inst ssa.Instruction) (*ssa.Function, string) {
 		inst = w.Instruction
 	}
 	return inst.Parent(), fmt.Sprintf("b%d.i%d", inst.Block().Index, slices.Index(inst.Block().Instrs, inst))
+}
+
+// qualifiedName names an accessed object by its global's package or its struct type, so
+// a global and a field of one name differ.
+func qualifiedName(from ssa.Value, obj types.Object) string {
+	if _, ok := from.(*ssa.Global); ok {
+		return obj.Pkg().Name() + "." + obj.Name()
+	}
+	typ := from.Type()
+	if p, ok := typ.Underlying().(*types.Pointer); ok {
+		typ = p.Elem()
+	}
+	return types.TypeString(typ, func(p *types.Package) string { return p.Name() }) + "." + obj.Name()
 }
 
 // inlineContext names a walk by the top-level function and the call sites inlined to reach it.
@@ -338,8 +360,8 @@ func (pc *passContext) writeDecisions() {
 	}
 	name := url.PathEscape(pc.pass.Pkg.Path())
 	for _, f := range pc.pass.Files {
-		if strings.HasSuffix(pc.pass.Fset.Position(f.Pos()).Filename, "_test.go") {
-			name += ".test"
+		if strings.HasSuffix(pc.pass.Fset.File(f.Pos()).Name(), "_test.go") {
+			name += "@test"
 			break
 		}
 	}
@@ -353,9 +375,12 @@ func (pc *passContext) writeDecisions() {
 		if cerr := tmp.Close(); err == nil {
 			err = cerr
 		}
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), filepath.Join(decisionLogDir, name+".log"))
+		if err == nil {
+			err = os.Rename(tmp.Name(), filepath.Join(decisionLogDir, name+".log"))
+		}
+		if err != nil {
+			os.Remove(tmp.Name())
+		}
 	}
 	if err != nil {
 		panic(fmt.Sprintf("decision log: %v", err))
