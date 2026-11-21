@@ -211,9 +211,18 @@ func staticCallee(call ssa.CallInstruction) *ssa.Function {
 	return call.Common().StaticCallee()
 }
 
-// funcObject returns the object of a function, which is the key its facts hang off. A
+// funcObject returns the declaration of a function, which is the key its facts hang off. A
 // closure has no object.
 func funcObject(fn *ssa.Function) *types.Func {
+	if obj := calledFunc(fn); obj != nil {
+		return obj.Origin()
+	}
+	return nil
+}
+
+// calledFunc returns the object of a function as called, which for an instance of a generic
+// function carries the type arguments that lock-type matching and display depend on.
+func calledFunc(fn *ssa.Function) *types.Func {
 	if fn == nil {
 		return nil
 	}
@@ -221,9 +230,19 @@ func funcObject(fn *ssa.Function) *types.Func {
 	return obj
 }
 
-// isSelfRecursive reports whether a call targets the function containing it.
+// isSelfRecursive reports whether a call targets the function containing it, an instance of
+// a generic function counting as its declaration.
 func isSelfRecursive(fn *ssa.Function, callee *ssa.Function) bool {
-	return fn != nil && callee != nil && fn == callee
+	if fn == nil || callee == nil {
+		return false
+	}
+	if o := fn.Origin(); o != nil {
+		fn = o
+	}
+	if o := callee.Origin(); o != nil {
+		callee = o
+	}
+	return fn == callee
 }
 
 // displayName renders a callee for a diagnostic.

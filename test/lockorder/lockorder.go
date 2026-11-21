@@ -468,3 +468,39 @@ func annotatedReadCallbackHoldsApp(a *App, q *Queue) {
 	q.Lock()
 	q.Unlock()
 }
+
+// A method that calls itself on another value is recursion, whether or not its type is generic.
+//
+// +lockclass:PlainNode
+type plainNode struct {
+	mu sync.Mutex
+}
+
+// +checklocksignore
+func (n *plainNode) Lock() { n.mu.Lock() }
+
+// +checklocksignore
+func (n *plainNode) Unlock() { n.mu.Unlock() }
+
+func (n *plainNode) visit(o *plainNode) {
+	n.Lock()
+	o.visit(nil)
+	n.Unlock()
+}
+
+// +lockclass:GenNode
+type genNode[T any] struct {
+	mu sync.Mutex
+}
+
+// +checklocksignore
+func (n *genNode[T]) Lock() { n.mu.Lock() }
+
+// +checklocksignore
+func (n *genNode[T]) Unlock() { n.mu.Unlock() }
+
+func (n *genNode[T]) visit(o *genNode[int]) {
+	n.Lock()
+	o.visit(nil)
+	n.Unlock()
+}

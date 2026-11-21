@@ -220,3 +220,72 @@ func buildDescribeWrite(name string) {
 	_ = describe(q)
 	q.managed = true
 }
+
+// --- a method of a generic type is consulted on its declaration ---------------------------------
+
+// plainHelper does not publish what it is given, which is what a missing fact would assume.
+type plainHelper struct{ n int }
+
+func (h *plainHelper) use(q *Queue) int {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+	return len(q.name)
+}
+
+// +checklocksfresh:q
+func (h *plainHelper) take(q *Queue) { q.template = "taken" }
+
+// +checklocksreturnsfresh
+func (h *plainHelper) make() *Queue { return &Queue{} }
+
+type genHelper[T any] struct{ n T }
+
+func (h *genHelper[T]) use(q *Queue) int {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+	return len(q.name)
+}
+
+// +checklocksfresh:q
+func (h *genHelper[T]) take(q *Queue) { q.template = "taken" }
+
+// +checklocksreturnsfresh
+func (h *genHelper[T]) make() *Queue { return &Queue{} }
+
+func plainUseThenWrite(h *plainHelper, name string) {
+	q := newQueue(name)
+	_ = h.use(q)
+	q.managed = true
+}
+
+func genUseThenWrite(h *genHelper[int], name string) {
+	q := newQueue(name)
+	_ = h.use(q)
+	q.managed = true
+}
+
+func plainTakePublished(h *plainHelper, name string) {
+	q := newQueue(name)
+	registryLock.Lock()
+	registry[name] = q
+	registryLock.Unlock()
+	h.take(q) // +checklocksfail=requires an unpublished object
+}
+
+func genTakePublished(h *genHelper[int], name string) {
+	q := newQueue(name)
+	registryLock.Lock()
+	registry[name] = q
+	registryLock.Unlock()
+	h.take(q) // +checklocksfail=requires an unpublished object
+}
+
+func plainMakeThenWrite(h *plainHelper) {
+	q := h.make()
+	q.managed = true
+}
+
+func genMakeThenWrite(h *genHelper[int]) {
+	q := h.make()
+	q.managed = true
+}

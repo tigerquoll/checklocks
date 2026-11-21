@@ -234,7 +234,7 @@ func (pc *lockGapContext) lockOperations(fn *ssa.Function) []lockOperation {
 				continue
 			}
 			callee := call.Common().StaticCallee()
-			obj := funcObject(callee)
+			obj := calledFunc(callee)
 			if obj == nil {
 				continue
 			}

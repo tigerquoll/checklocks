@@ -232,6 +232,44 @@ func ssaWrapper(t *testing.T, pkg *ssa.Package, suffix string) *ssa.Function {
 	return nil
 }
 
+// TestFuncObjectOrigin pins that fact lookups use the declaration and lock classification the instance.
+func TestFuncObjectOrigin(t *testing.T) {
+	const src = `package q
+
+type Gen[T any] struct{}
+
+func (Gen[T]) Wait() {}
+
+func calls(g Gen[int]) {
+	g.Wait()
+	func() {}()
+}
+`
+	pkg := buildTestPackage(t, "example.com/q", src)
+	var instance, closure *ssa.Function
+	for fn := range ssautil.AllFunctions(pkg.Prog) {
+		if fn.Origin() != nil {
+			instance = fn
+		}
+		if fn.Name() == "calls$1" {
+			closure = fn
+		}
+	}
+	if instance == nil || closure == nil {
+		t.Fatalf("instance %v, closure %v", instance, closure)
+	}
+	decl := instance.Origin().Object()
+	if got := funcObject(instance); got != decl {
+		t.Errorf("funcObject(instance) = %v, want the declaration %v", got, decl)
+	}
+	if got := calledFunc(instance); got == nil || got == decl || got != instance.Object() {
+		t.Errorf("calledFunc(instance) = %v, want the instance's own object", got)
+	}
+	if funcObject(closure) != nil || calledFunc(closure) != nil {
+		t.Errorf("a closure has no object")
+	}
+}
+
 // TestCalleeKey pins callee identity: same-named methods differ, wrappers equal their method.
 func TestCalleeKey(t *testing.T) {
 	// The method value and the method expression are what make ssa build the wrappers.

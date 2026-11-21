@@ -739,3 +739,40 @@ func reachesTwoWaitsUnderLock(a *App, c chan int, cond bool) {
 	reachesTwoWaits(c, cond) // +lockblockingfail=which may block (calling (tied).zz at lockblocking/lockblocking.go:733 -> a channel receive at lockblocking/lockblocking.go:724)
 	a.Unlock()
 }
+
+// A method of a generic type is reached through an instance, and the wait is looked up on its declaration.
+type plainWaiter struct {
+	c chan int
+}
+
+func (p *plainWaiter) waits() { <-p.c }
+
+func (p *plainWaiter) callsWaitsUnderLock(a *App) {
+	a.Lock()
+	p.waits() // +lockblockingfail=which may block (a channel receive at lockblocking/lockblocking.go:748)
+	a.Unlock()
+}
+
+type genWaiter[T any] struct {
+	c chan T
+}
+
+func (g *genWaiter[T]) waits() { <-g.c }
+
+func (g *genWaiter[T]) callsWaitsUnderLock(a *App) {
+	a.Lock()
+	g.waits() // +lockblockingfail=which may block (a channel receive at lockblocking/lockblocking.go:760)
+	a.Unlock()
+}
+
+func callsInstanceWaitsUnderLock(a *App, g *genWaiter[int]) {
+	a.Lock()
+	g.waits() // +lockblockingfail=which may block (a channel receive at lockblocking/lockblocking.go:760)
+	a.Unlock()
+}
+
+func callsCrossPackageGenericUnderLock(a *App, b *dep.Box[int]) {
+	a.Lock()
+	b.Sleeps() // +lockblockingfail=which may block (calling Sleep at dep/dep.go:77)
+	a.Unlock()
+}

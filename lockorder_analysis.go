@@ -203,7 +203,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// A lock operation changes what is held. Both the standard lock types and a type that
 	// wraps its own lock and forwards to it are recognised, since the code bases this is
 	// aimed at reach their locks through such a wrapper.
-	if obj := funcObject(callee); obj != nil {
+	if obj := calledFunc(callee); obj != nil {
 		if op := lockOpName(obj.Name()); op != opNone {
 			recv, ok := receiverOf(call)
 			var class string

@@ -69,3 +69,10 @@ func SleepsThenSends(c chan int) {
 func Mid(i *inner.Inner, c chan int) {
 	i.SendsThenSleeps(c)
 }
+
+// Box is a generic type whose method waits by a named wait.
+type Box[T any] struct{}
+
+func (b *Box[T]) Sleeps() {
+	time.Sleep(time.Millisecond)
+}
