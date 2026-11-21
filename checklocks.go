@@ -105,7 +105,7 @@ type passContext struct {
 	records []*blockRecord
 	current *blockRecord
 
-	// panicked is set when a function's analysis failed; its observations are partial.
+	// panicked is set when contained recovered a panic; observations are then partial.
 	panicked bool
 
 	// decisions is what the tagged build keeps about check decisions; see decide.
