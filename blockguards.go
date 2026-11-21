@@ -197,10 +197,8 @@ func (pc *passContext) applyStructGuard(fieldObj *types.Var, field *ast.Field, l
 	pc.pass.ExportObjectFact(fieldObj, lgf)
 }
 
-// isLockField reports whether a field is itself a lock.
-//
-// This asks the same question the guard resolution asks of the lock it is given, and
-// quietly: a field that is not a lock is the ordinary case here, not an error.
+// isLockField reports whether a field is, or holds, a lock, which exempts it from a
+// struct-level guard. It asks quietly: a field that is not a lock is the ordinary case.
 func (pc *passContext) isLockField(fieldObj *types.Var) bool {
 	if _, ok := pc.lockPrimitiveFor(fieldObj.Type()); ok {
 		return true
