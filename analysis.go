@@ -518,39 +518,77 @@ func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) 
 	}
 }
 
-// checkGoCall reports the held-throughout requirements of a statically named function
-// started with go: the new goroutine holds no lock, whatever the caller holds.
+// checkGoCall reports a go statement that releases a lock, starts a named function or
+// annotated literal that needs a lock on entry, or acquires one through a discarded result.
+// The new goroutine holds no lock, and the go statement changes none of the caller's.
 func (pc *passContext) checkGoCall(site callSite, wc *walkContext, ls *lockState) {
-	fn, ok := site.Common().Value.(*ssa.Function)
-	if !ok || fn.Object() == nil {
-		return
-	}
-	tf := fn.Object().(*types.Func)
-	var lff lockFunctionFacts
-	pc.importLockFunctionFacts(tf, &lff)
-	if lff.Ignore || wc.lff.Ignore {
-		return
-	}
+	common := site.Common()
 	pos := site.Pos()
-	if _, forced := pc.forced[pc.positionKey(pos)]; forced {
+	_, forced := pc.forced[pc.positionKey(pos)]
+	at := decisionAt{inst: site.instr, pos: pos, context: wc.context}
+
+	if lockFn, op, recv, ok := lockCallSite(pc.pass, common); ok {
+		var lockLff lockFunctionFacts
+		pc.importLockFunctionFacts(lockFn, &lockLff)
+		if len(lockLff.HeldOnEntry) == 0 {
+			if op != opRelease || lockLff.Ignore || wc.lff.Ignore || forced {
+				return
+			}
+			pc.applyTypeAliases(ls, recv)
+			rv := makeResolvedValue(recv, nil)
+			p, _ := rv.valueAndObject(ls)
+			p = ls.aliasPath(p)
+			pc.decide(at, goRelease, false, lockFn.Name())
+			pc.maybeFail(pos, "goroutine started by go %s does not hold %s, which it releases", lockFn.Name(), p.String())
+			return
+		}
+	}
+
+	fn, ok := common.Value.(*ssa.Function)
+	if !ok {
 		return
 	}
-	args := site.Common().Args
+	var lff lockFunctionFacts
+	var subject, requirer string
+	if tf, ok := fn.Object().(*types.Func); ok {
+		pc.importLockFunctionFacts(tf, &lff)
+		if lff.Ignore {
+			return
+		}
+		subject, requirer = tf.Name(), tf.Name()
+	} else {
+		facts, ok := pc.closureFactsFor(fn.Syntax())
+		if !ok || pc.literalIgnored(fn) {
+			return
+		}
+		lff = *facts
+		subject, requirer = "func literal", "the literal"
+	}
+	if wc.lff.Ignore || forced {
+		return
+	}
+	args := common.Args
 	for _, arg := range args {
 		pc.applyTypeAliases(ls, arg)
 	}
 	resolve := func(fg functionGuardInfo) resolvedValue {
 		return fg.Resolver.resolveCall(pc, ls, args, nil)
 	}
-	at := decisionAt{inst: site.instr, pos: pos, context: wc.context}
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
-		if _, ok := lff.HeldOnExit[g.fieldName]; !ok || g.rv.unavailable || !g.rv.valid() {
+		if g.rv.unavailable || !g.rv.valid() {
 			continue
 		}
 		p, _ := g.rv.valueAndObject(ls)
 		p = ls.aliasPath(p)
-		pc.decide(at, goHeld, false, g.fieldName, tf.Name())
-		pc.maybeFail(pos, "goroutine started by go %s does not hold %s %s (%s); %s requires it on entry", tf.Name(), g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), tf.Name())
+		pc.decide(at, goHeld, false, g.fieldName, subject)
+		pc.maybeFail(pos, "goroutine started by go %s does not hold %s %s (%s); %s requires it on entry", subject, g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), requirer)
+	}
+	for _, g := range resolveGuards(ls, lff.HeldOnExit, lff.HeldOnEntry, resolve) {
+		if _, ok := g.fg.Resolver.(*returnGuard); !ok {
+			continue
+		}
+		pc.decide(at, acquireDiscarded, false, g.fieldName)
+		pc.maybeFail(pos, "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
 	}
 }
 

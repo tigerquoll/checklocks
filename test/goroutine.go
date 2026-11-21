@@ -93,6 +93,25 @@ func goSpawnPlain(t *goT) {
 
 func goSpawnRelease(t *goT) {
 	t.mu.Lock()
+	go goReleases(t) // +checklocksfail=goroutine started by go goReleases
+	t.mu.Unlock()
+}
+
+func goHandOff(t *goT) {
+	t.mu.Lock()
+	go goReleases(t) // +checklocksfail=goroutine started by go goReleases
+	return           // +checklocksfail=return with unexpected locks held
+}
+
+func goReleaseForced(t *goT) {
+	t.mu.Lock()
+	go goReleases(t) // +checklocksforce
+	t.mu.Unlock()
+}
+
+// +checklocksignore
+func goReleaseIgnored(t *goT) {
+	t.mu.Lock()
 	go goReleases(t)
 	t.mu.Unlock()
 }
@@ -114,4 +133,124 @@ func goSpawnLitHeld(t *goT) {
 		t.x = 1 // +checklocksfail=invalid field access
 	}(t)
 	t.mu.Unlock()
+}
+
+type goE struct{ sync.Mutex }
+
+func goUnlock(t *goT) {
+	t.mu.Lock()
+	go t.mu.Unlock() // +checklocksfail=goroutine started by go Unlock does not hold
+	t.mu.Unlock()
+}
+
+func goUnlockEmbedded(e *goE) {
+	e.Lock()
+	go e.Unlock() // +checklocksfail=goroutine started by go Unlock does not hold
+	e.Unlock()
+}
+
+func goUnlockThunk(t *goT) {
+	t.mu.Lock()
+	go (*sync.Mutex).Unlock(&t.mu) // +checklocksfail=goroutine started by go Unlock does not hold
+	t.mu.Unlock()
+}
+
+func goUnlockLocker(l sync.Locker) {
+	l.Lock()
+	go l.Unlock() // +checklocksfail=goroutine started by go Unlock does not hold
+	l.Unlock()
+}
+
+func goLock(t *goT) {
+	go t.mu.Lock()
+}
+
+func goUnlockForced(t *goT) {
+	t.mu.Lock()
+	go t.mu.Unlock() // +checklocksforce
+	t.mu.Unlock()
+}
+
+// +checklocksignore
+func goUnlockIgnored(t *goT) {
+	t.mu.Lock()
+	go t.mu.Unlock()
+	t.mu.Unlock()
+}
+
+// +checklocksacquire:r.mu
+func goAcquiresResult() (r *goT) {
+	r = new(goT)
+	r.mu.Lock()
+	return r
+}
+
+func goSpawnAcquireResult() {
+	go goAcquiresResult() // +checklocksfail=acquired through a discarded result
+}
+
+func goSpawnAcquireResultForced() {
+	go goAcquiresResult() // +checklocksforce
+}
+
+func goSpawnAcquireLit() {
+	// +checklocksacquire:r.mu
+	go func() (r *goT) { // +checklocksfail=acquired through a discarded result
+		r = new(goT)
+		r.mu.Lock()
+		return r
+	}()
+}
+
+func goSpawnLitNeeds(t *goT) {
+	// +checklocks:u.mu
+	go func(u *goT) { // +checklocksfail=goroutine started by go func literal does not hold u.mu exclusively (&({param:t}.mu))
+		u.x = 1
+	}(t)
+}
+
+func goSpawnLitNeedsIgnored(t *goT) {
+	// +checklocks:u.mu
+	// +checklocksignore
+	go func(u *goT) {
+		u.x = 1
+	}(t)
+}
+
+func goSpawnLitNeedsForced(t *goT) {
+	// +checklocks:u.mu
+	go func(u *goT) { // +checklocksforce
+		u.x = 1
+	}(t)
+}
+
+// +checklocksignore
+func goSpawnLitNeedsInIgnored(t *goT) {
+	// +checklocks:u.mu
+	go func(u *goT) {
+		u.x = 1
+	}(t)
+}
+
+// +checklockslocktype
+type goPrim struct {
+	gate sync.Mutex
+}
+
+// +checklocks:p.gate
+func (p *goPrim) Lock() {}
+
+// +checklocksrelease:p.gate
+func (p *goPrim) Unlock() {
+	p.gate.Unlock()
+}
+
+func goPrimLock(p *goPrim) {
+	go p.Lock() // +checklocksfail=goroutine started by go Lock does not hold p.gate exclusively
+}
+
+func goPrimUnlock(p *goPrim) {
+	p.gate.Lock()
+	go p.Unlock() // +checklocksfail=goroutine started by go Unlock does not hold p.gate exclusively
+	p.gate.Unlock()
 }

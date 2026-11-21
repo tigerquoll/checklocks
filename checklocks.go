@@ -134,6 +134,7 @@ const (
 	atomicAccess       decisionKind = "atomicAccess"
 	atomicWrite        decisionKind = "atomicWrite"
 	goHeld             decisionKind = "goHeld"
+	goRelease          decisionKind = "goRelease"
 	effectResolve      decisionKind = "effectResolve"
 	release            decisionKind = "release"
 	acquire            decisionKind = "acquire"
