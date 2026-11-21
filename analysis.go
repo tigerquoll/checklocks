@@ -482,6 +482,40 @@ func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) 
 	}
 }
 
+// checkGoCall reports the held-throughout requirements of a statically named function
+// started with go: the new goroutine holds no lock, whatever the caller holds.
+func (pc *passContext) checkGoCall(site callSite, wc *walkContext, ls *lockState) {
+	fn, ok := site.Common().Value.(*ssa.Function)
+	if !ok || fn.Object() == nil {
+		return
+	}
+	tf := fn.Object().(*types.Func)
+	var lff lockFunctionFacts
+	pc.importLockFunctionFacts(tf, &lff)
+	if lff.Ignore || wc.lff.Ignore {
+		return
+	}
+	pos := site.Pos()
+	if _, forced := pc.forced[pc.positionKey(pos)]; forced {
+		return
+	}
+	args := site.Common().Args
+	for _, arg := range args {
+		pc.applyTypeAliases(ls, arg)
+	}
+	resolve := func(fg functionGuardInfo) resolvedValue {
+		return fg.Resolver.resolveCall(pc, ls, args, nil)
+	}
+	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
+		if _, ok := lff.HeldOnExit[g.fieldName]; !ok || g.rv.unavailable || !g.rv.valid() {
+			continue
+		}
+		p, _ := g.rv.valueAndObject(ls)
+		p = ls.aliasPath(p)
+		pc.maybeFail(pos, "goroutine started by go %s does not hold %s %s (%s); %s requires it on entry", tf.Name(), g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), tf.Name())
+	}
+}
+
 // resolvedGuard is one guard of a call or an entry, resolved against the lock state.
 type resolvedGuard struct {
 	fieldName string
@@ -881,6 +915,8 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		// lock as one named directly. See accessor.go.
 		pc.substituteGlobalAccessor(x, ls)
 		pc.checkCall(newCallSite(x), wc, ls)
+	case *ssa.Go:
+		pc.checkGoCall(newCallSite(x), wc, ls)
 	case *ssa.Defer:
 		ls.pushDefer(x)
 	case *ssa.RunDefers:
