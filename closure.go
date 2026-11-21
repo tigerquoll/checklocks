@@ -16,9 +16,14 @@ package checklocks
 
 import (
 	"go/ast"
+	"go/types"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 // closureAnnotations resolves the annotations attached to function literals.
+// A comment must stand alone on its line; one sharing its line with code never
+// binds.
 //
 // A function literal has no declaration to carry a doc comment, so a comment
 // written above one is not attached to anything by the parser. It is matched
@@ -44,24 +49,40 @@ import (
 func (pc *passContext) closureAnnotations() map[*ast.FuncLit]*lockFunctionFacts {
 	out := make(map[*ast.FuncLit]*lockFunctionFacts)
 	for _, f := range pc.pass.Files {
-		// The comment groups of the file, by the line they end on, so
-		// that the group directly above a node can be found.
+		// The lines on which code begins or ends, so that a comment sharing
+		// its line with code is not taken as standalone.
+		codeLines := make(map[int]bool)
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n.(type) {
+			case nil, *ast.File, *ast.Comment, *ast.CommentGroup:
+				return true
+			}
+			codeLines[pc.pass.Fset.PositionFor(n.Pos(), false).Line] = true
+			codeLines[pc.pass.Fset.PositionFor(n.End(), false).Line] = true
+			return true
+		})
+		// The standalone comment groups of the file, by the line they
+		// end on, so that the group directly above a node can be found.
 		byEndLine := make(map[int]*ast.CommentGroup, len(f.Comments))
 		for _, cg := range f.Comments {
-			byEndLine[pc.pass.Fset.Position(cg.End()).Line] = cg
+			if codeLines[pc.pass.Fset.PositionFor(cg.Pos(), false).Line] ||
+				codeLines[pc.pass.Fset.PositionFor(cg.End(), false).Line] {
+				continue
+			}
+			byEndLine[pc.pass.Fset.PositionFor(cg.End(), false).Line] = cg
 		}
 		// The number of literals beginning on each line, so that a
 		// line carrying more than one can be left alone.
 		perLine := make(map[int]int)
 		ast.Inspect(f, func(n ast.Node) bool {
 			if fl, ok := n.(*ast.FuncLit); ok {
-				perLine[pc.pass.Fset.Position(fl.Pos()).Line]++
+				perLine[pc.pass.Fset.PositionFor(fl.Pos(), false).Line]++
 			}
 			return true
 		})
 		// preceding returns the comment group on the line above a node.
 		preceding := func(n ast.Node) *ast.CommentGroup {
-			return byEndLine[pc.pass.Fset.Position(n.Pos()).Line-1]
+			return byEndLine[pc.pass.Fset.PositionFor(n.Pos(), false).Line-1]
 		}
 		record := func(carrier ast.Node, fl *ast.FuncLit) {
 			cg := preceding(carrier)
@@ -77,7 +98,7 @@ func (pc *passContext) closureAnnotations() map[*ast.FuncLit]*lockFunctionFacts 
 			case *ast.FuncLit:
 				// The comment directly above the literal, when
 				// it is the only one starting on its line.
-				if perLine[pc.pass.Fset.Position(x.Pos()).Line] == 1 {
+				if perLine[pc.pass.Fset.PositionFor(x.Pos(), false).Line] == 1 {
 					record(x, x)
 				}
 			case *ast.AssignStmt:
@@ -174,4 +195,20 @@ func (pc *passContext) closureFactsFor(syntax ast.Node) (*lockFunctionFacts, boo
 	}
 	lff, ok := pc.closures[fl]
 	return lff, ok
+}
+
+// literalIgnored reports whether a literal, or a function lexically enclosing
+// it, is annotated +checklocksignore.
+func (pc *passContext) literalIgnored(fn *ssa.Function) bool {
+	for f := fn; f != nil; f = f.Parent() {
+		if obj, ok := f.Object().(*types.Func); ok {
+			var lff lockFunctionFacts
+			pc.importLockFunctionFacts(obj, &lff)
+			return lff.Ignore
+		}
+		if annotated, ok := pc.closureFactsFor(f.Syntax()); ok && annotated.Ignore {
+			return true
+		}
+	}
+	return false
 }

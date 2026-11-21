@@ -499,10 +499,9 @@ func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) 
 			nlff.Ignore = nlff.Ignore || lff.Ignore // See above.
 			pc.checkFunctionCall(site, wc, tf, &nlff, ls)
 		} else {
-			// Anonymous functions have no facts, and cannot be
-			// annotated.  We don't check for violations using the
-			// function facts, since they cannot exist. Instead, we
-			// do a fresh analysis using the current lock state.
+			// A literal's lock annotations are not checked here: the caller's lock
+			// state is known, so the body is analyzed afresh with that state.
+			nlff.Ignore = nlff.Ignore || pc.literalIgnored(fn)
 			fnls := ls.fork()
 			for i, arg := range site.Common().Args {
 				fnls.bind(fn.Params[i], arg)
@@ -1031,7 +1030,7 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		// trivial closures are acceptable in this case.
 		clfn := x.Fn.(*ssa.Function)
 		nlff := lockFunctionFacts{
-			Ignore: wc.lff.Ignore, // Inherit ignore.
+			Ignore: wc.lff.Ignore || pc.literalIgnored(clfn),
 		}
 		pc.checkFunction(callSite{kind: siteEntry}, wc, clfn, &nlff, nil, false /* force */)
 	case *ssa.Return:

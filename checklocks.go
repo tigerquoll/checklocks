@@ -431,6 +431,11 @@ func run(pass *analysis.Pass) (any, error) {
 			lff = annotated
 		}
 		pc.contained(fn, func() {
+			if pc.literalIgnored(fn) && !lff.Ignore {
+				c := *lff
+				c.Ignore = true
+				lff = &c
+			}
 			pc.checkFunction(callSite{kind: siteEntry}, nil, fn, lff, nil, false /* force */)
 		})
 	}
