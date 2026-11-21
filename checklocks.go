@@ -102,6 +102,9 @@ type passContext struct {
 	// being walked or replayed.
 	records []*blockRecord
 	current *blockRecord
+
+	// decisions is what the tagged build keeps about check decisions; see decide.
+	decisions decisionState
 }
 
 // emitMode says what maybeFail and recordObservation do with what they are given.
@@ -116,6 +119,43 @@ const (
 	// the replay never re-enters a nested walk.
 	emitReplay
 )
+
+// decisionKind names what a check decides.
+type decisionKind string
+
+const (
+	guardResolve       decisionKind = "guardResolve"
+	guardHeld          decisionKind = "guardHeld"
+	atomicAccess       decisionKind = "atomicAccess"
+	atomicWrite        decisionKind = "atomicWrite"
+	goHeld             decisionKind = "goHeld"
+	effectResolve      decisionKind = "effectResolve"
+	release            decisionKind = "release"
+	acquire            decisionKind = "acquire"
+	acquireDiscarded   decisionKind = "acquireDiscarded"
+	callExcluded       decisionKind = "callExcluded"
+	callHeld           decisionKind = "callHeld"
+	freshArg           decisionKind = "freshArg"
+	lockOpLock         decisionKind = "lockOpLock"
+	lockOpUnlock       decisionKind = "lockOpUnlock"
+	lockOpDowngrade    decisionKind = "lockOpDowngrade"
+	returnResolve      decisionKind = "returnResolve"
+	returnHeld         decisionKind = "returnHeld"
+	returnCount        decisionKind = "returnCount"
+	entryResolve       decisionKind = "entryResolve"
+	entryDuplicate     decisionKind = "entryDuplicate"
+	incompatibleReturn decisionKind = "incompatibleReturn"
+)
+
+// decisionAt says where a check was made: the instruction checked or, for a check of a
+// whole function, the function and a label; the position it reports at; and its context.
+type decisionAt struct {
+	inst    ssa.Instruction
+	fn      *ssa.Function
+	label   string
+	pos     token.Pos
+	context string
+}
 
 // pendingReport is a report held back by the collector.
 type pendingReport struct {
@@ -359,6 +399,7 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	pc.flushReports()
+	pc.writeDecisions()
 
 	// Check for expected failures.
 	pc.checkFailures()

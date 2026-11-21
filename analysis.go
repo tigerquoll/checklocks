@@ -21,6 +21,7 @@ import (
 	"go/types"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -106,82 +107,96 @@ const (
 
 // checkAtomicCall checks for an atomic access.
 //
-// inst is the instruction analyzed, obj is used only for maybeFail.
-func (pc *passContext) checkAtomicCall(inst ssa.Instruction, obj types.Object, ar atomicRules) {
+// inst is the instruction analyzed, obj names the field in the decision log.
+func (pc *passContext) checkAtomicCall(inst ssa.Instruction, obj types.Object, ar atomicRules, context string) {
+	checked, ok, forceable, msg := pc.atomicVerdict(inst, ar)
+	if checked == nil {
+		return
+	}
+	pc.decide(decisionAt{inst: checked, pos: checked.Pos(), context: context}, atomicAccess, ok, obj.Name())
+	if ok {
+		return
+	}
+	if forceable {
+		if _, forced := pc.forced[pc.positionKey(checked.Pos())]; forced {
+			return
+		}
+	}
+	pc.maybeFail(checked.Pos(), "%s", msg)
+}
+
+// atomicVerdict says whether an atomic access is legal. It returns the instruction the
+// verdict is about, nil when the access cannot fail, and whether a force silences a failure.
+func (pc *passContext) atomicVerdict(inst ssa.Instruction, ar atomicRules) (checked ssa.Instruction, ok, forceable bool, msg string) {
 	switch x := inst.(type) {
 	case *ssa.Call:
 		if x.Common().IsInvoke() {
 			if ar != nonAtomic {
 				// This is an illegal interface dispatch.
-				pc.maybeFail(inst.Pos(), "dynamic dispatch with atomic-only field")
+				return inst, false, false, "dynamic dispatch with atomic-only field"
 			}
-			return
+			return nil, true, false, ""
 		}
 		fn, ok := x.Common().Value.(*ssa.Function)
 		if !ok {
 			if ar != nonAtomic {
 				// This is an illegal call to a non-static function.
-				pc.maybeFail(inst.Pos(), "dispatch to non-static function with atomic-only field")
+				return inst, false, false, "dispatch to non-static function with atomic-only field"
 			}
-			return
+			return nil, true, false, ""
 		}
 		pkg := fn.Package()
 		if pkg == nil {
 			if ar != nonAtomic {
 				// This is a call to some shared wrapper function.
-				pc.maybeFail(inst.Pos(), "dispatch to shared function or wrapper")
+				return inst, false, false, "dispatch to shared function or wrapper"
 			}
-			return
+			return nil, true, false, ""
 		}
 		var lff lockFunctionFacts // Check for exemption.
 		if obj := fn.Object(); obj != nil && pc.pass.ImportObjectFact(obj, &lff) && lff.Ignore {
-			return
+			if ar != nonAtomic {
+				return inst, true, false, ""
+			}
+			return nil, true, false, ""
 		}
 		if name := pkg.Pkg.Name(); name != "atomic" && name != "atomicbitops" {
 			if ar != nonAtomic {
 				// This is an illegal call to a non-atomic package function.
-				pc.maybeFail(inst.Pos(), "dispatch to non-atomic function with atomic-only field")
+				return inst, false, false, "dispatch to non-atomic function with atomic-only field"
 			}
-			return
+			return nil, true, false, ""
 		}
 		if ar == nonAtomic {
 			if fn.Signature.Recv() != nil {
 				// Always allow calls to methods of atomic wrappers such as
 				// atomic.Int32 introduced in Go 1.19 when no annotation exists.
-				return
+				return nil, true, false, ""
 			}
 			// We are *not* expecting an atomic dispatch.
-			if _, ok := pc.forced[pc.positionKey(inst.Pos())]; !ok {
-				pc.maybeFail(inst.Pos(), "unexpected call to atomic function")
-			}
+			return inst, false, true, "unexpected call to atomic function"
 		}
 		if !strings.HasPrefix(fn.Name(), "Load") && ar == readOnlyAtomic {
 			// We are not allowing any reads in this context.
-			if _, ok := pc.forced[pc.positionKey(inst.Pos())]; !ok {
-				pc.maybeFail(inst.Pos(), "unexpected call to atomic write function, is a lock missing?")
-			}
-			return
+			return inst, false, true, "unexpected call to atomic write function, is a lock missing?"
 		}
-		return // Don't hit common case.
+		return inst, true, false, ""
 	case *ssa.ChangeType:
 		// Allow casts for atomic values, but nothing else.
 		if refs := x.Referrers(); refs != nil && len(*refs) == 1 {
-			pc.checkAtomicCall((*refs)[0], obj, ar)
-			return
+			return pc.atomicVerdict((*refs)[0], ar)
 		}
 	case *ssa.UnOp:
 		if x.Op == token.MUL && ar == mixedAtomic {
 			// This is allowed; this is a strict reading.
-			return
+			return inst, true, false, ""
 		}
 	}
 	if ar != nonAtomic {
 		// This is something else entirely.
-		if _, ok := pc.forced[pc.positionKey(inst.Pos())]; !ok {
-			pc.maybeFail(inst.Pos(), "illegal use of atomic-only field by %T instruction", inst)
-		}
-		return
+		return inst, false, true, fmt.Sprintf("illegal use of atomic-only field by %T instruction", inst)
 	}
+	return nil, true, false, ""
 }
 
 func resolveStruct(typ types.Type) (*types.Struct, bool) {
@@ -250,9 +265,11 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 	// An object no other goroutine can reach yet has nothing to race with, so its guards
 	// say nothing here. Which objects those are, and up to which instruction, is worked
 	// out in fresh.go; both of the declarations that produce one are checked.
-	if at, ok := inst.(ssa.Instruction); ok && wc.fresh.isFreshAt(from, at, fieldIndexOf(accessObj, from)) {
+	instr, ok := inst.(ssa.Instruction)
+	if ok && wc.fresh.isFreshAt(from, instr, fieldIndexOf(accessObj, from)) {
 		return
 	}
+	where := decisionAt{inst: instr, pos: inst.Pos(), context: wc.context}
 
 	// Load the facts for the object accessed.
 	pc.importLockGuardFacts(accessObj, &lgf)
@@ -269,12 +286,15 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 			continue
 		}
 		guardsFound++
-		if !r.valid() {
+		resolved := r.valid()
+		pc.decide(where, guardResolve, resolved, guardName, accessObj.Name())
+		if !resolved {
 			// See above; this cannot be forced.
 			pc.maybeFail(inst.Pos(), "field %s cannot be resolved", guardName)
 			continue
 		}
 		p, ok := ls.isHeld(r, isWrite)
+		pc.decide(where, guardHeld, ok, guardName, accessObj.Name())
 		s := p.String()
 		if ok {
 			guardsHeld[p.Key()] = struct{}{}
@@ -319,11 +339,12 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		}
 		if refs := inst.Referrers(); refs != nil {
 			for _, otherInst := range *refs {
-				pc.checkAtomicCall(otherInst, accessObj, ar)
+				pc.checkAtomicCall(otherInst, accessObj, ar, wc.context)
 			}
 		}
 		// Check that this is not otherwise written non-atomically,
 		// even if we do hold all the locks.
+		pc.decide(where, atomicWrite, !isWrite, accessObj.Name())
 		if isWrite {
 			pc.maybeFail(inst.Pos(), "non-atomic write of field %s, writes must still be atomic with locks held (locks: %s)", accessObj.Name(), ls.String())
 		}
@@ -335,7 +356,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		// Check that this is *not* used atomically.
 		if refs := inst.Referrers(); refs != nil {
 			for _, otherInst := range *refs {
-				pc.checkAtomicCall(otherInst, accessObj, nonAtomic)
+				pc.checkAtomicCall(otherInst, accessObj, nonAtomic, wc.context)
 			}
 		}
 	}
@@ -513,12 +534,14 @@ func (pc *passContext) checkGoCall(site callSite, wc *walkContext, ls *lockState
 	resolve := func(fg functionGuardInfo) resolvedValue {
 		return fg.Resolver.resolveCall(pc, ls, args, nil)
 	}
+	at := decisionAt{inst: site.instr, pos: pos, context: wc.context}
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
 		if _, ok := lff.HeldOnExit[g.fieldName]; !ok || g.rv.unavailable || !g.rv.valid() {
 			continue
 		}
 		p, _ := g.rv.valueAndObject(ls)
 		p = ls.aliasPath(p)
+		pc.decide(at, goHeld, false, g.fieldName, tf.Name())
 		pc.maybeFail(pos, "goroutine started by go %s does not hold %s %s (%s); %s requires it on entry", tf.Name(), g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), tf.Name())
 	}
 }
@@ -572,21 +595,27 @@ func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, res
 }
 
 // postFunctionCallUpdate updates all conditions.
-func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFacts, ls *lockState) {
+func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFacts, ls *lockState, context string) {
+	at := decisionAt{inst: site.instr, pos: site.Pos(), context: context}
 	resolve := func(fg functionGuardInfo) resolvedValue {
 		return fg.Resolver.resolveCall(pc, ls, site.Common().Args, site.Result())
 	}
 
 	// Release all locks not still held.
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, lff.HeldOnExit, resolve) {
-		if !g.rv.valid() {
-			if !g.rv.unavailable {
-				// See above: this cannot be forced.
-				pc.maybeFail(site.Pos(), "field %s cannot be resolved", g.fieldName)
-			}
+		if g.rv.unavailable {
 			continue
 		}
-		if p, ok := ls.unlockField(g.rv, g.fg.Exclusive); !ok && !lff.Ignore {
+		resolved := g.rv.valid()
+		pc.decide(at, effectResolve, resolved, g.fieldName)
+		if !resolved {
+			// See above: this cannot be forced.
+			pc.maybeFail(site.Pos(), "field %s cannot be resolved", g.fieldName)
+			continue
+		}
+		p, ok := ls.unlockField(g.rv, g.fg.Exclusive)
+		pc.decide(at, release, ok, g.fieldName)
+		if !ok && !lff.Ignore {
 			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
 				pc.maybeFail(site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
@@ -595,14 +624,19 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 
 	// Update all held locks if acquired.
 	for _, g := range resolveGuards(ls, lff.HeldOnExit, lff.HeldOnEntry, resolve) {
-		if !g.rv.valid() {
-			if !g.rv.unavailable {
-				pc.maybeFail(site.Pos(), "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
-			}
+		if g.rv.unavailable {
+			continue
+		}
+		tracked := g.rv.valid()
+		pc.decide(at, acquireDiscarded, tracked, g.fieldName)
+		if !tracked {
+			pc.maybeFail(site.Pos(), "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
 			continue
 		}
 		// Acquire the lock per the annotation.
-		if p, ok := ls.lockField(g.rv, g.exclusive); !ok {
+		p, ok := ls.lockField(g.rv, g.exclusive)
+		pc.decide(at, acquire, ok, g.fieldName)
+		if !ok {
 			// The lock is really taken here, whatever assumed it earlier.
 			ls.setAssumed(p, false)
 			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
@@ -638,6 +672,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 	}
 
 	callPos := site.Pos()
+	at := decisionAt{inst: site.instr, pos: callPos, context: wc.context}
 	posKey := pc.positionKey(callPos)
 	_, forced := pc.forced[posKey]
 	callValue := site.Result()
@@ -655,7 +690,9 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			// be held here; see globalGuard.resolveCommon.
 			continue
 		}
-		if p, ok := ls.isHeld(g.rv, g.fg.Exclusive); ok {
+		p, held := ls.isHeld(g.rv, g.fg.Exclusive)
+		pc.decide(at, callExcluded, !held, g.fieldName, fn.Name())
+		if held {
 			if !forced && !lff.Ignore {
 				if g.fg.Exclusive {
 					pc.maybeFail(callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
@@ -684,7 +721,9 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 		if pc.freshArgument(wc, site, g.fg) {
 			continue
 		}
-		if p, ok := ls.isHeld(g.rv, g.fg.Exclusive); !ok {
+		p, ok := ls.isHeld(g.rv, g.fg.Exclusive)
+		pc.decide(at, callHeld, ok, g.fieldName, fn.Name())
+		if !ok {
 			if !forced && !lff.Ignore {
 				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), fn.Name(), ls.String())
 			} else if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
@@ -695,7 +734,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 	}
 
 	// Update all lock state accordingly.
-	pc.postFunctionCallUpdate(site, lff, ls)
+	pc.postFunctionCallUpdate(site, lff, ls, wc.context)
 
 	// Check if it's a method dispatch for something in the sync package.
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#Function
@@ -708,7 +747,9 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			isExclusive = true
 			fallthrough
 		case "RLock":
-			if p, ok := ls.lockField(rv, isExclusive); !ok {
+			p, ok := ls.lockField(rv, isExclusive)
+			pc.decide(at, lockOpLock, ok)
+			if !ok {
 				// The lock is really taken here, whatever assumed it earlier.
 				ls.setAssumed(p, false)
 				if !lff.Ignore && !forced {
@@ -720,14 +761,18 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			isExclusive = true
 			fallthrough
 		case "RUnlock":
-			if p, ok := ls.unlockField(rv, isExclusive); !ok && !lff.Ignore {
+			p, ok := ls.unlockField(rv, isExclusive)
+			pc.decide(at, lockOpUnlock, ok)
+			if !ok && !lff.Ignore {
 				if !forced {
 					// Unlocking something that is already unlocked.
 					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
 				}
 			}
 		case "DowngradeLock":
-			if p, ok := ls.downgradeField(rv); !ok {
+			p, ok := ls.downgradeField(rv)
+			pc.decide(at, lockOpDowngrade, ok)
+			if !ok {
 				if !forced && !lff.Ignore {
 					// Downgrading something that may not be downgraded.
 					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
@@ -874,6 +919,9 @@ type walkContext struct {
 
 	// returnStates holds, by identity summary, the text of each lock state the walk returned in.
 	returnStates map[string]string
+
+	// context names the walk in the decision log; see inlineContext.
+	context string
 }
 
 // checkInstruction checks the legality the single instruction based on the
@@ -989,19 +1037,24 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 		rv, rls = pc.checkInstruction(inst, wc, ls)
 		if rls != nil {
 			failed := false
+			at := decisionAt{inst: rv, pos: rv.Pos(), context: wc.context}
 			// Validate held locks.
 			resolve := func(fg functionGuardInfo) resolvedValue {
 				return fg.Resolver.resolveStatic(pc, ls, wc.fn, rv)
 			}
 			for _, g := range resolveGuards(rls, wc.lff.HeldOnExit, nil, resolve) {
-				if !g.rv.valid() {
-					if !g.rv.unavailable {
-						// This cannot be forced, since we have no reference.
-						pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", g.fieldName)
-					}
+				if g.rv.unavailable {
+					continue
+				}
+				resolved := g.rv.valid()
+				pc.decide(at, returnResolve, resolved, g.fieldName)
+				if !resolved {
+					// This cannot be forced, since we have no reference.
+					pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", g.fieldName)
 					continue
 				}
 				p, held := rls.isHeld(g.rv, g.fg.Exclusive)
+				pc.decide(at, returnHeld, held, g.fieldName)
 				if held {
 					// The lock leaves with the caller, so it counts as taken
 					// here however it was first recorded.
@@ -1019,8 +1072,12 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 				}
 			}
 			// Check for other locks, but only if the above didn't trip.
-			if !failed && rls.countOnReturn(wc.entryLocks) != len(wc.lff.HeldOnExit) && !wc.lff.Ignore {
-				pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
+			if !failed {
+				counted := rls.countOnReturn(wc.entryLocks) == len(wc.lff.HeldOnExit)
+				pc.decide(at, returnCount, counted)
+				if !counted && !wc.lff.Ignore {
+					pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
+				}
 			}
 		}
 	}
@@ -1112,6 +1169,8 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	outerEmit := pc.emit
 	pc.emit = emitDirect
 	defer func() { pc.emit = outerEmit }()
+	pc.decisions.enter()
+	defer pc.decisions.leave()
 	defer func() {
 		// Mark this function as checked. This is used by the top-level
 		// loop to ensure that all anonymous functions are scanned, if
@@ -1143,6 +1202,8 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 
 	// The first is the method object itself so we skip that when
 	// looking for receiver/function parameters.
+	context := inlineContext(outer, site, fn)
+	entry := decisionAt{fn: fn, label: "entry", pos: fn.Pos(), context: context}
 	resolve := func(fg functionGuardInfo) resolvedValue {
 		if _, ok := fg.Resolver.(*returnGuard); ok {
 			panic(fmt.Sprintf("checkFunction: %s holds a return guard on entry", fn.Name()))
@@ -1150,14 +1211,19 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		return fg.Resolver.resolveStatic(pc, ls, fn, site.Result())
 	}
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
-		if !g.rv.valid() {
-			if !g.rv.unavailable {
-				// See above: this cannot be forced.
-				pc.maybeFail(fn.Pos(), "lock %s cannot be resolved", g.fieldName)
-			}
+		if g.rv.unavailable {
 			continue
 		}
-		if p, ok := ls.lockField(g.rv, g.exclusive); !ok && !lff.Ignore {
+		resolved := g.rv.valid()
+		pc.decide(entry, entryResolve, resolved, g.fieldName)
+		if !resolved {
+			// See above: this cannot be forced.
+			pc.maybeFail(fn.Pos(), "lock %s cannot be resolved", g.fieldName)
+			continue
+		}
+		p, ok := ls.lockField(g.rv, g.exclusive)
+		pc.decide(entry, entryDuplicate, ok, g.fieldName)
+		if !ok && !lff.Ignore {
 			// This can only happen if the same value is declared
 			// multiple times, and should be caught by the earlier
 			// fact scanning. Keep it here as a sanity check.
@@ -1171,7 +1237,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if outer != nil {
 		outerFresh = outer.fresh
 	}
-	wc := &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh)}
+	wc := &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh), context: context}
 
 	seen := make(map[*ssa.BasicBlock]*lockState)
 
@@ -1198,7 +1264,9 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		pc.checkBasicBlock(wc, root, ls, seen, nil)
 		// Two states that cannot both hold are one finding about the function,
 		// however many paths reach them. Sorting by text first keeps the order the messages had.
-		if len(wc.returnStates) > 1 {
+		compatible := len(wc.returnStates) <= 1
+		pc.decide(decisionAt{fn: fn, label: "exit:" + strconv.Itoa(root.Index), pos: fn.Pos(), context: context}, incompatibleReturn, compatible)
+		if !compatible {
 			states := slices.SortedFunc(maps.Keys(wc.returnStates), func(a, b string) int {
 				return cmp.Or(strings.Compare(wc.returnStates[a], wc.returnStates[b]), strings.Compare(a, b))
 			})
@@ -1215,7 +1283,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	// Update all lock state accordingly. This will be called only if we
 	// are doing inline analysis for e.g. an anonymous function.
 	if parent != nil {
-		pc.postFunctionCallUpdate(site, lff, parent)
+		pc.postFunctionCallUpdate(site, lff, parent, outer.context)
 	}
 }
 

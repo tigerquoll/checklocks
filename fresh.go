@@ -18,6 +18,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -711,7 +712,9 @@ func (pc *passContext) checkFreshArgs(wc *walkContext, call ssa.CallInstruction)
 			continue
 		}
 		arg := common.Args[index]
-		if wc.fresh.isFreshAt(arg, call, allFields) {
+		fresh := wc.fresh.isFreshAt(arg, call, allFields)
+		pc.decide(decisionAt{inst: call, pos: call.Pos(), context: wc.context}, freshArg, fresh, callee.Name(), strconv.Itoa(index))
+		if fresh {
 			continue
 		}
 		pc.maybeFail(call.Pos(), "%s requires an unpublished object for parameter %d, and this one is not provably unpublished here", callee.Name(), index)

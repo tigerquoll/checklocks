@@ -20,10 +20,19 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"maps"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 )
+
+// decisionLogDir is where the decision log goes; empty writes none.
+var decisionLogDir = os.Getenv("CHECKLOCKS_DECISION_LOG")
 
 // parityCheck panics unless the typed path and object match the string builders'.
 func parityCheck(rv *resolvedValue, ls *lockState, path lockPath, obj types.Object) {
@@ -170,6 +179,7 @@ const replayRuns = 2
 type blockCapture struct {
 	findings     []string
 	observations []string
+	decisions    []string
 	state        string
 }
 
@@ -188,7 +198,15 @@ func (pc *passContext) capture() *blockCapture {
 	return nil
 }
 
+// parityFinding records a report, and panics if a check region raises one its last decision
+// does not cover.
 func (pc *passContext) parityFinding(pos token.Pos, fmtStr string, args ...any) {
+	if pc.current != nil || pc.decisions.region > 0 {
+		if last := pc.decisions.last; !last.open || last.pos != pos {
+			panic(fmt.Sprintf("decision log: report without decision at %s", pc.pass.Fset.Position(pos)))
+		}
+		pc.decisions.last.open = false
+	}
 	if c := pc.capture(); c != nil {
 		c.findings = append(c.findings, fmt.Sprintf("%d: %s", pos, fmt.Sprintf(fmtStr, args...)))
 	}
@@ -217,11 +235,16 @@ func (p *blockParity) replayed(r *blockRecord, ls *lockState, grew bool) {
 	slices.Sort(walk.findings)
 	slices.Sort(run.observations)
 	slices.Sort(walk.observations)
+	slices.Sort(run.decisions)
+	slices.Sort(walk.decisions)
 	if d := firstDifference(walk.findings, run.findings); d != "" {
 		panic(fmt.Sprintf("block replay parity: %s: findings: %s", where, d))
 	}
 	if d := firstDifference(walk.observations, run.observations); d != "" {
 		panic(fmt.Sprintf("block replay parity: %s: observations: %s", where, d))
+	}
+	if d := firstDifference(walk.decisions, run.decisions); d != "" {
+		panic(fmt.Sprintf("block replay parity: %s: decisions: %s", where, d))
 	}
 	if run.state != walk.state {
 		panic(fmt.Sprintf("block replay parity: %s: state: walk %q, replay %q", where, walk.state, run.state))
@@ -241,4 +264,100 @@ func firstDifference(walk, run []string) string {
 		}
 	}
 	return ""
+}
+
+// decisionState is what the tagged build keeps about check decisions.
+type decisionState struct {
+	// last is the latest decision; it is open while it failed and no report has used it.
+	last struct {
+		pos  token.Pos
+		open bool
+	}
+
+	// region is the number of checkFunction calls under way, whose reports each need a decision.
+	region int
+
+	lines map[string]struct{}
+}
+
+func (d *decisionState) enter() { d.region++ }
+func (d *decisionState) leave() { d.region-- }
+
+// decide records the answer of one check. A walk keeps it for the block's parity; a
+// replay run keeps it too and, like a direct check, logs it.
+func (pc *passContext) decide(at decisionAt, kind decisionKind, ok bool, subject ...string) {
+	line := pc.decisionLine(at, kind, ok, subject)
+	pc.decisions.last.pos, pc.decisions.last.open = at.pos, !ok
+	if c := pc.capture(); c != nil {
+		c.decisions = append(c.decisions, line)
+	}
+	if pc.emit != emitWalk && decisionLogDir != "" {
+		if pc.decisions.lines == nil {
+			pc.decisions.lines = make(map[string]struct{})
+		}
+		pc.decisions.lines[line] = struct{}{}
+	}
+}
+
+func (pc *passContext) decisionLine(at decisionAt, kind decisionKind, ok bool, subject []string) string {
+	fn, coord := at.fn, at.label
+	if at.inst != nil {
+		fn, coord = instCoord(at.inst)
+	}
+	pos := "-:0:0"
+	if at.pos.IsValid() {
+		p := pc.pass.Fset.PositionFor(at.pos, true)
+		pos = fmt.Sprintf("%s:%d:%d", filepath.Base(p.Filename), p.Line, p.Column)
+	}
+	return strings.Join([]string{pos, relFuncName(fn), coord, string(kind), strings.Join(subject, " "), at.context, strconv.FormatBool(ok)}, "\t")
+}
+
+// instCoord returns the function holding inst and its place in it as block and index.
+func instCoord(inst ssa.Instruction) (*ssa.Function, string) {
+	if w, ok := inst.(noReferrers); ok {
+		inst = w.Instruction
+	}
+	return inst.Parent(), fmt.Sprintf("b%d.i%d", inst.Block().Index, slices.Index(inst.Block().Instrs, inst))
+}
+
+// inlineContext names a walk by the top-level function and the call sites inlined to reach it.
+// A walk with no call site of its own, a top-level or MakeClosure one, is named by its function.
+func inlineContext(outer *walkContext, site callSite, fn *ssa.Function) string {
+	if outer == nil || site.instr == nil {
+		return relFuncName(fn)
+	}
+	_, coord := instCoord(site.instr)
+	return outer.context + ">" + coord
+}
+
+// writeDecisions writes the sorted, deduplicated decisions of this vet unit to its own file
+// in the decision log directory.
+func (pc *passContext) writeDecisions() {
+	if decisionLogDir == "" {
+		return
+	}
+	name := url.PathEscape(pc.pass.Pkg.Path())
+	for _, f := range pc.pass.Files {
+		if strings.HasSuffix(pc.pass.Fset.Position(f.Pos()).Filename, "_test.go") {
+			name += ".test"
+			break
+		}
+	}
+	var out strings.Builder
+	for _, line := range slices.Sorted(maps.Keys(pc.decisions.lines)) {
+		out.WriteString(line + "\n")
+	}
+	tmp, err := os.CreateTemp(decisionLogDir, name+".tmp*")
+	if err == nil {
+		_, err = tmp.WriteString(out.String())
+		if cerr := tmp.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), filepath.Join(decisionLogDir, name+".log"))
+	}
+	if err != nil {
+		panic(fmt.Sprintf("decision log: %v", err))
+	}
 }

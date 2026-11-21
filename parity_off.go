@@ -19,6 +19,8 @@ package checklocks
 import (
 	"go/token"
 	"go/types"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 func parityCheck(*resolvedValue, *lockState, lockPath, types.Object) {}
@@ -33,3 +35,13 @@ func (blockParity) walked(*lockState)                                       {}
 func (blockParity) replayed(*blockRecord, *lockState, bool)                 {}
 func (*passContext) parityFinding(token.Pos, string, ...any)                {}
 func (*passContext) parityObservation(almostInst, types.Object, *lockState) {}
+
+type decisionState struct{}
+
+func (*decisionState) enter() {}
+func (*decisionState) leave() {}
+
+func (*passContext) decide(decisionAt, decisionKind, bool, ...string) {}
+func (*passContext) writeDecisions()                                  {}
+
+func inlineContext(*walkContext, callSite, *ssa.Function) string { return "" }
