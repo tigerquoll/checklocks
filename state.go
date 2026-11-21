@@ -371,7 +371,7 @@ type elemType interface {
 //
 // This decomposes the value into the simplest possible representation in terms
 // of parameters, free variables and globals. During resolution, stored values
-// may be transferred, as well as bound free variables.
+// may be transferred, as well as bound free variables and parameters.
 //
 // Nil may not be passed here.
 func (l *lockState) valueAndObject(v ssa.Value) (lockPath, types.Object) {
