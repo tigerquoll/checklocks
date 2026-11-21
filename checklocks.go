@@ -86,11 +86,6 @@ type passContext struct {
 	functions    map[*ssa.Function]struct{}
 	observations map[types.Object]*objectObservations
 
-	// fresh is what the function being checked knows about the objects under
-	// construction in it, see fresh.go. It belongs to one function at a time and is
-	// saved and restored around the analysis of another.
-	fresh *freshState
-
 	// collect holds the reports back until flushReports emits them, and pending is
 	// what has been held. Only checklocks' own run collects; see maybeFail.
 	collect bool
@@ -99,16 +94,6 @@ type passContext struct {
 	// counted names the observations already recorded for the inferred hints, so
 	// that a site the walk reaches again adds nothing; see recordObservation.
 	counted map[observationKey]struct{}
-
-	// returnStates holds, by identity summary, the text of each lock state the walk under
-	// way has returned in; the states themselves are shared and copied on write. It belongs
-	// to one walk and is saved and restored around another, as fresh is.
-	returnStates map[string]string
-
-	// entryLocks holds, by identity, the mode of each lock an inline walk was entered
-	// with: those are the caller's, and no return of the body leaves them held.
-	// It is empty for any other walk and is saved and restored as above.
-	entryLocks map[pathKey]bool
 }
 
 // pendingReport is a report held back by the collector.
@@ -324,7 +309,7 @@ func run(pass *analysis.Pass) (any, error) {
 		pc.importLockFunctionFacts(obj.(*types.Func), &lff)
 
 		// Check the basic blocks in the function.
-		pc.checkFunction(nil, fn, &lff, nil, false /* force */)
+		pc.checkFunction(callSite{kind: siteEntry}, nil, fn, &lff, nil, false /* force */)
 	}
 	for _, fn := range state.SrcFuncs {
 		// Ensure all anonymous functions are hit. They are not
@@ -340,7 +325,7 @@ func run(pass *analysis.Pass) (any, error) {
 		if annotated, ok := pc.closureFactsFor(fn.Syntax()); ok {
 			lff = annotated
 		}
-		pc.checkFunction(nil, fn, lff, nil, false /* force */)
+		pc.checkFunction(callSite{kind: siteEntry}, nil, fn, lff, nil, false /* force */)
 	}
 
 	// Check for inferred checklocks annotations.

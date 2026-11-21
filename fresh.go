@@ -225,7 +225,7 @@ func freshRootOf(v ssa.Value) (ssa.Value, int) {
 
 // computeFresh works out which objects in a function start unpublished, and where each of
 // them stops being so.
-func (pc *passContext) computeFresh(fn *ssa.Function) *freshState {
+func (pc *passContext) computeFresh(fn *ssa.Function, outer *freshState) *freshState {
 	fs := &freshState{
 		escapes: make(map[ssa.Value][]escapePoint),
 		roots:   make(map[ssa.Value]bool),
@@ -269,7 +269,7 @@ func (pc *passContext) computeFresh(fn *ssa.Function) *freshState {
 	}
 
 	for root := range fs.roots {
-		fs.escapes[root] = pc.escapesOf(root, allFields, false /* forExport */, make(map[ssa.Value]bool))
+		fs.escapes[root] = pc.escapesOf(root, allFields, false /* forExport */, outer, make(map[ssa.Value]bool))
 	}
 	return fs
 }
@@ -298,7 +298,7 @@ func (pc *passContext) returnsFresh(common *ssa.CallCommon) bool {
 // itself needs: whether the value is reachable by another goroutine once this function
 // returns. The two differ for a publication into a container the function holds the lock
 // of, which is safe for the rest of that critical section and not afterwards.
-func (pc *passContext) escapesOf(v ssa.Value, field int, forExport bool, seen map[ssa.Value]bool) []escapePoint {
+func (pc *passContext) escapesOf(v ssa.Value, field int, forExport bool, outer *freshState, seen map[ssa.Value]bool) []escapePoint {
 	if seen[v] {
 		return nil
 	}
@@ -316,13 +316,13 @@ func (pc *passContext) escapesOf(v ssa.Value, field int, forExport bool, seen ma
 		case *ssa.FieldAddr:
 			// A pointer into the object. Where it goes publishes that field, not
 			// the object: there is no way back from a field to its container.
-			out = append(out, pc.escapesOf(x, x.Field, forExport, seen)...)
+			out = append(out, pc.escapesOf(x, x.Field, forExport, outer, seen)...)
 		case *ssa.IndexAddr:
-			out = append(out, pc.escapesOf(x, field, forExport, seen)...)
+			out = append(out, pc.escapesOf(x, field, forExport, outer, seen)...)
 		case *ssa.ChangeType:
-			out = append(out, pc.escapesOf(x, field, forExport, seen)...)
+			out = append(out, pc.escapesOf(x, field, forExport, outer, seen)...)
 		case *ssa.Convert:
-			out = append(out, pc.escapesOf(x, field, forExport, seen)...)
+			out = append(out, pc.escapesOf(x, field, forExport, outer, seen)...)
 		case *ssa.UnOp:
 			if x.Op == token.MUL && x.X == v {
 				// A load through the pointer produces the value of a field,
@@ -335,7 +335,7 @@ func (pc *passContext) escapesOf(v ssa.Value, field int, forExport bool, seen ma
 				// A store INTO the object, which does not publish it.
 				continue
 			}
-			if !forExport && pc.protectedPublication(x, x.Addr) {
+			if !forExport && pc.protectedPublication(x, x.Addr, outer) {
 				continue
 			}
 			escape(x)
@@ -343,7 +343,7 @@ func (pc *passContext) escapesOf(v ssa.Value, field int, forExport bool, seen ma
 			if x.Value != v {
 				continue
 			}
-			if !forExport && pc.protectedPublication(x, x.Map) {
+			if !forExport && pc.protectedPublication(x, x.Map, outer) {
 				continue
 			}
 			escape(x)
@@ -382,7 +382,7 @@ func (pc *passContext) escapesOf(v ssa.Value, field int, forExport bool, seen ma
 // The container's field has to be lock guarded. The lock is then held here, because the
 // write to that field is itself checked and would be reported on this very line if it were
 // not, so nothing can traverse the container to reach what was put in it.
-func (pc *passContext) protectedPublication(inst ssa.Instruction, dst ssa.Value) bool {
+func (pc *passContext) protectedPublication(inst ssa.Instruction, dst ssa.Value, outer *freshState) bool {
 	fa, ok := dstFieldAddr(dst)
 	if !ok {
 		return false
@@ -391,9 +391,9 @@ func (pc *passContext) protectedPublication(inst ssa.Instruction, dst ssa.Value)
 	// is itself unpublished has no lock held on it, and its own publication would have
 	// to end the freshness of everything inside it, which is a reachability question
 	// this analysis does not answer.
-	if fs := pc.fresh; fs != nil {
+	if outer != nil {
 		root, _ := freshRootOf(fa.X)
-		if fs.roots[root] {
+		if outer.roots[root] {
 			return false
 		}
 	}
@@ -559,7 +559,7 @@ func (pc *passContext) computePublishes(fn *ssa.Function) bool {
 		if !isPointerLike(param.Type()) {
 			continue
 		}
-		for _, e := range pc.escapesOf(param, allFields, true /* forExport */, make(map[ssa.Value]bool)) {
+		for _, e := range pc.escapesOf(param, allFields, true /* forExport */, nil, make(map[ssa.Value]bool)) {
 			if !pc.publishesObject(param, e) {
 				continue
 			}
@@ -635,7 +635,7 @@ func (pc *passContext) checkFreshReturns(fn *ssa.Function) {
 	if !pc.pass.ImportObjectFact(obj, &ff) || !ff.ReturnsFresh {
 		return
 	}
-	fs := pc.computeFresh(fn)
+	fs := pc.computeFresh(fn, nil)
 	for _, b := range fn.Blocks {
 		ret, ok := b.Instrs[len(b.Instrs)-1].(*ssa.Return)
 		if !ok {
@@ -674,16 +674,12 @@ func fieldIndexOf(accessObj types.Object, from ssa.Value) int {
 
 // freshArgument reports whether a call's lock precondition is rooted at an argument that is
 // an object nothing else can reach yet.
-func (pc *passContext) freshArgument(call callCommon, fg functionGuardInfo) bool {
+func (pc *passContext) freshArgument(wc *walkContext, site callSite, fg functionGuardInfo) bool {
 	pg, ok := fg.Resolver.(*parameterGuard)
 	if !ok {
 		return false
 	}
-	inst, ok := call.(ssa.CallInstruction)
-	if !ok {
-		return false
-	}
-	common := call.Common()
+	common := site.Common()
 	args := common.Args
 	if common.Method != nil {
 		args = append([]ssa.Value{common.Value}, args...)
@@ -691,12 +687,12 @@ func (pc *passContext) freshArgument(call callCommon, fg functionGuardInfo) bool
 	if pg.Index >= len(args) {
 		return false
 	}
-	return pc.fresh.isFreshAt(args[pg.Index], inst, allFields)
+	return wc.fresh.isFreshAt(args[pg.Index], site.instr, allFields)
 }
 
 // checkFreshArgs checks, at a call site, that what is passed to a parameter declared to
 // arrive unpublished is an object nothing else can reach yet.
-func (pc *passContext) checkFreshArgs(call ssa.CallInstruction) {
+func (pc *passContext) checkFreshArgs(wc *walkContext, call ssa.CallInstruction) {
 	common := call.Common()
 	callee := common.StaticCallee()
 	if callee == nil {
@@ -715,7 +711,7 @@ func (pc *passContext) checkFreshArgs(call ssa.CallInstruction) {
 			continue
 		}
 		arg := common.Args[index]
-		if pc.fresh.isFreshAt(arg, call, allFields) {
+		if wc.fresh.isFreshAt(arg, call, allFields) {
 			continue
 		}
 		pc.maybeFail(call.Pos(), "%s requires an unpublished object for parameter %d, and this one is not provably unpublished here", callee.Name(), index)

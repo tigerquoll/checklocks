@@ -179,18 +179,64 @@ func TestObservationDedupe(t *testing.T) {
 	}
 }
 
-type fakeCall struct{ value *ssa.Call }
+func TestCallSite(t *testing.T) {
+	const src = `package q
 
-func (fakeCall) Pos() token.Pos          { return token.NoPos }
-func (fakeCall) Common() *ssa.CallCommon { return nil }
-func (f fakeCall) Value() *ssa.Call      { return f.value }
+func f() {}
 
-func TestCallResult(t *testing.T) {
-	if got := callResult(fakeCall{}); got != nil {
-		t.Errorf("nil *ssa.Call: got %#v, want a nil ssa.Value", got)
+func g() {
+	f()
+	defer f()
+	go f()
+}
+`
+	pkg := buildTestPackage(t, "q", src)
+	var call *ssa.Call
+	var deferred *ssa.Defer
+	var goes *ssa.Go
+	for _, b := range pkg.Func("g").Blocks {
+		for _, inst := range b.Instrs {
+			switch x := inst.(type) {
+			case *ssa.Call:
+				call = x
+			case *ssa.Defer:
+				deferred = x
+			case *ssa.Go:
+				goes = x
+			}
+		}
 	}
-	c := &ssa.Call{}
-	if got := callResult(fakeCall{c}); got != ssa.Value(c) {
-		t.Errorf("real *ssa.Call: got %#v, want the call", got)
+	if call == nil || deferred == nil || goes == nil {
+		t.Fatalf("missing instruction: call %v, defer %v, go %v", call, deferred, goes)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		instr ssa.CallInstruction
+		kind  siteKind
+		value ssa.Value
+	}{
+		{"call", call, siteCall, call},
+		{"defer", deferred, siteDefer, nil},
+		{"go", goes, siteGo, nil},
+	} {
+		site := newCallSite(tc.instr)
+		if site.kind != tc.kind {
+			t.Errorf("%s: kind %d, want %d", tc.name, site.kind, tc.kind)
+		}
+		if site.Pos() != tc.instr.Pos() {
+			t.Errorf("%s: Pos %v, want %v", tc.name, site.Pos(), tc.instr.Pos())
+		}
+		if site.Common() != tc.instr.Common() {
+			t.Errorf("%s: Common is not the instruction's", tc.name)
+		}
+		if got := site.Result(); got != tc.value {
+			t.Errorf("%s: Result %#v, want %#v", tc.name, got, tc.value)
+		}
+	}
+
+	entry := callSite{kind: siteEntry}
+	if entry.Pos() != token.NoPos || entry.Common() != nil || entry.Result() != nil {
+		t.Errorf("entry: Pos %v, Common %v, Result %#v; want NoPos, nil, nil", entry.Pos(), entry.Common(), entry.Result())
 	}
 }

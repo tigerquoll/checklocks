@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"cmp"
+	"fmt"
 	"go/token"
 	"go/types"
 	"maps"
@@ -238,7 +239,7 @@ type almostInst interface {
 //
 // Note that this function is not called if lff.Ignore is true, since it cannot
 // discover any local anonymous functions or closures.
-func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, isWrite bool) {
+func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, isWrite bool) {
 	var (
 		lgf         lockGuardFacts
 		guardsFound int
@@ -248,7 +249,7 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 	// An object no other goroutine can reach yet has nothing to race with, so its guards
 	// say nothing here. Which objects those are, and up to which instruction, is worked
 	// out in fresh.go; both of the declarations that produce one are checked.
-	if at, ok := inst.(ssa.Instruction); ok && pc.fresh.isFreshAt(from, at, fieldIndexOf(accessObj, from)) {
+	if at, ok := inst.(ssa.Instruction); ok && wc.fresh.isFreshAt(from, at, fieldIndexOf(accessObj, from)) {
 		return
 	}
 
@@ -402,9 +403,9 @@ func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, access
 }
 
 // checkFieldAccess checks the validity of a field access.
-func (pc *passContext) checkFieldAccess(inst almostInst, structObj ssa.Value, field int, ls *lockState, isWrite bool) {
+func (pc *passContext) checkFieldAccess(wc *walkContext, inst almostInst, structObj ssa.Value, field int, ls *lockState, isWrite bool) {
 	fieldObj, _ := findField(structObj.Type(), field)
-	pc.checkGuards(inst, structObj, fieldObj, ls, isWrite)
+	pc.checkGuards(wc, inst, structObj, fieldObj, ls, isWrite)
 }
 
 // noReferrers wraps an instruction as an almostInst.
@@ -416,19 +417,20 @@ type noReferrers struct {
 func (noReferrers) Referrers() *[]ssa.Instruction { return nil }
 
 // checkGlobalAccess checks the validity of a global access.
-func (pc *passContext) checkGlobalAccess(inst ssa.Instruction, g *ssa.Global, ls *lockState, isWrite bool) {
-	pc.checkGuards(noReferrers{inst}, g, g.Object(), ls, isWrite)
+func (pc *passContext) checkGlobalAccess(wc *walkContext, inst ssa.Instruction, g *ssa.Global, ls *lockState, isWrite bool) {
+	pc.checkGuards(wc, noReferrers{inst}, g, g.Object(), ls, isWrite)
 }
 
-func (pc *passContext) checkCall(call callCommon, lff *lockFunctionFacts, ls *lockState) {
+func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) {
+	lff := wc.lff
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#CallCommon
 	//
 	// "invoke" mode: Method is non-nil, and Value is the underlying value.
-	if fn := call.Common().Method; fn != nil {
+	if fn := site.Common().Method; fn != nil {
 		var nlff lockFunctionFacts
 		pc.importLockFunctionFacts(fn, &nlff)
 		nlff.Ignore = nlff.Ignore || lff.Ignore // Inherit ignore.
-		pc.checkFunctionCall(call, fn, &nlff, ls)
+		pc.checkFunctionCall(site, wc, fn, &nlff, ls)
 		return
 	}
 
@@ -449,7 +451,7 @@ func (pc *passContext) checkCall(call callCommon, lff *lockFunctionFacts, ls *lo
 	//
 	// (d) any other value, indicating a dynamically dispatched
 	//     function call.
-	switch fn := call.Common().Value.(type) {
+	switch fn := site.Common().Value.(type) {
 	case *ssa.Function:
 		nlff := lockFunctionFacts{
 			Ignore: lff.Ignore, // Inherit ignore.
@@ -458,23 +460,23 @@ func (pc *passContext) checkCall(call callCommon, lff *lockFunctionFacts, ls *lo
 			tf := obj.(*types.Func)
 			pc.importLockFunctionFacts(tf, &nlff)
 			nlff.Ignore = nlff.Ignore || lff.Ignore // See above.
-			pc.checkFunctionCall(call, tf, &nlff, ls)
+			pc.checkFunctionCall(site, wc, tf, &nlff, ls)
 		} else {
 			// Anonymous functions have no facts, and cannot be
 			// annotated.  We don't check for violations using the
 			// function facts, since they cannot exist. Instead, we
 			// do a fresh analysis using the current lock state.
 			fnls := ls.fork()
-			for i, arg := range call.Common().Args {
+			for i, arg := range site.Common().Args {
 				fnls.bind(fn.Params[i], arg)
 			}
-			pc.checkFunction(call, fn, &nlff, fnls, true /* force */)
+			pc.checkFunction(site, wc, fn, &nlff, fnls, true /* force */)
 		}
 	case *ssa.MakeClosure:
 		// Note that creating and then invoking closures locally is
 		// allowed, but analysis of passing closures is done when
 		// checking individual instructions.
-		pc.checkClosure(call, fn, lff, ls)
+		pc.checkClosure(site, wc, fn, ls)
 	default:
 		return
 	}
@@ -529,9 +531,9 @@ func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, res
 }
 
 // postFunctionCallUpdate updates all conditions.
-func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunctionFacts, ls *lockState) {
+func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFacts, ls *lockState) {
 	resolve := func(fg functionGuardInfo) resolvedValue {
-		return fg.Resolver.resolveCall(pc, ls, call.Common().Args, callResult(call))
+		return fg.Resolver.resolveCall(pc, ls, site.Common().Args, site.Result())
 	}
 
 	// Release all locks not still held.
@@ -539,13 +541,13 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 		if !g.rv.valid() {
 			if !g.rv.unavailable {
 				// See above: this cannot be forced.
-				pc.maybeFail(call.Pos(), "field %s cannot be resolved", g.fieldName)
+				pc.maybeFail(site.Pos(), "field %s cannot be resolved", g.fieldName)
 			}
 			continue
 		}
 		if p, ok := ls.unlockField(g.rv, g.fg.Exclusive); !ok && !lff.Ignore {
-			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(call.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
+			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
+				pc.maybeFail(site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
 		}
 	}
@@ -554,7 +556,7 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 	for _, g := range resolveGuards(ls, lff.HeldOnExit, lff.HeldOnEntry, resolve) {
 		if !g.rv.valid() {
 			if !g.rv.unavailable {
-				pc.maybeFail(call.Pos(), "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
+				pc.maybeFail(site.Pos(), "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
 			}
 			continue
 		}
@@ -562,8 +564,8 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 		if p, ok := ls.lockField(g.rv, g.exclusive); !ok {
 			// The lock is really taken here, whatever assumed it earlier.
 			ls.setAssumed(p, false)
-			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(call.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
+			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
+				pc.maybeFail(site.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
 		}
 	}
@@ -582,22 +584,22 @@ func exclusiveStr(exclusive bool) string {
 // atomic functions are tracked by checkFieldAccess by looking directly at the
 // referrers (because ordering doesn't matter there, so we need not scan in
 // instruction order).
-func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *lockFunctionFacts, ls *lockState) {
+func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *types.Func, lff *lockFunctionFacts, ls *lockState) {
 	// Extract the "receiver" properly.
 	var args []ssa.Value
-	if call.Common().Method != nil {
+	if site.Common().Method != nil {
 		// This is an interface dispatch for sync.Locker.
-		args = append([]ssa.Value{call.Common().Value}, call.Common().Args...)
+		args = append([]ssa.Value{site.Common().Value}, site.Common().Args...)
 	} else {
 		// This matches the signature for the relevant
 		// sync.Lock/sync.Unlock functions below.
-		args = call.Common().Args
+		args = site.Common().Args
 	}
 
-	callPos := call.Pos()
+	callPos := site.Pos()
 	posKey := pc.positionKey(callPos)
 	_, forced := pc.forced[posKey]
-	callValue := callResult(call)
+	callValue := site.Result()
 	resolve := func(fg functionGuardInfo) resolvedValue {
 		return fg.Resolver.resolveCall(pc, ls, args, callValue)
 	}
@@ -626,9 +628,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	// Check that what is passed to a parameter declared to arrive unpublished is an
 	// object nothing else can reach yet. This is the other half of the check that makes
 	// the declaration mean something; the first half is at the constructor.
-	if inst, ok := call.(ssa.CallInstruction); ok {
-		pc.checkFreshArgs(inst)
-	}
+	pc.checkFreshArgs(wc, site.instr)
 
 	// Check all guards required are held.
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
@@ -640,7 +640,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 		// else can reach it to contend for the lock. This is the same silence the
 		// guarded fields of that object get, and the census showed it is nearly half
 		// of what the suppressions were for.
-		if pc.freshArgument(call, g.fg) {
+		if pc.freshArgument(wc, site, g.fg) {
 			continue
 		}
 		if p, ok := ls.isHeld(g.rv, g.fg.Exclusive); !ok {
@@ -654,7 +654,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	}
 
 	// Update all lock state accordingly.
-	pc.postFunctionCallUpdate(call, lff, ls)
+	pc.postFunctionCallUpdate(site, lff, ls)
 
 	// Check if it's a method dispatch for something in the sync package.
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#Function
@@ -701,13 +701,13 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 
 // checkClosure forks the lock state and binds the closure's free variables and
 // parameters. This allows the analysis to resolve the closure.
-func (pc *passContext) checkClosure(call callCommon, fn *ssa.MakeClosure, lff *lockFunctionFacts, ls *lockState) {
+func (pc *passContext) checkClosure(site callSite, wc *walkContext, fn *ssa.MakeClosure, ls *lockState) {
 	clls := ls.fork()
 	clfn := fn.Fn.(*ssa.Function)
 	for i, fv := range clfn.FreeVars {
 		clls.store(fv, fn.Bindings[i])
 	}
-	for i, arg := range call.Common().Args {
+	for i, arg := range site.Common().Args {
 		clls.bind(clfn.Params[i], arg)
 	}
 
@@ -715,7 +715,7 @@ func (pc *passContext) checkClosure(call callCommon, fn *ssa.MakeClosure, lff *l
 	// against the function preconditions. Instead, this does a fresh
 	// analysis of the function from source code with a different state.
 	nlff := lockFunctionFacts{
-		Ignore: lff.Ignore, // Inherit ignore.
+		Ignore: wc.lff.Ignore, // Inherit ignore.
 	}
 	// An ignore written on the literal applies wherever it is analyzed,
 	// including here, where it is invoked in a scope this analysis can
@@ -725,7 +725,7 @@ func (pc *passContext) checkClosure(call callCommon, fn *ssa.MakeClosure, lff *l
 	if annotated, ok := pc.closureFactsFor(clfn.Syntax()); ok && annotated.Ignore {
 		nlff.Ignore = true
 	}
-	pc.checkFunction(call, clfn, &nlff, clls, true /* force */)
+	pc.checkFunction(site, wc, clfn, &nlff, clls, true /* force */)
 }
 
 // freshAlloc indicates that v has been allocated within the local scope. There
@@ -768,25 +768,80 @@ func isWrite(v ssa.Value) bool {
 	return false
 }
 
-// callCommon is an *ssa.Call or an *ssa.Defer; Value is nil for a defer.
-type callCommon interface {
-	Pos() token.Pos
-	Common() *ssa.CallCommon
-	Value() *ssa.Call
+// siteKind is how a function is reached.
+type siteKind uint8
+
+const (
+	siteCall siteKind = iota
+	siteDefer
+	siteGo
+	siteEntry
+)
+
+// callSite describes how a function is reached; instr is nil for the entry of a walk.
+type callSite struct {
+	kind  siteKind
+	instr ssa.CallInstruction
 }
 
-// callResult returns the call's value, or an untyped nil for a defer, where
-// Value is a nil *ssa.Call that would otherwise pass as a non-nil interface.
-func callResult(call callCommon) ssa.Value {
-	if v := call.Value(); v != nil {
-		return v
+// newCallSite returns the site of a call, defer or go statement.
+func newCallSite(instr ssa.CallInstruction) callSite {
+	switch instr.(type) {
+	case *ssa.Call:
+		return callSite{kind: siteCall, instr: instr}
+	case *ssa.Defer:
+		return callSite{kind: siteDefer, instr: instr}
+	case *ssa.Go:
+		return callSite{kind: siteGo, instr: instr}
 	}
-	return nil
+	panic(fmt.Sprintf("newCallSite: unexpected instruction %T", instr))
+}
+
+// Pos returns the position of the instruction, or token.NoPos for an entry.
+func (s callSite) Pos() token.Pos {
+	if s.instr == nil {
+		return token.NoPos
+	}
+	return s.instr.Pos()
+}
+
+// Common returns the call of the instruction, or nil for an entry.
+func (s callSite) Common() *ssa.CallCommon {
+	if s.instr == nil {
+		return nil
+	}
+	return s.instr.Common()
+}
+
+// Result returns the call's value, or an untyped nil for any other site, where
+// Value is a nil *ssa.Call that would otherwise pass as a non-nil interface.
+func (s callSite) Result() ssa.Value {
+	if s.kind != siteCall {
+		return nil
+	}
+	return s.instr.Value()
+}
+
+// walkContext is what belongs to one walk of one function.
+type walkContext struct {
+	fn  *ssa.Function
+	lff *lockFunctionFacts
+
+	// fresh is what the walk knows about the objects under construction in fn.
+	fresh *freshState
+
+	// entryLocks holds, by identity, the mode of each lock an inline walk was entered
+	// with: those are the caller's, and no return of the body leaves them held.
+	entryLocks map[pathKey]bool
+
+	// returnStates holds, by identity summary, the text of each lock state the walk
+	// has returned in; the states themselves are shared and copied on write.
+	returnStates map[string]string
 }
 
 // checkInstruction checks the legality the single instruction based on the
 // current lockState.
-func (pc *passContext) checkInstruction(inst ssa.Instruction, lff *lockFunctionFacts, ls *lockState) (*ssa.Return, *lockState) {
+func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, ls *lockState) (*ssa.Return, *lockState) {
 	// Record any observed globals, and check for violations. The global
 	// value is not itself an instruction, but we check all referrers to
 	// see where they are consumed.
@@ -801,7 +856,7 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, lff *lockFunctionF
 			continue
 		}
 		_, isWrite := inst.(*ssa.Store)
-		pc.checkGlobalAccess(inst, g, ls, isWrite)
+		pc.checkGlobalAccess(wc, inst, g, ls, isWrite)
 	}
 
 	// Process the instruction.
@@ -817,24 +872,24 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, lff *lockFunctionF
 		// state, but this is intentional.
 		ls.store(x.Addr, x.Val)
 	case *ssa.Field:
-		if !freshAlloc(x.X) && !lff.Ignore {
-			pc.checkFieldAccess(x, x.X, x.Field, ls, false)
+		if !freshAlloc(x.X) && !wc.lff.Ignore {
+			pc.checkFieldAccess(wc, x, x.X, x.Field, ls, false)
 		}
 	case *ssa.FieldAddr:
-		if !freshAlloc(x.X) && !lff.Ignore {
-			pc.checkFieldAccess(x, x.X, x.Field, ls, isWrite(x))
+		if !freshAlloc(x.X) && !wc.lff.Ignore {
+			pc.checkFieldAccess(wc, x, x.X, x.Field, ls, isWrite(x))
 		}
 	case *ssa.Call:
 		// Resolve the result before the call is checked, so that a
 		// lock reached through the result of an accessor is the same
 		// lock as one named directly. See accessor.go.
 		pc.substituteGlobalAccessor(x, ls)
-		pc.checkCall(x, lff, ls)
+		pc.checkCall(newCallSite(x), wc, ls)
 	case *ssa.Defer:
 		ls.pushDefer(x)
 	case *ssa.RunDefers:
 		for d := ls.popDefer(); d != nil; d = ls.popDefer() {
-			pc.checkCall(d, lff, ls)
+			pc.checkCall(newCallSite(d), wc, ls)
 		}
 	case *ssa.MakeClosure:
 		if refs := x.Referrers(); refs != nil {
@@ -867,9 +922,9 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, lff *lockFunctionF
 		// trivial closures are acceptable in this case.
 		clfn := x.Fn.(*ssa.Function)
 		nlff := lockFunctionFacts{
-			Ignore: lff.Ignore, // Inherit ignore.
+			Ignore: wc.lff.Ignore, // Inherit ignore.
 		}
-		pc.checkFunction(nil, clfn, &nlff, nil, false /* force */)
+		pc.checkFunction(callSite{kind: siteEntry}, wc, clfn, &nlff, nil, false /* force */)
 	case *ssa.Return:
 		return x, ls // Valid return state.
 	}
@@ -878,7 +933,7 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, lff *lockFunctionF
 
 // checkBasicBlock traverses the control flow graph starting at a set of given
 // block and checks each instruction for allowed operations.
-func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
+func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
 	// Check for cached results from entering this block from a *different*
 	// execution path. Note that this is not the same path, which is
 	// checked with the recursion guard below.
@@ -918,14 +973,14 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 	seen[block] = parent
 	ls := parent.fork()
 	for _, inst := range block.Instrs {
-		rv, rls = pc.checkInstruction(inst, lff, ls)
+		rv, rls = pc.checkInstruction(inst, wc, ls)
 		if rls != nil {
 			failed := false
 			// Validate held locks.
 			resolve := func(fg functionGuardInfo) resolvedValue {
-				return fg.Resolver.resolveStatic(pc, ls, fn, rv)
+				return fg.Resolver.resolveStatic(pc, ls, wc.fn, rv)
 			}
-			for _, g := range resolveGuards(rls, lff.HeldOnExit, nil, resolve) {
+			for _, g := range resolveGuards(rls, wc.lff.HeldOnExit, nil, resolve) {
 				if !g.rv.valid() {
 					if !g.rv.unavailable {
 						// This cannot be forced, since we have no reference.
@@ -940,7 +995,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 					rls.setAssumed(p, false)
 					continue
 				}
-				if _, ok := pc.forced[pc.positionKey(rv.Pos())]; !ok && !lff.Ignore {
+				if _, ok := pc.forced[pc.positionKey(rv.Pos())]; !ok && !wc.lff.Ignore {
 					pc.maybeFail(rv.Pos(), "lock %s (%s) not held %s (locks: %s)", g.fieldName, p.String(), exclusiveStr(g.fg.Exclusive), rls.String())
 					failed = true
 					continue
@@ -951,7 +1006,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 				}
 			}
 			// Check for other locks, but only if the above didn't trip.
-			if !failed && rls.countOnReturn(pc.entryLocks) != len(lff.HeldOnExit) && !lff.Ignore {
+			if !failed && rls.countOnReturn(wc.entryLocks) != len(wc.lff.HeldOnExit) && !wc.lff.Ignore {
 				pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
 			}
 		}
@@ -964,11 +1019,11 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		// above. Note that checkBasicBlock will recursively analyze
 		// the lock state to ensure that Releases and Acquires are
 		// respected.
-		if pls := pc.checkBasicBlock(fn, succ, lff, ls, seen, rg); pls != nil {
+		if pls := pc.checkBasicBlock(wc, succ, ls, seen, rg); pls != nil {
 			// The states of one walk are gathered for checkFunction to compare:
 			// which two of them are neighbours here depends on the block graph.
-			text, summary := pls.acquiredString(pc.entryLocks)
-			pc.returnStates[summary] = text
+			text, summary := pls.acquiredString(wc.entryLocks)
+			wc.returnStates[summary] = text
 			rls = pls
 		}
 	}
@@ -976,7 +1031,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 }
 
 // checkFunction checks a function invocation, typically starting with nil lockState.
-func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *lockFunctionFacts, parent *lockState, force bool) {
+func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, parent *lockState, force bool) {
 	defer func() {
 		// Mark this function as checked. This is used by the top-level
 		// loop to ensure that all anonymous functions are scanned, if
@@ -991,13 +1046,6 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		// cause some anonymous functions to be analyzed in only one
 		// context.
 		return
-	}
-
-	// If no return value is provided, then synthesize one. This is used
-	// below only to check against the locks preconditions, which may
-	// include return values.
-	if call == nil {
-		call = &ssa.Call{Call: ssa.CallCommon{Value: fn}}
 	}
 
 	// Initialize ls with any preconditions that require locks to be held
@@ -1016,7 +1064,10 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	// The first is the method object itself so we skip that when
 	// looking for receiver/function parameters.
 	resolve := func(fg functionGuardInfo) resolvedValue {
-		return fg.Resolver.resolveStatic(pc, ls, fn, callResult(call))
+		if _, ok := fg.Resolver.(*returnGuard); ok {
+			panic(fmt.Sprintf("checkFunction: %s holds a return guard on entry", fn.Name()))
+		}
+		return fg.Resolver.resolveStatic(pc, ls, fn, site.Result())
 	}
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
 		if !g.rv.valid() {
@@ -1035,28 +1086,24 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	}
 
 	// The objects under construction in this function, which the guard checks below
-	// consult. It belongs to one function at a time: an analysis of another, which
-	// happens for a closure or on a call, gets its own and puts this one back.
-	savedFresh := pc.fresh
-	pc.fresh = pc.computeFresh(fn)
-	defer func() { pc.fresh = savedFresh }()
+	// consult. computeFresh sees the enclosing walk's state, nil outside any walk.
+	var outerFresh *freshState
+	if outer != nil {
+		outerFresh = outer.fresh
+	}
+	wc := &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh)}
 
 	// The body and the recover block are separate walks: a state one returns in is no
 	// alternative to a state the other returns in, nor to a nested function's.
 	seen := make(map[*ssa.BasicBlock]*lockState)
-	savedReturns := pc.returnStates
-	defer func() { pc.returnStates = savedReturns }()
 
 	// An inline body is entered with the caller's locks held; only what it takes
 	// itself is its own to release, and a lock merely assumed is no cover.
-	savedEntry := pc.entryLocks
-	defer func() { pc.entryLocks = savedEntry }()
-	pc.entryLocks = nil
 	if parent != nil {
-		pc.entryLocks = make(map[pathKey]bool, ls.count())
+		wc.entryLocks = make(map[pathKey]bool, ls.count())
 		for key, info := range ls.lockedMutexes {
 			if !info.assumed {
-				pc.entryLocks[key] = info.exclusive
+				wc.entryLocks[key] = info.exclusive
 			}
 		}
 	}
@@ -1068,24 +1115,24 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		roots = append(roots, fn.Recover)
 	}
 	for _, root := range roots {
-		pc.returnStates = make(map[string]string)
-		pc.checkBasicBlock(fn, root, lff, ls, seen, nil)
+		wc.returnStates = make(map[string]string)
+		pc.checkBasicBlock(wc, root, ls, seen, nil)
 		// Two states that cannot both hold are one finding about the function,
 		// however many paths reach them. Sorting by text first keeps the order the messages had.
-		if len(pc.returnStates) > 1 {
-			states := slices.SortedFunc(maps.Keys(pc.returnStates), func(a, b string) int {
-				return cmp.Or(strings.Compare(pc.returnStates[a], pc.returnStates[b]), strings.Compare(a, b))
+		if len(wc.returnStates) > 1 {
+			states := slices.SortedFunc(maps.Keys(wc.returnStates), func(a, b string) int {
+				return cmp.Or(strings.Compare(wc.returnStates[a], wc.returnStates[b]), strings.Compare(a, b))
 			})
 			if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", pc.returnStates[states[0]], pc.returnStates[states[1]])
+				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", wc.returnStates[states[0]], wc.returnStates[states[1]])
 			}
 		}
 	}
 
 	// Update all lock state accordingly. This will be called only if we
 	// are doing inline analysis for e.g. an anonymous function.
-	if call != nil && parent != nil {
-		pc.postFunctionCallUpdate(call, lff, parent)
+	if parent != nil {
+		pc.postFunctionCallUpdate(site, lff, parent)
 	}
 }
 
