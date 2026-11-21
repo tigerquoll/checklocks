@@ -391,33 +391,6 @@ func (pc *passContext) directlyAcquires(fn *ssa.Function, structType *types.Stru
 	return token.NoPos, false
 }
 
-// isLockAcquire reports whether the call acquires a lock.
-func isLockAcquire(pass *analysis.Pass, common *ssa.CallCommon) bool {
-	var fn *types.Func
-	if common.Method != nil {
-		fn = common.Method
-	} else if sf, ok := common.Value.(*ssa.Function); ok && sf.Object() != nil {
-		fn, _ = sf.Object().(*types.Func)
-	}
-	if fn == nil {
-		return false
-	}
-	switch fn.Name() {
-	case "Lock", "RLock", "NestedLock":
-	default:
-		return false
-	}
-	full := fn.FullName()
-	if rwMutexRE.MatchString(full) || mutexRE.MatchString(full) || lockerRE.MatchString(full) {
-		return true
-	}
-	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-		_, declared := lockPrimitiveIn(pass, sig.Recv().Type())
-		return declared
-	}
-	return false
-}
-
 // isLockField reports whether v is one of the lock fields of structType.
 func isLockField(v ssa.Value, structType *types.Struct, locks map[int]types.Object) bool {
 	for {

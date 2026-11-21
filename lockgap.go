@@ -246,7 +246,7 @@ func (pc *lockGapContext) lockOperations(fn *ssa.Function) []lockOperation {
 			if !ok {
 				continue
 			}
-			if !isStandardLock(pc.pass, obj) && !pc.isLockWrapper(obj) {
+			if !isStandardLock(pc.pass, obj) {
 				continue
 			}
 			key, ok := lockKeyOf(recv)
@@ -279,17 +279,6 @@ func (pc *lockGapContext) lockOperations(fn *ssa.Function) []lockOperation {
 		}
 	}
 	return out
-}
-
-// isLockWrapper reports whether a method is a lock operation on a type that declares itself
-// a lock, or on one that wraps a lock and forwards to it.
-func (pc *lockGapContext) isLockWrapper(obj *types.Func) bool {
-	if sig, ok := obj.Type().(*types.Signature); ok && sig.Recv() != nil {
-		if _, declared := lockPrimitiveIn(pc.pass, sig.Recv().Type()); declared {
-			return true
-		}
-	}
-	return false
 }
 
 // lockDisplayName renders the lock a call operates on.

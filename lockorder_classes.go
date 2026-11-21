@@ -18,48 +18,8 @@ import (
 	"go/types"
 	"strings"
 
-	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 )
-
-// lockOp is the kind of lock operation a call performs.
-type lockOp int
-
-const (
-	opNone lockOp = iota
-	opAcquire
-	opRelease
-)
-
-// lockOpName reports what an operation of this name does to a lock.
-//
-// Only the operations that change whether a lock is held matter here: a downgrade leaves
-// the lock held and does not change the class held, so it is not an event for this
-// analysis.
-func lockOpName(name string) lockOp {
-	switch name {
-	case "Lock", "RLock", "NestedLock":
-		return opAcquire
-	case "Unlock", "RUnlock", "NestedUnlock":
-		return opRelease
-	}
-	return opNone
-}
-
-// isStandardLock reports whether the function is a lock method of a standard lock type,
-// recognised by name the way the checklocks analyzer recognises them.
-func isStandardLock(pass *analysis.Pass, fn *types.Func) bool {
-	name := fn.FullName()
-	if mutexRE.MatchString(name) || lockerRE.MatchString(name) {
-		return true
-	}
-	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-		if _, declared := lockPrimitiveIn(pass, sig.Recv().Type()); declared {
-			return true
-		}
-	}
-	return false
-}
 
 // classOf resolves the lock class of the object whose lock is being operated on.
 //
@@ -253,10 +213,8 @@ func displayName(fn *ssa.Function) string {
 	if fn == nil {
 		return "an indirect call"
 	}
-	// A wrapper, a thunk and an instance carry the object of the function they stand
-	// for, whose declared name is the one the source uses.
+	// funcObject is the declaration, whose name is the one the source uses.
 	if obj := funcObject(fn); obj != nil {
-		obj = obj.Origin()
 		if recv := obj.Signature().Recv(); recv != nil {
 			return "(" + shortType(recv.Type()) + ")." + obj.Name()
 		}
