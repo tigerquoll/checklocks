@@ -50,9 +50,12 @@ type lockState struct {
 
 	aliases map[string]lockPath
 
-	// stored stores values that have been stored in memory, bound to
-	// FreeVars or passed as Parameterse.
+	// stored stores values that have been stored in memory, and the values
+	// bound to FreeVars.
 	stored map[ssa.Value]ssa.Value
+
+	// bound maps a Parameter to the argument it was invoked with.
+	bound map[ssa.Value]ssa.Value
 
 	// used is a temporary map, used only for valueAndObject. It prevents
 	// multiple use of the same memory location.
@@ -83,6 +86,7 @@ func newLockState() *lockState {
 		aliases:       make(map[string]lockPath),
 		used:          make(map[ssa.Value]struct{}),
 		stored:        make(map[ssa.Value]ssa.Value),
+		bound:         make(map[ssa.Value]ssa.Value),
 		substitutions: make(map[ssa.Value]substitution),
 		defers:        make([]*ssa.Defer, 0),
 		refs:          &refs,
@@ -101,6 +105,7 @@ func (l *lockState) fork() *lockState {
 		aliases:       l.aliases,
 		used:          make(map[ssa.Value]struct{}),
 		stored:        l.stored,
+		bound:         l.bound,
 		substitutions: l.substitutions,
 		consts:        l.consts,
 		defers:        l.defers,
@@ -119,6 +124,9 @@ func (l *lockState) modify() {
 
 		// Copy the stored values.
 		l.stored = maps.Clone(l.stored)
+
+		// Copy the parameter bindings.
+		l.bound = maps.Clone(l.bound)
 
 		// Copy the substitutions.
 		l.substitutions = maps.Clone(l.substitutions)
@@ -249,6 +257,12 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 	l.stored[addr] = v
 }
 
+// bind records the argument a parameter was invoked with.
+func (l *lockState) bind(p *ssa.Parameter, v ssa.Value) {
+	l.modify()
+	l.bound[p] = v
+}
+
 // substitution is a resolution override for a single value.
 type substitution struct {
 	path lockPath
@@ -370,7 +384,7 @@ func (l *lockState) valueAndObject(v ssa.Value) (lockPath, types.Object) {
 	case *ssa.Parameter:
 		// Was this provided as a parameter for a local anonymous
 		// function invocation?
-		v, ok := l.stored[x]
+		v, ok := l.bound[x]
 		if ok {
 			return l.valueAndObject(v)
 		}

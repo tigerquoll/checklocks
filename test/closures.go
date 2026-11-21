@@ -71,17 +71,43 @@ func testClosureParamPairing(t, u *oneGuardStruct, n int) {
 
 func testClosureParamSame(t *oneGuardStruct, n int) {
 	t.mu.Lock()
-	func(t *oneGuardStruct) {
-		t.guardedField = n
+	func(x *oneGuardStruct) {
+		x.guardedField = n
+	}(t)
+	t.mu.Unlock()
+}
+
+func testClosureParamStore(a *oneGuardStruct, n int) {
+	a.mu.Lock()
+	func(p *oneGuardStruct) {
+		_ = n
+		*p = oneGuardStruct{}
+		p.guardedField = 1
+	}(a)
+	a.mu.Unlock()
+}
+
+func testParamSelfStore(s **oneGuardStruct) {
+	t := s
+	*s = *t
+	(*s).mu.Lock()
+	(*s).guardedField = 1
+	(*s).mu.Unlock()
+}
+
+func testAnonymousParamRenamed(t *oneGuardStruct) {
+	t.mu.Lock()
+	func(x *oneGuardStruct) {
+		x.guardedField = 1
 	}(t)
 	t.mu.Unlock()
 }
 
 func testClosureParamDefer(t *oneGuardStruct, n int) {
 	t.mu.Lock()
-	defer func(t *oneGuardStruct) {
+	defer func(x *oneGuardStruct) {
 		_ = n
-		t.mu.Unlock()
+		x.mu.Unlock()
 	}(t)
 }
 

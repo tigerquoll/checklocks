@@ -74,7 +74,7 @@ func (l *lockState) oldValueAndObject(v ssa.Value) (string, types.Object) {
 	}
 	switch x := v.(type) {
 	case *ssa.Parameter:
-		v, ok := l.stored[x]
+		v, ok := l.bound[x]
 		if ok {
 			return l.oldValueAndObject(v)
 		}

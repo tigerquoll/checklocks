@@ -465,7 +465,7 @@ func (pc *passContext) checkCall(call callCommon, lff *lockFunctionFacts, ls *lo
 			// do a fresh analysis using the current lock state.
 			fnls := ls.fork()
 			for i, arg := range call.Common().Args {
-				fnls.store(fn.Params[i], arg)
+				fnls.bind(fn.Params[i], arg)
 			}
 			pc.checkFunction(call, fn, &nlff, fnls, true /* force */)
 		}
@@ -706,7 +706,7 @@ func (pc *passContext) checkClosure(call callCommon, fn *ssa.MakeClosure, lff *l
 		clls.store(fv, fn.Bindings[i])
 	}
 	for i, arg := range call.Common().Args {
-		clls.store(clfn.Params[i], arg)
+		clls.bind(clfn.Params[i], arg)
 	}
 
 	// Note that this is *not* a call to check function call, which checks
