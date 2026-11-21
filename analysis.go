@@ -697,13 +697,16 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 	}
 }
 
-// checkClosure forks the lock state, and creates a binding for the FreeVars of
-// the closure. This allows the analysis to resolve the closure.
+// checkClosure forks the lock state and binds the closure's free variables and
+// parameters. This allows the analysis to resolve the closure.
 func (pc *passContext) checkClosure(call callCommon, fn *ssa.MakeClosure, lff *lockFunctionFacts, ls *lockState) {
 	clls := ls.fork()
 	clfn := fn.Fn.(*ssa.Function)
 	for i, fv := range clfn.FreeVars {
 		clls.store(fv, fn.Bindings[i])
+	}
+	for i, arg := range call.Common().Args {
+		clls.store(clfn.Params[i], arg)
 	}
 
 	// Note that this is *not* a call to check function call, which checks

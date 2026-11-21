@@ -53,6 +53,38 @@ func testClosureInline(tc *oneGuardStruct) {
 	tc.mu.Unlock()
 }
 
+func testClosureParamOther(t, u *oneGuardStruct, n int) {
+	t.mu.Lock()
+	func(t *oneGuardStruct) {
+		t.guardedField = n // +checklocksfail={param:u}
+	}(u)
+	t.mu.Unlock()
+}
+
+func testClosureParamPairing(t, u *oneGuardStruct, n int) {
+	t.mu.Lock()
+	func(a, b *oneGuardStruct) {
+		b.guardedField = n // +checklocksfail={param:u}
+	}(t, u)
+	t.mu.Unlock()
+}
+
+func testClosureParamSame(t *oneGuardStruct, n int) {
+	t.mu.Lock()
+	func(t *oneGuardStruct) {
+		t.guardedField = n
+	}(t)
+	t.mu.Unlock()
+}
+
+func testClosureParamDefer(t *oneGuardStruct, n int) {
+	t.mu.Lock()
+	defer func(t *oneGuardStruct) {
+		_ = n
+		t.mu.Unlock()
+	}(t)
+}
+
 // +checklocksignore
 func testClosureIgnore(tc *oneGuardStruct) {
 	// Inherit the checklocksignore.
