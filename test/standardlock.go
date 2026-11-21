@@ -16,8 +16,7 @@ package test
 
 import "sync"
 
-// A standard lock is judged by its own named type: a type argument that is a mutex does
-// not make a generic wrapper one, and a name ending in Mutex does.
+// A standard lock is judged by its own named type, never by a type argument.
 
 type wrapperGuard[L sync.Locker] struct {
 	l L
@@ -85,4 +84,28 @@ func locksStatsTwice(m *MutexStats) {
 	m.Lock()
 	m.Unlock()
 	m.Unlock()
+}
+
+// +checklocks:mu
+type lockHolders struct {
+	mu     sync.Mutex
+	shards [4]sync.Mutex
+	byKey  map[string]*sync.Mutex
+	inner  struct{ sync.Mutex }
+	l      interface {
+		sync.Locker
+		Name() string
+	}
+	n int
+}
+
+func usesLockHolders(t *lockHolders, i int) {
+	t.shards[i].Lock()
+	t.shards[i].Unlock()
+	_ = t.byKey["a"]
+	t.inner.Lock()
+	t.inner.Unlock()
+	t.l.Lock()
+	t.l.Unlock()
+	t.n = 1 // +checklocksfail
 }

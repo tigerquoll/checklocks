@@ -181,7 +181,7 @@ func funcObject(fn *ssa.Function) *types.Func {
 }
 
 // calledFunc returns the object of a function as called, which for an instance of a generic
-// function carries the type arguments that lock-type matching and display depend on.
+// function carries type arguments that matter only for display.
 func calledFunc(fn *ssa.Function) *types.Func {
 	if fn == nil {
 		return nil

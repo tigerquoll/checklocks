@@ -205,7 +205,39 @@ func (pc *passContext) isLockField(fieldObj *types.Var) bool {
 	if _, ok := pc.lockPrimitiveFor(fieldObj.Type()); ok {
 		return true
 	}
-	return isStandardLockType(fieldObj.Type())
+	return holdsStandardLock(fieldObj.Type())
+}
+
+// holdsStandardLock reports whether a type is, or is built from, a standard lock. It
+// stops at a named type, so the walk ends.
+func holdsStandardLock(t types.Type) bool {
+	switch t := types.Unalias(t).(type) {
+	case *types.Named:
+		return isStandardLockType(t)
+	case *types.Pointer:
+		return holdsStandardLock(t.Elem())
+	case *types.Array:
+		return holdsStandardLock(t.Elem())
+	case *types.Slice:
+		return holdsStandardLock(t.Elem())
+	case *types.Chan:
+		return holdsStandardLock(t.Elem())
+	case *types.Map:
+		return holdsStandardLock(t.Key()) || holdsStandardLock(t.Elem())
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if holdsStandardLock(t.Field(i).Type()) {
+				return true
+			}
+		}
+	case *types.Interface:
+		for i := 0; i < t.NumEmbeddeds(); i++ {
+			if holdsStandardLock(t.EmbeddedType(i)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // fieldHasAnnotation reports whether a field carries an annotation, in either of the two
