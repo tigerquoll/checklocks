@@ -1071,8 +1071,7 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		pc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(fn, root, lff, ls, seen, nil)
 		// Two states that cannot both hold are one finding about the function,
-		// however many paths reach them. They differ by identity and are reported
-		// in the order of their text.
+		// however many paths reach them. Sorting by text first keeps the order the messages had.
 		if len(pc.returnStates) > 1 {
 			states := slices.SortedFunc(maps.Keys(pc.returnStates), func(a, b string) int {
 				return cmp.Or(strings.Compare(pc.returnStates[a], pc.returnStates[b]), strings.Compare(a, b))

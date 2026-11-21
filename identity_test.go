@@ -44,8 +44,7 @@ func distinct() {
 }
 `
 
-// nestedClosure returns the literal in fn, the literal nested in it, and a state with the
-// nested one's free variables bound as checkClosure binds them.
+// nestedClosure returns fn's literal, its nested literal, and a state binding the nested one's free variables as checkClosure does.
 func nestedClosure(t *testing.T, pkg *ssa.Package, fn string) (outer, inner *ssa.Function, ls *lockState) {
 	t.Helper()
 	outer = pkg.Func(fn).AnonFuncs[0]
@@ -79,8 +78,7 @@ func TestIdentityGlobals(t *testing.T) {
 	}
 }
 
-// TestIdentityFreeVarChain pins that a nested closure's free variable is the enclosing
-// closure's variable when it captures it, and another lock when it captures another.
+// TestIdentityFreeVarChain pins that a nested closure's free variable is the variable it captures.
 func TestIdentityFreeVarChain(t *testing.T) {
 	pkg := buildTestPackage(t, "a", closureSource)
 
@@ -102,8 +100,7 @@ func TestIdentityFreeVarChain(t *testing.T) {
 	}
 }
 
-// TestIdentityAliasScope pins that an alias and an entry lock of one function's parameter
-// do not reach another function's parameter of the same name.
+// TestIdentityAliasScope pins that A's alias and entry lock do not reach B's parameter of the same name.
 func TestIdentityAliasScope(t *testing.T) {
 	a, b := twinLocks(t)
 	pkg := buildTestPackage(t, "a", keySource)

@@ -100,10 +100,9 @@ type passContext struct {
 	// that a site the walk reaches again adds nothing; see recordObservation.
 	counted map[observationKey]struct{}
 
-	// returnStates holds the lock states the walk under way has returned in, keyed by
-	// identity summary and valued by the printed text, because the states themselves
-	// are shared and copied on write. It belongs to one walk and is saved and restored
-	// around another, as fresh is.
+	// returnStates holds, by identity summary, the text of each lock state the walk under
+	// way has returned in; the states themselves are shared and copied on write. It belongs
+	// to one walk and is saved and restored around another, as fresh is.
 	returnStates map[string]string
 
 	// entryLocks holds, by identity, the mode of each lock an inline walk was entered
