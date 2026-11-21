@@ -48,3 +48,6 @@ func (*passContext) writeDecisions()                               {}
 func inlineContext(*walkContext, callSite, *ssa.Function) string { return "" }
 
 func qualifiedName(ssa.Value, types.Object) string { return "" }
+
+// recoverPanics contains a panic to the function being analyzed.
+var recoverPanics = true

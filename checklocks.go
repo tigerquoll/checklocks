@@ -32,6 +32,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
+	"runtime/debug"
 	"slices"
 	"strings"
 
@@ -156,6 +158,34 @@ type decisionAt struct {
 	index   int
 	pos     token.Pos
 	context string
+}
+
+// contained runs the check of one top-level function. A panic in it fails that function
+// alone, with the walk state reset; with recoverPanics off the panic propagates.
+func (pc *passContext) contained(fn *ssa.Function, check func()) {
+	if !recoverPanics {
+		check()
+		return
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		pc.current, pc.emit, pc.records = nil, emitDirect, nil
+		// Loop B must not analyze the closures of a failed function out of context.
+		for work := []*ssa.Function{fn}; len(work) > 0; {
+			f := work[len(work)-1]
+			work = append(work[:len(work)-1], f.AnonFuncs...)
+			pc.functions[f] = struct{}{}
+		}
+		fmt.Fprintf(os.Stderr, "checklocks: analysis of %s panicked: %v\n%s", fn, r, debug.Stack())
+		pc.pass.Report(analysis.Diagnostic{
+			Pos:     fn.Pos(),
+			Message: fmt.Sprintf("analysis of %s failed with an internal error; its diagnostics may be incomplete", fn),
+		})
+	}()
+	check()
 }
 
 // pendingReport is a report held back by the collector.
@@ -375,7 +405,9 @@ func run(pass *analysis.Pass) (any, error) {
 		pc.importLockFunctionFacts(obj.(*types.Func), &lff)
 
 		// Check the basic blocks in the function.
-		pc.checkFunction(callSite{kind: siteEntry}, nil, fn, &lff, nil, false /* force */)
+		pc.contained(fn, func() {
+			pc.checkFunction(callSite{kind: siteEntry}, nil, fn, &lff, nil, false /* force */)
+		})
 	}
 	for _, fn := range state.SrcFuncs {
 		// Ensure all anonymous functions are hit. They are not
@@ -391,7 +423,9 @@ func run(pass *analysis.Pass) (any, error) {
 		if annotated, ok := pc.closureFactsFor(fn.Syntax()); ok {
 			lff = annotated
 		}
-		pc.checkFunction(callSite{kind: siteEntry}, nil, fn, lff, nil, false /* force */)
+		pc.contained(fn, func() {
+			pc.checkFunction(callSite{kind: siteEntry}, nil, fn, lff, nil, false /* force */)
+		})
 	}
 
 	// Check for inferred checklocks annotations.

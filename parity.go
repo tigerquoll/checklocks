@@ -386,3 +386,6 @@ func (pc *passContext) writeDecisions() {
 		panic(fmt.Sprintf("decision log: %v", err))
 	}
 }
+
+// recoverPanics is off so that a panic fails the parity build loudly.
+var recoverPanics = false
