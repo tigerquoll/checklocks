@@ -132,13 +132,18 @@ func TestObservationDedupe(t *testing.T) {
 	other := types.NewVar(token.NoPos, pkg, "second", types.Typ[types.Int])
 	lock := types.NewVar(token.NoPos, pkg, "mu", types.Typ[types.Int])
 
+	aPath := newLockPath(pathRootValue, nil, nil, "a.mu")
+	bPath := newLockPath(pathRootValue, nil, nil, "b.mu")
+	hold := func(ls *lockState, p lockPath) {
+		ls.lockedMutexes[p.Key()] = lockInfo{exclusive: true, object: lock, path: p}
+	}
 	one := newLockState()
-	one.lockedMutexes["a.mu"] = lockInfo{exclusive: true, object: lock}
-	oneHeld := map[string]pathKey{"a.mu": "a"}
+	hold(one, aPath)
+	oneHeld := map[pathKey]struct{}{aPath.Key(): {}}
 	two := newLockState()
-	two.lockedMutexes["a.mu"] = lockInfo{exclusive: true, object: lock}
-	two.lockedMutexes["b.mu"] = lockInfo{exclusive: true, object: lock}
-	twoHeld := map[string]pathKey{"a.mu": "a", "b.mu": "b"}
+	hold(two, aPath)
+	hold(two, bPath)
+	twoHeld := map[pathKey]struct{}{aPath.Key(): {}, bPath.Key(): {}}
 	inst := fakeInst{}
 
 	pc := &passContext{}
@@ -155,6 +160,22 @@ func TestObservationDedupe(t *testing.T) {
 	}
 	if oo := pc.observations[other]; oo.total != 1 || oo.counts[lock] != 1 {
 		t.Errorf("for a second object: total %d, count %d; want 1, 1", oo.total, oo.counts[lock])
+	}
+
+	// Two locks that print alike but are different parameters are two observations.
+	tPkg := buildTestPackage(t, "a", keySource)
+	pathOf := func(fn string) lockPath {
+		return testParam(t, tPkg, fn, 0)
+	}
+	aT, bT := pathOf("A"), pathOf("B")
+	alike := &passContext{}
+	for _, p := range []lockPath{aT, bT} {
+		ls := newLockState()
+		hold(ls, p)
+		alike.recordObservation(inst, nil, field, ls, map[pathKey]struct{}{p.Key(): {}})
+	}
+	if oo := alike.observations[field]; oo.total != 2 || oo.counts[lock] != 2 {
+		t.Errorf("for locks printing alike: total %d, count %d; want 2, 2", oo.total, oo.counts[lock])
 	}
 }
 

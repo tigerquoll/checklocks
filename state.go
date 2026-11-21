@@ -35,21 +35,8 @@ type lockInfo struct {
 	// or an ignore inserted it, so a return does not count it as left held.
 	assumed bool
 
-	// path is the lock's name; its text is the key the lock is held under.
+	// path is the lock's name; its key is the key the lock is held under.
 	path lockPath
-}
-
-// alias is the canonical path a rendering was redirected to, and the key of the path
-// that was redirected.
-type alias struct {
-	left   pathKey
-	target lockPath
-}
-
-// entryLock is a lock an inline walk was entered with.
-type entryLock struct {
-	exclusive bool
-	key       pathKey
 }
 
 // lockState tracks the locking state and aliases.
@@ -59,9 +46,10 @@ type lockState struct {
 	// valueAndObject below, which maps to specific structure fields, etc.
 	//
 	// The value indicates whether this is an exclusive lock.
-	lockedMutexes map[string]lockInfo
+	lockedMutexes map[pathKey]lockInfo
 
-	aliases map[string]alias
+	// aliases maps a path to the canonical path it was redirected to.
+	aliases map[pathKey]lockPath
 
 	// stored stores values that have been stored in memory, and the values
 	// bound to FreeVars.
@@ -95,8 +83,8 @@ type lockState struct {
 func newLockState() *lockState {
 	refs := int32(1) // Not shared.
 	return &lockState{
-		lockedMutexes: make(map[string]lockInfo),
-		aliases:       make(map[string]alias),
+		lockedMutexes: make(map[pathKey]lockInfo),
+		aliases:       make(map[pathKey]lockPath),
 		used:          make(map[ssa.Value]struct{}),
 		stored:        make(map[ssa.Value]ssa.Value),
 		bound:         make(map[ssa.Value]ssa.Value),
@@ -166,12 +154,10 @@ func (l *lockState) isHeld(rv resolvedValue, exclusiveRequired bool) (lockPath, 
 	}
 	path, _ := rv.valueAndObject(l)
 	path = l.aliasPath(path)
-	s := path.String()
-	info, ok := l.lockedMutexes[s]
+	info, ok := l.lockedMutexes[path.Key()]
 	if !ok {
 		return path, false
 	}
-	twinNote("held", s, info.path.Key(), path.Key())
 	// Accept a weaker lock if exclusiveRequired is false.
 	if exclusiveRequired && !info.exclusive {
 		return path, false
@@ -190,9 +176,8 @@ func (l *lockState) lockField(rv resolvedValue, exclusive bool) (lockPath, bool)
 	}
 	path, obj := rv.valueAndObject(l)
 	path = l.aliasPath(path)
-	s := path.String()
-	if existing, ok := l.lockedMutexes[s]; ok {
-		twinNote("lock", s, existing.path.Key(), path.Key())
+	key := path.Key()
+	if _, ok := l.lockedMutexes[key]; ok {
 		return path, false
 	}
 	l.modify()
@@ -201,8 +186,8 @@ func (l *lockState) lockField(rv resolvedValue, exclusive bool) (lockPath, bool)
 		object:    obj,
 		path:      path,
 	}
-	parityCheckEntry(s, info)
-	l.lockedMutexes[s] = info
+	parityCheckEntry(key, info)
+	l.lockedMutexes[key] = info
 	return path, true
 }
 
@@ -217,17 +202,16 @@ func (l *lockState) unlockField(rv resolvedValue, exclusive bool) (lockPath, boo
 	}
 	path, _ := rv.valueAndObject(l)
 	path = l.aliasPath(path)
-	s := path.String()
-	info, ok := l.lockedMutexes[s]
+	key := path.Key()
+	info, ok := l.lockedMutexes[key]
 	if !ok {
 		return path, false
 	}
-	twinNote("unlock", s, info.path.Key(), path.Key())
 	if info.exclusive != exclusive {
 		return path, false
 	}
 	l.modify()
-	delete(l.lockedMutexes, s)
+	delete(l.lockedMutexes, key)
 	return path, true
 }
 
@@ -242,33 +226,33 @@ func (l *lockState) downgradeField(rv resolvedValue) (lockPath, bool) {
 	}
 	path, _ := rv.valueAndObject(l)
 	path = l.aliasPath(path)
-	s := path.String()
-	info, ok := l.lockedMutexes[s]
+	key := path.Key()
+	info, ok := l.lockedMutexes[key]
 	if !ok {
 		return path, false
 	}
-	twinNote("downgrade", s, info.path.Key(), path.Key())
 	if !info.exclusive {
 		return path, false
 	}
 	l.modify()
 	info.exclusive = false
-	parityCheckEntry(s, info)
-	l.lockedMutexes[s] = info // Downgraded.
+	parityCheckEntry(key, info)
+	l.lockedMutexes[key] = info // Downgraded.
 	return path, true
 }
 
 // setAssumed marks a held lock as assumed or as acquired. The map is shared with the
 // block memo and with sibling branches, so the write copies it first.
-func (l *lockState) setAssumed(s string, assumed bool) {
-	info, ok := l.lockedMutexes[s]
+func (l *lockState) setAssumed(path lockPath, assumed bool) {
+	key := path.Key()
+	info, ok := l.lockedMutexes[key]
 	if !ok || info.assumed == assumed {
 		return
 	}
 	l.modify()
 	info.assumed = assumed
-	parityCheckEntry(s, info)
-	l.lockedMutexes[s] = info
+	parityCheckEntry(key, info)
+	l.lockedMutexes[key] = info
 }
 
 // store records an alias.
@@ -300,20 +284,14 @@ func (l *lockState) addAlias(left, right resolvedValue) {
 	rightPath, _ := right.valueAndObject(l)
 	leftRoot := l.aliasPath(leftPath)
 	rightRoot := l.aliasPath(rightPath)
-	leftKey, rightKey := leftRoot.String(), rightRoot.String()
+	leftKey, rightKey := leftRoot.Key(), rightRoot.Key()
 	if leftKey == rightKey {
-		twinNote("alias", leftKey, leftRoot.Key(), rightRoot.Key())
 		return
 	}
 	l.modify()
-	if old, ok := l.aliases[leftKey]; ok {
-		twinNote("alias", leftKey, old.left, leftRoot.Key())
-	}
-	l.aliases[leftKey] = alias{left: leftRoot.Key(), target: rightRoot}
+	l.aliases[leftKey] = rightRoot
 	if leftInfo, ok := l.lockedMutexes[leftKey]; ok {
-		twinNote("alias", leftKey, leftInfo.path.Key(), leftRoot.Key())
 		if rightInfo, ok := l.lockedMutexes[rightKey]; ok {
-			twinNote("alias", rightKey, rightInfo.path.Key(), rightRoot.Key())
 			switch {
 			case leftInfo.assumed && !rightInfo.assumed:
 				leftInfo = rightInfo
@@ -331,12 +309,11 @@ func (l *lockState) addAlias(left, right resolvedValue) {
 // aliasPath follows the alias chain from p to the canonical path.
 func (l *lockState) aliasPath(p lockPath) lockPath {
 	for {
-		parent, ok := l.aliases[p.String()]
+		target, ok := l.aliases[p.Key()]
 		if !ok {
 			return p
 		}
-		twinNote("aliaspath", p.String(), parent.left, p.Key())
-		p = parent.target
+		p = target
 	}
 }
 
@@ -347,7 +324,6 @@ func (l *lockState) isSubset(other *lockState) bool {
 		if !otherOk {
 			return false
 		}
-		twinNote("subset", k, info.path.Key(), otherInfo.path.Key())
 		// Accept weaker locks as a subset.
 		if info.exclusive && !otherInfo.exclusive {
 			return false
@@ -369,18 +345,15 @@ func (l *lockState) count() int {
 // countOnReturn counts the locks a return leaves held. An assumed lock was never
 // acquired, and a lock in entry arrived with the caller of an inline body, so
 // neither is this return's to release.
-func (l *lockState) countOnReturn(entry map[string]entryLock) int {
+func (l *lockState) countOnReturn(entry map[pathKey]bool) int {
 	n := 0
 	for k, info := range l.lockedMutexes {
 		if info.assumed {
 			continue
 		}
 		// A lock whose mode the body changed is not the one it was entered with.
-		if e, ok := entry[k]; ok {
-			twinNote("entry", k, e.key, info.path.Key())
-			if e.exclusive == info.exclusive {
-				continue
-			}
+		if exclusive, ok := entry[k]; ok && exclusive == info.exclusive {
+			continue
 		}
 		n++
 	}
@@ -434,6 +407,11 @@ func (l *lockState) valueAndObject(v ssa.Value) (lockPath, types.Object) {
 			if ok {
 				return l.valueAndObject(stored)
 			}
+		}
+		// A closure nested in another captures the enclosing closure's own
+		// free variable: both name one variable.
+		if fv, ok := v.(*ssa.FreeVar); ok && fv.Parent() == x.Parent().Parent() {
+			return l.valueAndObject(fv)
 		}
 		// FreeVar does not have a corresponding source-level object
 		// that we can return here.
@@ -594,32 +572,42 @@ func (l *lockState) String() string {
 		return "no locks held"
 	}
 	keys := make([]string, 0, len(l.lockedMutexes))
-	for k, info := range l.lockedMutexes {
+	for _, info := range l.lockedMutexes {
 		// Include the exclusive status of each lock.
-		keys = append(keys, fmt.Sprintf("%s %s", k, exclusiveStr(info.exclusive)))
+		keys = append(keys, fmt.Sprintf("%s %s", info.path.String(), exclusiveStr(info.exclusive)))
 	}
 	slices.Sort(keys) // The map order is not an order; the text must be one.
 	return strings.Join(keys, ",")
 }
 
+// identitySummary renders the identity and mode of each kept lock, as text two states
+// share only when they hold the same locks in the same modes.
+func (l *lockState) identitySummary(keep func(lockInfo) bool) string {
+	var parts []string
+	for _, info := range l.lockedMutexes {
+		if keep(info) {
+			parts = append(parts, fmt.Sprintf("%q %t", string(info.path.Key()), info.exclusive))
+		}
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, ",")
+}
+
 // acquiredString renders the locks a return state is compared by, in String()'s format,
 // and returns the identity summary of the same locks. An assumed lock is left out unless
 // an inline body's entry held it in the same mode.
-func (l *lockState) acquiredString(entry map[string]entryLock) (string, string) {
+func (l *lockState) acquiredString(entry map[pathKey]bool) (string, string) {
 	keep := func(info lockInfo) bool {
-		e, ok := entry[info.path.String()]
-		return !info.assumed || ok && e.exclusive == info.exclusive
+		exclusive, ok := entry[info.path.Key()]
+		return !info.assumed || ok && exclusive == info.exclusive
 	}
-	held := make(map[string]lockInfo, len(l.lockedMutexes))
+	held := make(map[pathKey]lockInfo, len(l.lockedMutexes))
 	for k, info := range l.lockedMutexes {
-		if e, ok := entry[k]; ok {
-			twinNote("entry", k, e.key, info.path.Key())
-		}
 		if keep(info) {
 			held[k] = info
 		}
 	}
-	return (&lockState{lockedMutexes: held}).String(), twinSummary(l, keep)
+	return (&lockState{lockedMutexes: held}).String(), l.identitySummary(keep)
 }
 
 // pushDefer pushes a defer onto the stack.

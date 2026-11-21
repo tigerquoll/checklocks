@@ -20,4 +20,4 @@ import "go/types"
 
 func parityCheck(*resolvedValue, *lockState, lockPath, types.Object) {}
 
-func parityCheckEntry(string, lockInfo) {}
+func parityCheckEntry(pathKey, lockInfo) {}

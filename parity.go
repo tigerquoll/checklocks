@@ -43,14 +43,11 @@ func parityCheck(rv *resolvedValue, ls *lockState, path lockPath, obj types.Obje
 	}
 }
 
-// parityCheckEntry panics unless an entry's path renders as its key and its cached identity key matches a
+// parityCheckEntry panics unless an entry's path has the key it is held under and its cached key matches a
 // fresh encoding.
-func parityCheckEntry(key string, info lockInfo) {
-	if info.path.String() != key {
-		panic(fmt.Sprintf("lock table parity: key %q, path %q", key, info.path.String()))
-	}
-	if fresh := info.path.freshKey(); info.path.Key() != fresh {
-		panic(fmt.Sprintf("lock table parity: identity key %q, fresh %q", info.path.Key(), fresh))
+func parityCheckEntry(key pathKey, info lockInfo) {
+	if fresh := info.path.freshKey(); info.path.Key() != key || key != fresh {
+		panic(fmt.Sprintf("lock table parity: key %q, path key %q, fresh %q", key, info.path.Key(), fresh))
 	}
 }
 

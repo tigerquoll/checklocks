@@ -242,7 +242,7 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 	var (
 		lgf         lockGuardFacts
 		guardsFound int
-		guardsHeld  = make(map[string]pathKey) // Keyed by resolved string.
+		guardsHeld  = make(map[pathKey]struct{})
 	)
 
 	// An object no other goroutine can reach yet has nothing to race with, so its guards
@@ -275,7 +275,7 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 		p, ok := ls.isHeld(r, isWrite)
 		s := p.String()
 		if ok {
-			guardsHeld[s] = p.Key()
+			guardsHeld[p.Key()] = struct{}{}
 			continue
 		}
 		if _, ok := pc.forced[pc.positionKey(inst.Pos())]; ok {
@@ -284,9 +284,9 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 			forcedPath, inserted := ls.lockField(r, true /* exclusive */)
 			if inserted {
 				// The force asserts the lock, it does not take it.
-				ls.setAssumed(forcedPath.String(), true)
+				ls.setAssumed(forcedPath, true)
 			}
-			guardsHeld[forcedPath.String()] = forcedPath.Key()
+			guardsHeld[forcedPath.Key()] = struct{}{}
 			continue
 		}
 		// Note that we may allow this if the disposition is atomic,
@@ -352,22 +352,20 @@ type observationKey struct {
 // recordObservation counts one access towards the inferred lock hints, once per lock
 // and once per site and lock state: a hint is a share of the accesses, and a repeat
 // would raise it above the whole.
-func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[string]pathKey) {
-	key := observationKey{inst: inst, accessObj: accessObj, locks: ls.String()}
-	summary := twinSummary(ls, func(lockInfo) bool { return true })
-	if old, ok := pc.counted[key]; ok {
-		twinNote("observe", key.locks, pathKey(old), pathKey(summary))
+func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[pathKey]struct{}) {
+	key := observationKey{inst: inst, accessObj: accessObj, locks: ls.identitySummary(func(lockInfo) bool { return true })}
+	if _, ok := pc.counted[key]; ok {
 		return
 	}
 	if pc.counted == nil {
-		pc.counted = make(map[observationKey]string)
+		pc.counted = make(map[observationKey]struct{})
 	}
-	pc.counted[key] = summary
+	pc.counted[key] = struct{}{}
 
 	oo := pc.observationsFor(accessObj)
 	oo.total++
 	held := make(map[types.Object]struct{})
-	for s, info := range ls.lockedMutexes {
+	for k, info := range ls.lockedMutexes {
 		// Is this an object for which we have facts? If there is no
 		// ability to name this object, then we don't bother with any
 		// inference. We also ignore any self references (e.g.
@@ -376,8 +374,7 @@ func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, access
 			continue
 		}
 		// Has this already been held?
-		if k, ok := guardsHeld[s]; ok {
-			twinNote("guard", s, k, info.path.Key())
+		if _, ok := guardsHeld[k]; ok {
 			held[info.object] = struct{}{}
 			continue
 		}
@@ -511,33 +508,22 @@ func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, res
 			exclusive: fg.Exclusive,
 		})
 	}
-	keys := make([]string, len(resolved))
-	type guardMode struct {
-		exclusive bool
-		key       pathKey
-	}
-	modes := make(map[string]guardMode, len(resolved))
+	keys := make([]pathKey, len(resolved))
+	modes := make(map[pathKey]bool, len(resolved))
 	for i, g := range resolved {
 		if !g.rv.valid() {
 			continue
 		}
 		path, _ := g.rv.valueAndObject(ls)
 		path = ls.aliasPath(path)
-		keys[i] = path.String()
-		m, seen := modes[keys[i]]
-		if seen {
-			twinNote("guard", keys[i], m.key, path.Key())
-		} else {
-			m.key = path.Key()
-		}
-		m.exclusive = m.exclusive || g.fg.Exclusive
-		modes[keys[i]] = m
+		keys[i] = path.Key()
+		modes[keys[i]] = modes[keys[i]] || g.fg.Exclusive
 	}
 	for i := range resolved {
 		if keys[i] == "" {
 			continue
 		}
-		resolved[i].exclusive = modes[keys[i]].exclusive
+		resolved[i].exclusive = modes[keys[i]]
 	}
 	return resolved
 }
@@ -575,7 +561,7 @@ func (pc *passContext) postFunctionCallUpdate(call callCommon, lff *lockFunction
 		// Acquire the lock per the annotation.
 		if p, ok := ls.lockField(g.rv, g.exclusive); !ok {
 			// The lock is really taken here, whatever assumed it earlier.
-			ls.setAssumed(p.String(), false)
+			ls.setAssumed(p, false)
 			if _, ok := pc.forced[pc.positionKey(call.Pos())]; !ok && !lff.Ignore {
 				pc.maybeFail(call.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
@@ -662,7 +648,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), fn.Name(), ls.String())
 			} else if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
 				// The force asserts the lock, it does not take it.
-				ls.setAssumed(forcedPath.String(), true)
+				ls.setAssumed(forcedPath, true)
 			}
 		}
 	}
@@ -683,7 +669,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 		case "RLock":
 			if p, ok := ls.lockField(rv, isExclusive); !ok {
 				// The lock is really taken here, whatever assumed it earlier.
-				ls.setAssumed(p.String(), false)
+				ls.setAssumed(p, false)
 				if !lff.Ignore && !forced {
 					// Double locking a mutex that is already locked.
 					pc.maybeFail(callPos, "%s already locked (locks: %s)", p.String(), ls.String())
@@ -707,7 +693,7 @@ func (pc *passContext) checkFunctionCall(call callCommon, fn *types.Func, lff *l
 				}
 			} else {
 				// The lock is really held here, whatever assumed it earlier.
-				ls.setAssumed(p.String(), false)
+				ls.setAssumed(p, false)
 			}
 		}
 	}
@@ -951,7 +937,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 				if held {
 					// The lock leaves with the caller, so it counts as taken
 					// here however it was first recorded.
-					rls.setAssumed(p.String(), false)
+					rls.setAssumed(p, false)
 					continue
 				}
 				if _, ok := pc.forced[pc.positionKey(rv.Pos())]; !ok && !lff.Ignore {
@@ -961,7 +947,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 				}
 				// Force the lock to be acquired.
 				if forcedPath, inserted := rls.lockField(g.rv, g.exclusive); !inserted {
-					rls.setAssumed(forcedPath.String(), false)
+					rls.setAssumed(forcedPath, false)
 				}
 			}
 			// Check for other locks, but only if the above didn't trip.
@@ -982,11 +968,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 			// The states of one walk are gathered for checkFunction to compare:
 			// which two of them are neighbours here depends on the block graph.
 			text, summary := pls.acquiredString(pc.entryLocks)
-			if old, ok := pc.returnStates[text]; ok {
-				twinNote("return", text, pathKey(old), pathKey(summary))
-			} else {
-				pc.returnStates[text] = summary
-			}
+			pc.returnStates[summary] = text
 			rls = pls
 		}
 	}
@@ -1071,10 +1053,10 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	defer func() { pc.entryLocks = savedEntry }()
 	pc.entryLocks = nil
 	if parent != nil {
-		pc.entryLocks = make(map[string]entryLock, ls.count())
+		pc.entryLocks = make(map[pathKey]bool, ls.count())
 		for key, info := range ls.lockedMutexes {
 			if !info.assumed {
-				pc.entryLocks[key] = entryLock{exclusive: info.exclusive, key: info.path.Key()}
+				pc.entryLocks[key] = info.exclusive
 			}
 		}
 	}
@@ -1089,10 +1071,14 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		pc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(fn, root, lff, ls, seen, nil)
 		// Two states that cannot both hold are one finding about the function,
-		// however many paths reach them.
-		if states := slices.Sorted(maps.Keys(pc.returnStates)); len(states) > 1 {
+		// however many paths reach them. They differ by identity and are reported
+		// in the order of their text.
+		if len(pc.returnStates) > 1 {
+			states := slices.SortedFunc(maps.Keys(pc.returnStates), func(a, b string) int {
+				return cmp.Or(strings.Compare(pc.returnStates[a], pc.returnStates[b]), strings.Compare(a, b))
+			})
 			if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", states[0], states[1])
+				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", pc.returnStates[states[0]], pc.returnStates[states[1]])
 			}
 		}
 	}

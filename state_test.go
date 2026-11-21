@@ -41,9 +41,10 @@ func TestLockStateString(t *testing.T) {
 	}
 	stateOf := func(order []string) string {
 		ls := newLockState()
-		for _, key := range order {
-			// The mode is the key's, not the insertion order's.
-			ls.lockedMutexes[key] = lockInfo{exclusive: len(key)%2 == 0}
+		for _, name := range order {
+			// The mode is the name's, not the insertion order's.
+			path := newLockPath(pathRootValue, nil, nil, name)
+			ls.lockedMutexes[path.Key()] = lockInfo{exclusive: len(name)%2 == 0, path: path}
 		}
 		return ls.String()
 	}
@@ -69,12 +70,15 @@ func TestAddAliasAssumed(t *testing.T) {
 		// Two zero-value values would resolve to one key, so each is named.
 		l := makeResolvedValue(ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int]), nil)
 		r := makeResolvedValue(ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int]), nil)
-		ls.substitute(l.value, newLockPath(pathRootValue, l.value, nil, "left"), nil)
-		ls.substitute(r.value, newLockPath(pathRootValue, r.value, nil, "right"), nil)
-		ls.lockedMutexes["left"] = left
-		ls.lockedMutexes["right"] = right
+		leftPath := newLockPath(pathRootValue, l.value, nil, "left")
+		rightPath := newLockPath(pathRootValue, r.value, nil, "right")
+		ls.substitute(l.value, leftPath, nil)
+		ls.substitute(r.value, rightPath, nil)
+		left.path, right.path = leftPath, rightPath
+		ls.lockedMutexes[leftPath.Key()] = left
+		ls.lockedMutexes[rightPath.Key()] = right
 		ls.addAlias(l, r)
-		return ls.lockedMutexes["right"]
+		return ls.lockedMutexes[rightPath.Key()]
 	}
 	assumedExclusive := lockInfo{exclusive: true, assumed: true}
 	acquiredShared := lockInfo{exclusive: false}
@@ -100,11 +104,12 @@ func TestAddAliasMovesPath(t *testing.T) {
 	r := makeResolvedValue(ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int]), nil)
 	leftPath := newLockPath(pathRootValue, l.value, nil, "left")
 	ls.substitute(l.value, leftPath, nil)
-	ls.substitute(r.value, newLockPath(pathRootValue, r.value, nil, "right"), nil)
+	rightPath := newLockPath(pathRootValue, r.value, nil, "right")
+	ls.substitute(r.value, rightPath, nil)
 	obj := types.NewVar(token.NoPos, nil, "mu", types.Typ[types.Int])
-	ls.lockedMutexes["left"] = lockInfo{exclusive: true, object: obj, path: leftPath}
+	ls.lockedMutexes[leftPath.Key()] = lockInfo{exclusive: true, object: obj, path: leftPath}
 	ls.addAlias(l, r)
-	info, ok := ls.lockedMutexes["right"]
+	info, ok := ls.lockedMutexes[rightPath.Key()]
 	if !ok {
 		t.Fatal("the entry was not moved to the right root")
 	}
@@ -113,5 +118,42 @@ func TestAddAliasMovesPath(t *testing.T) {
 	}
 	if info.object != obj {
 		t.Errorf("moved entry has object %v, want the left entry's", info.object)
+	}
+}
+
+// twinLocks holds the two parameters named t of keySource's A and B, in two modes.
+func twinLocks(t *testing.T) (a, b resolvedValue) {
+	t.Helper()
+	pkg := buildTestPackage(t, "a", keySource)
+	return makeResolvedValue(pkg.Func("A").Params[0], nil), makeResolvedValue(pkg.Func("B").Params[0], nil)
+}
+
+// TestLockStateStringTwins pins that locks printing alike are both listed, in one order.
+func TestLockStateStringTwins(t *testing.T) {
+	a, b := twinLocks(t)
+	ls := newLockState()
+	ls.lockField(a, true)
+	ls.lockField(b, false)
+	const want = "{param:t} exclusively,{param:t} non-exclusively"
+	if got := ls.String(); got != want {
+		t.Errorf("state prints %q, want %q", got, want)
+	}
+	if first, second := ls.String(), ls.String(); first != second {
+		t.Errorf("two calls print %q and %q", first, second)
+	}
+}
+
+// TestIdentitySummaryTwins pins that states printing alike have different summaries.
+func TestIdentitySummaryTwins(t *testing.T) {
+	a, b := twinLocks(t)
+	one, two := newLockState(), newLockState()
+	one.lockField(a, true)
+	two.lockField(b, true)
+	all := func(lockInfo) bool { return true }
+	if one.String() != two.String() {
+		t.Fatalf("states print %q and %q, want alike", one.String(), two.String())
+	}
+	if one.identitySummary(all) == two.identitySummary(all) {
+		t.Errorf("states of different locks share the summary %q", one.identitySummary(all))
 	}
 }
