@@ -88,8 +88,8 @@ type embedded struct {
 }
 
 func embeddedUnlocked(e *embedded) {
-	// An increment reads and writes, so it is two accesses and two reports.
-	e.count++       // +checklocksfail=invalid field access|invalid field access
+	// An increment reads and writes at one position, which is one report.
+	e.count++       // +checklocksfail=invalid field access
 	e.label = "any" // exempt
 }
 

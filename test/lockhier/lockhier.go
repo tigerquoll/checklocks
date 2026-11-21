@@ -186,7 +186,7 @@ type Tree struct {
 	sync.RWMutex
 
 	// +lockhierarchyedge
-	up *Tree // +checklocksfail=may require checklocks annotation for RWMutex
+	up *Tree
 
 	kids []*Tree // +checklocksfail=may require checklocks annotation for RWMutex
 }

@@ -27,9 +27,13 @@
 package checklocks
 
 import (
+	"cmp"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -86,6 +90,54 @@ type passContext struct {
 	// construction in it, see fresh.go. It belongs to one function at a time and is
 	// saved and restored around the analysis of another.
 	fresh *freshState
+
+	// collect holds the reports back until flushReports emits them, and pending is
+	// what has been held. Only checklocks' own run collects; see maybeFail.
+	collect bool
+	pending []pendingReport
+
+	// counted names the observations already recorded for the inferred hints, so
+	// that a site the walk reaches again adds nothing; see recordObservation.
+	counted map[observationKey]struct{}
+
+	// returnStates holds the lock states the walk under way has returned in, as
+	// strings because the states themselves are shared and copied on write. It
+	// belongs to one walk and is saved and restored around another, as fresh is.
+	returnStates map[string]struct{}
+}
+
+// pendingReport is a report held back by the collector.
+type pendingReport struct {
+	pos token.Pos
+	msg string
+}
+
+// maybeFail collects a potential failure where this pass collects, and otherwise
+// reports it immediately as the embedded expectations do.
+func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...any) {
+	if !pc.collect {
+		pc.expectations.maybeFail(pos, fmtStr, args...)
+		return
+	}
+	pc.pending = append(pc.pending, pendingReport{pos: pos, msg: fmt.Sprintf(fmtStr, args...)})
+}
+
+// flushReports emits the collected reports.
+//
+// The walk reaches a site once per path to it, in an order that follows the block
+// graph rather than the source, so an exact repeat is dropped and what is left is
+// ordered as a reader meets it.
+func (pc *passContext) flushReports() {
+	pending := pc.pending
+	pc.pending = nil
+	slices.SortStableFunc(pending, func(a, b pendingReport) int {
+		return cmp.Or(comparePos(pc.pass.Fset, a.pos, b.pos), strings.Compare(a.msg, b.msg))
+	})
+	for _, r := range slices.Compact(pending) {
+		if msg, ok := pc.consider(r.pos, "%s", r.msg); ok {
+			pc.pass.Report(analysis.Diagnostic{Pos: r.pos, Message: msg})
+		}
+	}
 }
 
 // observationsFor retrieves observations for the given object.
@@ -153,6 +205,7 @@ func run(pass *analysis.Pass) (any, error) {
 		expectations: newExpectations(pass, checkLocksAnnotations, enableWrappers),
 		pass:         pass,
 		functions:    make(map[*ssa.Function]struct{}),
+		collect:      true,
 	}
 
 	// Find all line failure annotations.
@@ -292,6 +345,8 @@ func run(pass *analysis.Pass) (any, error) {
 	if enableInferred {
 		pc.checkInferred()
 	}
+
+	pc.flushReports()
 
 	// Check for expected failures.
 	pc.checkFailures()

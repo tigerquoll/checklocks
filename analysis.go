@@ -333,41 +333,68 @@ func (pc *passContext) checkGuards(inst almostInst, from ssa.Value, accessObj ty
 
 	// Check inferred locks.
 	if accessObj.Pkg() == pc.pass.Pkg {
-		oo := pc.observationsFor(accessObj)
-		oo.total++
-		for s, info := range ls.lockedMutexes {
-			// Is this an object for which we have facts? If there
-			// is no ability to name this object, then we don't
-			// bother with any inference. We also ignore any self
-			// references (e.g. accessing a mutex while you are
-			// holding that exact mutex).
-			if info.object == nil || accessObj == info.object {
-				continue
-			}
-			// Has this already been held?
-			if _, ok := guardsHeld[s]; ok {
-				oo.counts[info.object]++
-				continue
-			}
-			// Is this a global? Record directly.
-			if _, ok := from.(*ssa.Global); ok {
-				oo.counts[info.object]++
-				continue
-			}
-			// Is the object a sibling to the accessObj? We need to
-			// check all fields and see if they match. We accept
-			// only siblings and globals for this recommendation.
-			structType, ok := resolveStruct(from.Type())
-			if !ok {
-				continue
-			}
-			for i := 0; i < structType.NumFields(); i++ {
-				if fieldObj := structType.Field(i); fieldObj == info.object {
-					// Add to the maybe list.
-					oo.counts[info.object]++
-				}
+		pc.recordObservation(inst, from, accessObj, ls, guardsHeld)
+	}
+}
+
+// observationKey names one access of one object with one set of locks held.
+type observationKey struct {
+	inst      almostInst
+	accessObj types.Object
+	locks     string
+}
+
+// recordObservation counts one access towards the inferred lock hints.
+//
+// A hint is a share of the accesses to a field, so a lock counts once however it was
+// reached, and a site the walk arrives at again counts once: otherwise the share
+// rises above the whole.
+func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[string]struct{}) {
+	key := observationKey{inst: inst, accessObj: accessObj, locks: ls.String()}
+	if _, ok := pc.counted[key]; ok {
+		return
+	}
+	if pc.counted == nil {
+		pc.counted = make(map[observationKey]struct{})
+	}
+	pc.counted[key] = struct{}{}
+
+	oo := pc.observationsFor(accessObj)
+	oo.total++
+	held := make(map[types.Object]struct{})
+	for s, info := range ls.lockedMutexes {
+		// Is this an object for which we have facts? If there is no
+		// ability to name this object, then we don't bother with any
+		// inference. We also ignore any self references (e.g.
+		// accessing a mutex while you are holding that exact mutex).
+		if info.object == nil || accessObj == info.object {
+			continue
+		}
+		// Has this already been held?
+		if _, ok := guardsHeld[s]; ok {
+			held[info.object] = struct{}{}
+			continue
+		}
+		// Is this a global?
+		if _, ok := from.(*ssa.Global); ok {
+			held[info.object] = struct{}{}
+			continue
+		}
+		// Is the object a sibling to the accessObj? We need to check
+		// all fields and see if they match. We accept only siblings
+		// and globals for this recommendation.
+		structType, ok := resolveStruct(from.Type())
+		if !ok {
+			continue
+		}
+		for i := 0; i < structType.NumFields(); i++ {
+			if fieldObj := structType.Field(i); fieldObj == info.object {
+				held[info.object] = struct{}{}
 			}
 		}
+	}
+	for obj := range held {
+		oo.counts[obj]++
 	}
 }
 
@@ -906,11 +933,9 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		// the lock state to ensure that Releases and Acquires are
 		// respected.
 		if pls := pc.checkBasicBlock(fn, succ, lff, ls, seen, rg); pls != nil {
-			if rls != nil && !rls.isCompatible(pls) {
-				if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
-					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", rls.String(), pls.String())
-				}
-			}
+			// The states of one walk are gathered for checkFunction to compare:
+			// which two of them are neighbours here depends on the block graph.
+			pc.returnStates[pls.String()] = struct{}{}
 			rls = pls
 		}
 	}
@@ -983,15 +1008,29 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	pc.fresh = pc.computeFresh(fn)
 	defer func() { pc.fresh = savedFresh }()
 
-	// Scan the blocks.
+	// Scan the blocks, then the recover block. Each is the root of a walk of its own:
+	// a state returned under one is no alternative to a state returned under the
+	// other, and a walk of another function is not part of either.
 	seen := make(map[*ssa.BasicBlock]*lockState)
+	savedReturns := pc.returnStates
+	defer func() { pc.returnStates = savedReturns }()
+	roots := make([]*ssa.BasicBlock, 0, 2)
 	if len(fn.Blocks) > 0 {
-		pc.checkBasicBlock(fn, fn.Blocks[0], lff, ls, seen, nil)
+		roots = append(roots, fn.Blocks[0])
 	}
-
-	// Scan the recover block.
 	if fn.Recover != nil {
-		pc.checkBasicBlock(fn, fn.Recover, lff, ls, seen, nil)
+		roots = append(roots, fn.Recover)
+	}
+	for _, root := range roots {
+		pc.returnStates = make(map[string]struct{})
+		pc.checkBasicBlock(fn, root, lff, ls, seen, nil)
+		// Two states that cannot both hold are one finding about the function,
+		// however many paths reach them.
+		if states := slices.Sorted(maps.Keys(pc.returnStates)); len(states) > 1 {
+			if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
+				pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %s)", states[0], states[1])
+			}
+		}
 	}
 
 	// Update all lock state accordingly. This will be called only if we
