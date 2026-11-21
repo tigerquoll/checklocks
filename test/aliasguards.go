@@ -307,3 +307,92 @@ func alCallCross(o *crosspkg.AliasPair) {
 	crosspkg.AliasedReq(o)
 	o.Mu.Unlock()
 }
+
+// A declared exclusion is widened, never narrowed, by the lock the body takes.
+
+// +checklocksexcludewrite:o.in.mu
+func (o *alO) alWidenTakes() {
+	o.mu.Lock()
+	o.mu.Unlock()
+}
+
+// +checklocksexclude:o.in.mu
+func (o *alO) alKeepTakesRead() {
+	o.mu.RLock()
+	o.mu.RUnlock()
+}
+
+// +checklocksread:o.in.mu
+// +checklocksexcludewrite:o.mu
+func (o *alO) alHeldBeatsExclude() {
+	o.mu.RUnlock() // +lockgapfail=released here and taken again
+	o.mu.Lock()
+	o.mu.Unlock() // +lockgapfail=released here and taken again
+	o.mu.RLock()
+}
+
+func alCallWiden(o *alO) {
+	o.mu.RLock()
+	o.alWidenTakes()    // +checklocksfail=must not hold o.in.mu (
+	o.alKeepTakesRead() // +checklocksfail=must not hold o.in.mu (
+	o.alHeldBeatsExclude()
+	o.mu.RUnlock()
+}
+
+// An exclusion before an acquire is redundant, not contradictory.
+
+// +checklocksexclude:o.in.mu
+// +checklocksacquire:o.mu
+func alExThenAcq(o *alO) {
+	o.mu.Lock()
+}
+
+// +checklocksacquire:o.mu
+// +checklocksexclude:o.in.mu
+func alAcqThenEx(o *alO) {
+	o.mu.Lock()
+}
+
+// +checklocksexclude:o.mu
+// +checklocksacquire:o.mu
+func alExThenAcqSame(o *alO) {
+	o.mu.Lock()
+}
+
+func alCallExAcq(o *alO) {
+	o.mu.Lock()
+	alExThenAcq(o)     // +checklocksfail=must not hold o.in.mu (|attempt to acquire
+	alAcqThenEx(o)     // +checklocksfail=must not hold o.in.mu (|attempt to acquire
+	alExThenAcqSame(o) // +checklocksfail=must not hold o.mu (|attempt to acquire
+	o.mu.Unlock()
+}
+
+// An exclusion with a lock held on entry is a contradiction.
+
+// +checklocksexclude:o.in.mu
+// +checklocksrelease:o.mu
+func alExThenRel(o *alO) { // +checklocksfail=annotation o.mu cannot be both required and forbidden
+	o.mu.Unlock() // +checklocksfail=already unlocked or locked differently
+}
+
+// +checklocksexclude:o.mu
+// +checklocks:o.mu
+func alExThenGuardSame(o *alO) { // +checklocksfail=annotation o.mu cannot be both required and forbidden
+	o.x = 1 // +checklocksfail=must be locked when accessing x
+}
+
+// Modes merge only between annotations of one role.
+
+// +checklocksread:o.in.mu
+// +checklocksacquire:o.mu
+func alReadThenAcq(o *alO) { // +checklocksfail=annotation o.mu specified more than once, already required
+	_ = o.x
+	return
+}
+
+// +checklocksread:o.in.mu
+// +checklocksrelease:o.mu
+func alReadThenRel(o *alO) { // +checklocksfail=annotation o.mu specified more than once, already required
+	_ = o.x
+	return
+}

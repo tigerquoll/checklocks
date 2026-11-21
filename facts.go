@@ -491,7 +491,9 @@ func (fk *frameKeys) merge(key pathKey, exclusive, anyModeWins bool, maps ...map
 // checkGuard validates the guardName. A name that is another name's lock in the
 // function's frame is reported and dropped; into are the maps the name would join.
 func (lff *lockFunctionFacts) checkGuard(pc *passContext, d *ast.FuncDecl, fk *frameKeys, guardName string, exclusive bool, allowReturn bool, into ...map[string]functionGuardInfo) (functionGuardInfo, bool) {
-	if fg, ok := lff.ExcludedOnEntry[guardName]; ok {
+	// An acquire needs the lock unheld on entry, so excluding it as well is redundant, not a conflict.
+	joinsEntry := !allowReturn
+	if fg, ok := lff.ExcludedOnEntry[guardName]; ok && joinsEntry {
 		if exclusive || !fg.Exclusive {
 			pc.maybeFail(d.Pos(), "annotation %s cannot be both required and forbidden", guardName)
 			return functionGuardInfo{}, false
@@ -514,18 +516,22 @@ func (lff *lockFunctionFacts) checkGuard(pc *passContext, d *ast.FuncDecl, fk *f
 	}
 	if fk != nil {
 		if key, ok := fk.key(pc, res); ok {
-			if _, fg, ok := fk.withKey(lff.ExcludedOnEntry, key); ok && (exclusive || !fg.Exclusive) {
+			if _, fg, ok := fk.withKey(lff.ExcludedOnEntry, key); ok && joinsEntry && (exclusive || !fg.Exclusive) {
 				pc.maybeFail(d.Pos(), "annotation %s cannot be both required and forbidden", guardName)
 				return functionGuardInfo{}, false
 			}
-			if _, _, ok := fk.withKey(lff.HeldOnEntry, key); ok {
-				pc.maybeFail(d.Pos(), "annotation %s specified more than once, already required", guardName)
-				fk.merge(key, exclusive, false /* anyModeWins */, into...)
-				return functionGuardInfo{}, false
-			}
-			if _, _, ok := fk.withKey(lff.HeldOnExit, key); ok {
-				pc.maybeFail(d.Pos(), "annotation %s specified more than once, already acquired", guardName)
-				fk.merge(key, exclusive, false /* anyModeWins */, into...)
+			_, _, inEntry := fk.withKey(lff.HeldOnEntry, key)
+			_, _, inExit := fk.withKey(lff.HeldOnExit, key)
+			if inEntry || inExit {
+				if inEntry {
+					pc.maybeFail(d.Pos(), "annotation %s specified more than once, already required", guardName)
+				} else {
+					pc.maybeFail(d.Pos(), "annotation %s specified more than once, already acquired", guardName)
+				}
+				// Modes merge only with an entry of the same role.
+				if inEntry == joinsEntry && inExit == (allowReturn || len(into) == 2) {
+					fk.merge(key, exclusive, false /* anyModeWins */, into...)
+				}
 				return functionGuardInfo{}, false
 			}
 			fk.names[guardName] = key

@@ -240,10 +240,9 @@ func receiverStruct(fn *ssa.Function) *ssa.Parameter {
 
 // exportSynthesizedExcludes adds the derived exclusions to a method's facts.
 //
-// An annotation on the method wins: a lock the method is declared to hold on
-// entry is not one it acquires, and re-exporting it as excluded would state
-// the opposite of what the author wrote. A declared exclusion is left alone
-// for the same reason, and because it may be broader than the derived one.
+// An annotation on the method wins: a lock it is declared to hold on entry is
+// not one it acquires. A declared exclusion on the same lock is kept, and only
+// widened where the derived one is broader.
 func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int]selfLock) {
 	obj := fn.Object()
 	if obj == nil {
@@ -264,12 +263,18 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 		return
 	}
 	fk := &frameKeys{fn: fn}
-	taken := make(map[pathKey]struct{})
-	for _, m := range []map[string]functionGuardInfo{lff.HeldOnEntry, lff.HeldOnExit, lff.ExcludedOnEntry} {
+	held := make(map[pathKey]struct{})
+	for _, m := range []map[string]functionGuardInfo{lff.HeldOnEntry, lff.HeldOnExit} {
 		for _, g := range m {
 			if key, ok := fk.key(pc, g.Resolver); ok {
-				taken[key] = struct{}{}
+				held[key] = struct{}{}
 			}
+		}
+	}
+	excluded := make(map[pathKey]string)
+	for name, g := range lff.ExcludedOnEntry {
+		if key, ok := fk.key(pc, g.Resolver); ok {
+			excluded[key] = name
 		}
 	}
 	changed := false
@@ -277,7 +282,16 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 		name := recv.Name() + "." + structType.Field(index).Name()
 		guard := &parameterGuard{Index: 0, FieldList: sl.fieldList}
 		if key, ok := fk.key(pc, guard); ok {
-			if _, dup := taken[key]; dup {
+			if _, dup := held[key]; dup {
+				continue
+			}
+			if declared, dup := excluded[key]; dup {
+				info := lff.ExcludedOnEntry[declared]
+				if info.Exclusive && sl.exclusive {
+					info.Exclusive = false
+					lff.ExcludedOnEntry[declared] = info
+					changed = true
+				}
 				continue
 			}
 		}
