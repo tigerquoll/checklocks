@@ -34,6 +34,9 @@ type lockInfo struct {
 	// assumed marks a lock held by assertion rather than by acquisition: a force
 	// or an ignore inserted it, so a return does not count it as left held.
 	assumed bool
+
+	// path is the lock's name; its text is the key the lock is held under.
+	path lockPath
 }
 
 // lockState tracks the locking state and aliases.
@@ -45,7 +48,7 @@ type lockState struct {
 	// The value indicates whether this is an exclusive lock.
 	lockedMutexes map[string]lockInfo
 
-	aliases map[string]string
+	aliases map[string]lockPath
 
 	// stored stores values that have been stored in memory, bound to
 	// FreeVars or passed as Parameterse.
@@ -77,7 +80,7 @@ func newLockState() *lockState {
 	refs := int32(1) // Not shared.
 	return &lockState{
 		lockedMutexes: make(map[string]lockInfo),
-		aliases:       make(map[string]string),
+		aliases:       make(map[string]lockPath),
 		used:          make(map[ssa.Value]struct{}),
 		stored:        make(map[ssa.Value]ssa.Value),
 		substitutions: make(map[ssa.Value]substitution),
@@ -140,8 +143,8 @@ func (l *lockState) isHeld(rv resolvedValue, exclusiveRequired bool) (string, bo
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
-	s, _ := rv.valueAndObject(l)
-	s = l.aliasKey(s)
+	path, _ := rv.valueAndObject(l)
+	s := l.aliasPath(path).String()
 	info, ok := l.lockedMutexes[s]
 	if !ok {
 		return s, false
@@ -162,16 +165,20 @@ func (l *lockState) lockField(rv resolvedValue, exclusive bool) (string, bool) {
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
-	s, obj := rv.valueAndObject(l)
-	s = l.aliasKey(s)
+	path, obj := rv.valueAndObject(l)
+	path = l.aliasPath(path)
+	s := path.String()
 	if _, ok := l.lockedMutexes[s]; ok {
 		return s, false
 	}
 	l.modify()
-	l.lockedMutexes[s] = lockInfo{
+	info := lockInfo{
 		exclusive: exclusive,
 		object:    obj,
+		path:      path,
 	}
+	parityCheckEntry(s, info)
+	l.lockedMutexes[s] = info
 	return s, true
 }
 
@@ -184,8 +191,8 @@ func (l *lockState) unlockField(rv resolvedValue, exclusive bool) (string, bool)
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
-	s, _ := rv.valueAndObject(l)
-	s = l.aliasKey(s)
+	path, _ := rv.valueAndObject(l)
+	s := l.aliasPath(path).String()
 	info, ok := l.lockedMutexes[s]
 	if !ok {
 		return s, false
@@ -207,8 +214,8 @@ func (l *lockState) downgradeField(rv resolvedValue) (string, bool) {
 	if !rv.valid() {
 		panic("invalid resolvedValue passed to isHeld")
 	}
-	s, _ := rv.valueAndObject(l)
-	s = l.aliasKey(s)
+	path, _ := rv.valueAndObject(l)
+	s := l.aliasPath(path).String()
 	info, ok := l.lockedMutexes[s]
 	if !ok {
 		return s, false
@@ -218,6 +225,7 @@ func (l *lockState) downgradeField(rv resolvedValue) (string, bool) {
 	}
 	l.modify()
 	info.exclusive = false
+	parityCheckEntry(s, info)
 	l.lockedMutexes[s] = info // Downgraded.
 	return s, true
 }
@@ -231,6 +239,7 @@ func (l *lockState) setAssumed(s string, assumed bool) {
 	}
 	l.modify()
 	info.assumed = assumed
+	parityCheckEntry(s, info)
 	l.lockedMutexes[s] = info
 }
 
@@ -242,28 +251,29 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 
 // substitution is a resolution override for a single value.
 type substitution struct {
-	key string
-	obj types.Object
+	path lockPath
+	obj  types.Object
 }
 
-// substitute records that v resolves to the given key and object.
-func (l *lockState) substitute(v ssa.Value, key string, obj types.Object) {
+// substitute records that v resolves to the given path and object.
+func (l *lockState) substitute(v ssa.Value, path lockPath, obj types.Object) {
 	l.modify()
-	l.substitutions[v] = substitution{key: key, obj: obj}
+	l.substitutions[v] = substitution{path: path, obj: obj}
 }
 
 func (l *lockState) addAlias(left, right resolvedValue) {
-	leftKey, _ := left.valueAndObject(l)
-	rightKey, _ := right.valueAndObject(l)
-	leftRoot := l.aliasKey(leftKey)
-	rightRoot := l.aliasKey(rightKey)
-	if leftRoot == rightRoot {
+	leftPath, _ := left.valueAndObject(l)
+	rightPath, _ := right.valueAndObject(l)
+	leftRoot := l.aliasPath(leftPath)
+	rightRoot := l.aliasPath(rightPath)
+	leftKey, rightKey := leftRoot.String(), rightRoot.String()
+	if leftKey == rightKey {
 		return
 	}
 	l.modify()
-	l.aliases[leftRoot] = rightRoot
-	if leftInfo, ok := l.lockedMutexes[leftRoot]; ok {
-		if rightInfo, ok := l.lockedMutexes[rightRoot]; ok {
+	l.aliases[leftKey] = rightRoot
+	if leftInfo, ok := l.lockedMutexes[leftKey]; ok {
+		if rightInfo, ok := l.lockedMutexes[rightKey]; ok {
 			switch {
 			case leftInfo.assumed && !rightInfo.assumed:
 				leftInfo = rightInfo
@@ -271,18 +281,21 @@ func (l *lockState) addAlias(left, right resolvedValue) {
 				leftInfo.exclusive = leftInfo.exclusive || rightInfo.exclusive
 			}
 		}
-		l.lockedMutexes[rightRoot] = leftInfo
-		delete(l.lockedMutexes, leftRoot)
+		leftInfo.path = rightRoot
+		parityCheckEntry(rightKey, leftInfo)
+		l.lockedMutexes[rightKey] = leftInfo
+		delete(l.lockedMutexes, leftKey)
 	}
 }
 
-func (l *lockState) aliasKey(key string) string {
+// aliasPath follows the alias chain from p to the canonical path.
+func (l *lockState) aliasPath(p lockPath) lockPath {
 	for {
-		parent, ok := l.aliases[key]
+		parent, ok := l.aliases[p.String()]
 		if !ok {
-			return key
+			return p
 		}
-		key = parent
+		p = parent
 	}
 }
 
@@ -339,7 +352,7 @@ type elemType interface {
 	Elem() types.Type
 }
 
-// valueAndObject returns a string for a given value, along with a source level
+// valueAndObject returns a path for a given value, along with a source level
 // object (if available and relevant).
 //
 // This decomposes the value into the simplest possible representation in terms
@@ -347,11 +360,11 @@ type elemType interface {
 // may be transferred, as well as bound free variables.
 //
 // Nil may not be passed here.
-func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
+func (l *lockState) valueAndObject(v ssa.Value) (lockPath, types.Object) {
 	// An overridden value resolves to whatever it was substituted with,
 	// regardless of its shape. See accessor.go.
 	if s, ok := l.substitutions[v]; ok {
-		return s.key, s.obj
+		return s.path, s.obj
 	}
 	switch x := v.(type) {
 	case *ssa.Parameter:
@@ -361,9 +374,9 @@ func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
 		if ok {
 			return l.valueAndObject(v)
 		}
-		return fmt.Sprintf("{param:%s}", x.Name()), x.Object()
+		return newLockPath(pathRootParam, x, x.Object(), x.Name()), x.Object()
 	case *ssa.Global:
-		return fmt.Sprintf("{global:%s}", x.Name()), x.Object()
+		return newLockPath(pathRootGlobal, x, x.Object(), x.Name()), x.Object()
 	case *ssa.FreeVar:
 		// Attempt to resolve this, in case we are being invoked in a
 		// scope where all the variables are bound.
@@ -379,7 +392,7 @@ func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
 		}
 		// FreeVar does not have a corresponding source-level object
 		// that we can return here.
-		return fmt.Sprintf("{freevar:%s}", x.Name()), nil
+		return newLockPath(pathRootFreeVar, x, nil, x.Name()), nil
 	case *ssa.Convert:
 		// Just disregard conversion.
 		return l.valueAndObject(x.X)
@@ -410,7 +423,7 @@ func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
 		// x.X.Type is pointer. We must construct this type
 		// dynamically, since the ssa.Value could be synthetic.
 		s, obj := l.valueAndObject(x.X)
-		return fmt.Sprintf("*(%s)", s), obj
+		return s.extend(lockStep{kind: stepDeref}), obj
 	case *ssa.Field:
 		structType, ok := resolveStruct(x.X.Type())
 		if !ok {
@@ -419,7 +432,7 @@ func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
 		}
 		fieldObj := structType.Field(x.Field)
 		s, _ := l.valueAndObject(x.X)
-		return fmt.Sprintf("%s.%s", s, fieldObj.Name()), fieldObj
+		return s.extend(lockStep{kind: stepField, field: fieldObj, n: x.Field}), fieldObj
 	case *ssa.FieldAddr:
 		structType, ok := resolveStruct(x.X.Type())
 		if !ok {
@@ -428,27 +441,27 @@ func (l *lockState) valueAndObject(v ssa.Value) (string, types.Object) {
 		}
 		fieldObj := structType.Field(x.Field)
 		s, _ := l.valueAndObject(x.X)
-		return fmt.Sprintf("&(%s.%s)", s, fieldObj.Name()), fieldObj
+		return s.extend(lockStep{kind: stepFieldAddr, field: fieldObj, n: x.Field}), fieldObj
 	case *ssa.Index:
 		s, _ := l.valueAndObject(x.X)
 		i, _ := l.valueAndObject(x.Index)
-		return fmt.Sprintf("%s[%s]", s, i), nil
+		return s.extend(lockStep{kind: stepIndex, index: i}), nil
 	case *ssa.IndexAddr:
 		s, _ := l.valueAndObject(x.X)
 		i, _ := l.valueAndObject(x.Index)
-		return fmt.Sprintf("&(%s[%s])", s, i), nil
+		return s.extend(lockStep{kind: stepIndexAddr, index: i}), nil
 	case *ssa.Lookup:
 		s, _ := l.valueAndObject(x.X)
 		i, _ := l.valueAndObject(x.Index)
-		return fmt.Sprintf("%s[%s]", s, i), nil
+		return s.extend(lockStep{kind: stepLookup, index: i}), nil
 	case *ssa.Extract:
 		s, _ := l.valueAndObject(x.Tuple)
-		return fmt.Sprintf("%s[%d]", s, x.Index), nil
+		return s.extend(lockStep{kind: stepConstIndex, n: x.Index}), nil
 	}
 
 	// Any other value (an alloc, a return value, ...) is named by its place in the
 	// ssa graph, which is unique and the same in every run.
-	return l.valueToken(v), nil
+	return newLockPath(pathRootValue, v, nil, l.valueToken(v)), nil
 }
 
 // valueToken names a value that decomposes no further.

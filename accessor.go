@@ -173,6 +173,6 @@ func (pc *passContext) substituteGlobalAccessor(call *ssa.Call, ls *lockState) {
 	if gaf.Deref {
 		rv = makeDerefResolvedValue(v, nil)
 	}
-	key, keyObj := rv.valueAndObject(ls)
-	ls.substitute(call, key, keyObj)
+	path, keyObj := rv.valueAndObject(ls)
+	ls.substitute(call, path, keyObj)
 }

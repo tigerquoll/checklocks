@@ -513,8 +513,8 @@ func resolveGuards(ls *lockState, guards, skip map[string]functionGuardInfo, res
 		if !g.rv.valid() {
 			continue
 		}
-		key, _ := g.rv.valueAndObject(ls)
-		keys[i] = ls.aliasKey(key)
+		path, _ := g.rv.valueAndObject(ls)
+		keys[i] = ls.aliasPath(path).String()
 		modes[keys[i]] = modes[keys[i]] || g.fg.Exclusive
 	}
 	for i := range resolved {

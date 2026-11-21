@@ -51,12 +51,12 @@ const (
 
 // fieldEntry is a single field type.
 type fieldEntry interface {
-	// synthesize produces a string that is compatible with valueAndObject,
+	// synthesize produces a path that is compatible with valueAndObject,
 	// along with the same object that should be produced in that case.
 	//
 	// Note that it is called synthesize because this is produced only the
 	// type information, and not with any ssa.Value objects.
-	synthesize(s string, typ types.Type) (string, types.Object)
+	synthesize(p lockPath, typ types.Type) (lockPath, types.Object)
 }
 
 // fieldStruct is a non-pointer struct element.
@@ -65,13 +65,13 @@ type fieldStruct struct {
 }
 
 // synthesize implements fieldEntry.synthesize.
-func (f *fieldStruct) synthesize(s string, typ types.Type) (string, types.Object) {
+func (f *fieldStruct) synthesize(p lockPath, typ types.Type) (lockPath, types.Object) {
 	field, ok := findField(typ, f.Field)
 	if !ok {
 		// Should not happen as long as fieldList construction is correct.
 		panic(fmt.Sprintf("unable to resolve field %d in %s", f.Field, typ.String()))
 	}
-	return fmt.Sprintf("&(%s.%s)", s, field.Name()), field
+	return p.extend(lockStep{kind: stepFieldAddr, field: field.(*types.Var), n: f.Field}), field
 }
 
 // fieldStructPtr is a pointer struct element.
@@ -80,13 +80,14 @@ type fieldStructPtr struct {
 }
 
 // synthesize implements fieldEntry.synthesize.
-func (f *fieldStructPtr) synthesize(s string, typ types.Type) (string, types.Object) {
+func (f *fieldStructPtr) synthesize(p lockPath, typ types.Type) (lockPath, types.Object) {
 	field, ok := findField(typ, f.Field)
 	if !ok {
 		// See above, this should not happen.
 		panic(fmt.Sprintf("unable to resolve ptr field %d in %s", f.Field, typ.String()))
 	}
-	return fmt.Sprintf("*(&(%s.%s))", s, field.Name()), field
+	p = p.extend(lockStep{kind: stepFieldAddr, field: field.(*types.Var), n: f.Field})
+	return p.extend(lockStep{kind: stepDeref}), field
 }
 
 func fieldEntryEqual(left, right fieldEntry) bool {
@@ -160,12 +161,17 @@ func (rv *resolvedValue) valid() bool {
 	return rv.value != nil
 }
 
-// valueAndObject returns a string and object.
+// valueAndObject returns a path and object.
 //
-// This uses the lockState valueAndObject in order to produce a string and
-// object for the base ssa.Value, then synthesizes a string representation
-// based on the fieldList.
-func (rv *resolvedValue) valueAndObject(ls *lockState) (string, types.Object) {
+// The base value's path and object come from lockState.valueAndObject; the
+// path is then extended by the fieldList.
+func (rv *resolvedValue) valueAndObject(ls *lockState) (lockPath, types.Object) {
+	path, obj := rv.build(ls)
+	parityCheck(rv, ls, path, obj)
+	return path, obj
+}
+
+func (rv *resolvedValue) build(ls *lockState) (lockPath, types.Object) {
 	// N.B. obj.Type() and typ should be equal, but a check is omitted
 	// since, 1) we automatically chase through pointers during field
 	// resolution, and 2) obj may be nil if there is no source object.
@@ -175,7 +181,7 @@ func (rv *resolvedValue) valueAndObject(ls *lockState) (string, types.Object) {
 		// Emit the load, and drop the corresponding pointer from the
 		// type. Note that the object is unchanged: it is the variable
 		// being loaded, and its type is already the loaded type.
-		s = fmt.Sprintf("*(%s)", s)
+		s = s.extend(lockStep{kind: stepDeref})
 		if ptr, ok := typ.Underlying().(*types.Pointer); ok {
 			typ = ptr.Elem()
 		}

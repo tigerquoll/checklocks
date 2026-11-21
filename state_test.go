@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"go/constant"
+	"go/token"
 	"go/types"
 	"slices"
 	"strings"
@@ -68,8 +69,8 @@ func TestAddAliasAssumed(t *testing.T) {
 		// Two zero-value values would resolve to one key, so each is named.
 		l := makeResolvedValue(ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int]), nil)
 		r := makeResolvedValue(ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int]), nil)
-		ls.substitute(l.value, "left", nil)
-		ls.substitute(r.value, "right", nil)
+		ls.substitute(l.value, newLockPath(pathRootValue, l.value, nil, "left"), nil)
+		ls.substitute(r.value, newLockPath(pathRootValue, r.value, nil, "right"), nil)
 		ls.lockedMutexes["left"] = left
 		ls.lockedMutexes["right"] = right
 		ls.addAlias(l, r)
@@ -77,10 +78,11 @@ func TestAddAliasAssumed(t *testing.T) {
 	}
 	assumedExclusive := lockInfo{exclusive: true, assumed: true}
 	acquiredShared := lockInfo{exclusive: false}
-	if got := merge(assumedExclusive, acquiredShared); got != acquiredShared {
+	sameMode := func(a, b lockInfo) bool { return a.exclusive == b.exclusive && a.assumed == b.assumed }
+	if got := merge(assumedExclusive, acquiredShared); !sameMode(got, acquiredShared) {
 		t.Errorf("an assumed left merged with an acquired right is %+v, want the acquired entry", got)
 	}
-	if got := merge(acquiredShared, assumedExclusive); got != acquiredShared {
+	if got := merge(acquiredShared, assumedExclusive); !sameMode(got, acquiredShared) {
 		t.Errorf("an acquired left merged with an assumed right is %+v, want the acquired entry", got)
 	}
 	if got := merge(assumedExclusive, assumedExclusive); !got.assumed {
@@ -88,5 +90,28 @@ func TestAddAliasAssumed(t *testing.T) {
 	}
 	if got := merge(lockInfo{exclusive: true}, acquiredShared); !got.exclusive || got.assumed {
 		t.Errorf("two acquired entries merged to %+v, want exclusive acquired", got)
+	}
+}
+
+// TestAddAliasMovesPath pins that a moved entry carries the path of its new key.
+func TestAddAliasMovesPath(t *testing.T) {
+	ls := newLockState()
+	l := makeResolvedValue(ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int]), nil)
+	r := makeResolvedValue(ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int]), nil)
+	leftPath := newLockPath(pathRootValue, l.value, nil, "left")
+	ls.substitute(l.value, leftPath, nil)
+	ls.substitute(r.value, newLockPath(pathRootValue, r.value, nil, "right"), nil)
+	obj := types.NewVar(token.NoPos, nil, "mu", types.Typ[types.Int])
+	ls.lockedMutexes["left"] = lockInfo{exclusive: true, object: obj, path: leftPath}
+	ls.addAlias(l, r)
+	info, ok := ls.lockedMutexes["right"]
+	if !ok {
+		t.Fatal("the entry was not moved to the right root")
+	}
+	if got := info.path.String(); got != "right" {
+		t.Errorf("moved entry has path %q, want %q", got, "right")
+	}
+	if info.object != obj {
+		t.Errorf("moved entry has object %v, want the left entry's", info.object)
 	}
 }
