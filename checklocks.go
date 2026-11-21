@@ -112,6 +112,8 @@ const (
 	emitDirect emitMode = iota
 	// emitWalk drops the report: the replay raises it.
 	emitWalk
+	// emitReplay reports as emitDirect does; checkFunction returns at once in it, so
+	// the replay never re-enters a nested walk.
 	emitReplay
 )
 
