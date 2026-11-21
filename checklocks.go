@@ -122,11 +122,8 @@ func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...any) {
 	pc.pending = append(pc.pending, pendingReport{pos: pos, msg: fmt.Sprintf(fmtStr, args...)})
 }
 
-// flushReports emits the collected reports.
-//
-// The walk reaches a site once per path to it, in an order that follows the block
-// graph rather than the source, so an exact repeat is dropped and what is left is
-// ordered as a reader meets it.
+// flushReports emits the collected reports. The walk reaches a site once per path, in
+// block-graph order, so exact repeats are dropped and the rest sorted by position.
 func (pc *passContext) flushReports() {
 	pending := pc.pending
 	pc.pending = nil

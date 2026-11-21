@@ -71,8 +71,7 @@ func TestInferredOrder(t *testing.T) {
 	}
 }
 
-// TestCollectedReports pins what the collector drops and the order it keeps, which the
-// walk order would otherwise decide.
+// TestCollectedReports pins the collector's dedupe, order and expectation matching.
 func TestCollectedReports(t *testing.T) {
 	fset := token.NewFileSet()
 	file := fset.AddFile("collect.go", -1, 10000)
@@ -126,8 +125,7 @@ type fakeInst struct{}
 func (fakeInst) Pos() token.Pos                { return token.NoPos }
 func (fakeInst) Referrers() *[]ssa.Instruction { return nil }
 
-// TestObservationDedupe pins which observations are counted, as a hint's percentage
-// cannot say how often a site was walked.
+// TestObservationDedupe pins that a repeated observation is counted once.
 func TestObservationDedupe(t *testing.T) {
 	pkg := types.NewPackage("p", "p")
 	field := types.NewVar(token.NoPos, pkg, "value", types.Typ[types.Int])

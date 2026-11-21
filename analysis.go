@@ -344,11 +344,9 @@ type observationKey struct {
 	locks     string
 }
 
-// recordObservation counts one access towards the inferred lock hints.
-//
-// A hint is a share of the accesses to a field, so a lock counts once however it was
-// reached, and a site the walk arrives at again counts once: otherwise the share
-// rises above the whole.
+// recordObservation counts one access towards the inferred lock hints, once per lock
+// and once per site and lock state: a hint is a share of the accesses, and a repeat
+// would raise it above the whole.
 func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, accessObj types.Object, ls *lockState, guardsHeld map[string]struct{}) {
 	key := observationKey{inst: inst, accessObj: accessObj, locks: ls.String()}
 	if _, ok := pc.counted[key]; ok {
@@ -1008,9 +1006,8 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	pc.fresh = pc.computeFresh(fn)
 	defer func() { pc.fresh = savedFresh }()
 
-	// Scan the blocks, then the recover block. Each is the root of a walk of its own:
-	// a state returned under one is no alternative to a state returned under the
-	// other, and a walk of another function is not part of either.
+	// The body and the recover block are separate walks: a state one returns in is no
+	// alternative to a state the other returns in, nor to a nested function's.
 	seen := make(map[*ssa.BasicBlock]*lockState)
 	savedReturns := pc.returnStates
 	defer func() { pc.returnStates = savedReturns }()
