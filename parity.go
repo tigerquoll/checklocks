@@ -329,10 +329,9 @@ func instCoord(inst ssa.Instruction) (*ssa.Function, string) {
 	return inst.Parent(), fmt.Sprintf("b%d.i%d", inst.Block().Index, slices.Index(inst.Block().Instrs, inst))
 }
 
-// qualifiedName names an accessed object by its global's package or its struct type, so
-// a global and a field of one name differ.
+// qualifiedName names an accessed object by its package if it is a global, or by its struct type if it is a field, so a global and a field of one name differ.
 func qualifiedName(from ssa.Value, obj types.Object) string {
-	if _, ok := from.(*ssa.Global); ok {
+	if v, ok := obj.(*types.Var); !ok || !v.IsField() {
 		return obj.Pkg().Name() + "." + obj.Name()
 	}
 	typ := from.Type()

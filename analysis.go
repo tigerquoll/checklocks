@@ -625,10 +625,12 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		p, ok := ls.unlockField(g.rv, g.fg.Exclusive)
 		pc.decide(at, release, ok, g.fieldName)
 		if !ok {
-			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
-			} else {
+			if lff.Ignore {
 				pc.suppressed()
+			} else if _, forced := pc.forced[pc.positionKey(site.Pos())]; forced {
+				pc.suppressed()
+			} else {
+				pc.maybeFail(site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
 		}
 	}

@@ -113,6 +113,18 @@ func TestDecisionLog(t *testing.T) {
 		t.Errorf("want the position-less returns of needsLock on two coordinates, got %v", coords)
 	}
 
+	line := lineOf("\tval.val = 4")
+	var subjects []string
+	for _, f := range find(func(f []string) bool {
+		return f[1] == "sameName" && f[3] == "guardHeld" && strings.HasPrefix(f[0], fmt.Sprintf("decisionlog.go:%d:", line))
+	}) {
+		subjects = append(subjects, f[4])
+	}
+	slices.Sort(subjects)
+	if want := []string{"mu decisionlog.named.val", "mu decisionlog.val"}; !slices.Equal(subjects, want) {
+		t.Errorf("want the guardHeld subjects %q at %d, got %q", want, line, subjects)
+	}
+
 	var contexts []string
 	for _, f := range find(func(f []string) bool { return f[1] == "literalTwice$1" && f[3] == "guardHeld" }) {
 		contexts = append(contexts, f[5])

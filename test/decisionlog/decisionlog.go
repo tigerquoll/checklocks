@@ -59,3 +59,23 @@ func literalTwice(g *guarded) {
 	f()
 	g.mu.Unlock()
 }
+
+var mu sync.Mutex
+
+type named struct {
+	mu sync.Mutex // +checklocksfail=may require checklocks annotation for mu, used with lock held 100% of the time
+
+	// +checklocks:mu
+	val int
+}
+
+// +checklocks:mu
+var val named
+
+func sameName() {
+	mu.Lock()
+	val.mu.Lock()
+	val.val = 4
+	val.mu.Unlock()
+	mu.Unlock()
+}
