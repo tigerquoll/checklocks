@@ -118,84 +118,6 @@ func buildProbe(t *testing.T) (*analysis.Pass, []probeCall) {
 	return pass, calls
 }
 
-func probeCallee(common *ssa.CallCommon) *types.Func {
-	if common.Method != nil {
-		return common.Method
-	}
-	if sf, ok := common.Value.(*ssa.Function); ok && sf.Object() != nil {
-		fn, _ := sf.Object().(*types.Func)
-		return fn
-	}
-	return nil
-}
-
-// oldIsLockAcquire is a verbatim copy of isLockAcquire at 154c721.
-func oldIsLockAcquire(pass *analysis.Pass, common *ssa.CallCommon) bool {
-	var fn *types.Func
-	if common.Method != nil {
-		fn = common.Method
-	} else if sf, ok := common.Value.(*ssa.Function); ok && sf.Object() != nil {
-		fn, _ = sf.Object().(*types.Func)
-	}
-	if fn == nil {
-		return false
-	}
-	switch fn.Name() {
-	case "Lock", "RLock", "NestedLock":
-	default:
-		return false
-	}
-	full := fn.FullName()
-	if rwMutexRE.MatchString(full) || mutexRE.MatchString(full) || lockerRE.MatchString(full) {
-		return true
-	}
-	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-		_, declared := lockPrimitiveIn(pass, sig.Recv().Type())
-		return declared
-	}
-	return false
-}
-
-// oldIsStandardLock is a verbatim copy of isStandardLock at 154c721.
-func oldIsStandardLock(pass *analysis.Pass, fn *types.Func) bool {
-	name := fn.FullName()
-	if mutexRE.MatchString(name) || lockerRE.MatchString(name) {
-		return true
-	}
-	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-		if _, declared := lockPrimitiveIn(pass, sig.Recv().Type()); declared {
-			return true
-		}
-	}
-	return false
-}
-
-// oldIsLockWrapper is lockgap's isLockWrapper at 154c721, taking the pass as a parameter.
-func oldIsLockWrapper(pass *analysis.Pass, obj *types.Func) bool {
-	if sig, ok := obj.Type().(*types.Signature); ok && sig.Recv() != nil {
-		if _, declared := lockPrimitiveIn(pass, sig.Recv().Type()); declared {
-			return true
-		}
-	}
-	return false
-}
-
-func TestLockAcquireMatchesOldMatcher(t *testing.T) {
-	pass, calls := buildProbe(t)
-	for _, c := range calls {
-		if got, want := isLockAcquire(pass, c.common), oldIsLockAcquire(pass, c.common); got != want {
-			t.Errorf("%s: isLockAcquire = %v, old matcher = %v", c.key, got, want)
-		}
-		fn := probeCallee(c.common)
-		if fn == nil {
-			continue
-		}
-		if got, want := isStandardLock(pass, fn), oldIsStandardLock(pass, fn) || oldIsLockWrapper(pass, fn); got != want {
-			t.Errorf("%s: isStandardLock = %v, old lockgap condition = %v", c.key, got, want)
-		}
-	}
-}
-
 // A method value is called through a closure, which carries no callee, so those rows are false.
 func TestIsLockAcquireTable(t *testing.T) {
 	want := map[string]bool{
@@ -273,11 +195,11 @@ func TestIsLockAcquireTable(t *testing.T) {
 		"*Plain.TryLock/value":                 false,
 		"*Plain.Close/static":                  false,
 		"*Plain.Close/value":                   false,
-		"*G[*sync.Mutex].Lock/static":          true,
+		"*G[*sync.Mutex].Lock/static":          false,
 		"*G[*sync.Mutex].Lock/value":           false,
-		"*G[*sync.Mutex].RLock/static":         true,
+		"*G[*sync.Mutex].RLock/static":         false,
 		"*G[*sync.Mutex].RLock/value":          false,
-		"*G[*sync.Mutex].NestedLock/static":    true,
+		"*G[*sync.Mutex].NestedLock/static":    false,
 		"*G[*sync.Mutex].NestedLock/value":     false,
 		"*G[*sync.Mutex].Unlock/static":        false,
 		"*G[*sync.Mutex].Unlock/value":         false,
@@ -378,7 +300,7 @@ func downgradeUndeclared(w *W)      { w.DowngradeLock() }
 		{"methodExpr", "(sync.Locker).Lock", opAcquire, true},
 		{"promoted", "(*sync.Mutex).Lock", opAcquire, true},
 		{"downgradeDeclared", "(*probe.Guard).DowngradeLock", opDowngrade, true},
-		{"generic", "(*probe.G[*sync.Mutex]).Lock", opAcquire, true},
+		{"generic", "(*probe.G[*sync.Mutex]).Lock", opNone, false},
 		{"downgradeUndeclared", "(*probe.W).DowngradeLock", opNone, false},
 	}
 	for _, w := range want {

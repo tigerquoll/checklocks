@@ -240,7 +240,7 @@ func functionIgnoreSuppresses(c *cache) {
 	c.mu.Unlock()
 }
 
-// --- a generic wrapper is a lock as called, not as declared -------------------------------------
+// --- G[*sync.Mutex] is not a standard lock, and a declared generic wrapper is --------------------
 
 type GGuard[L sync.Locker] struct {
 	l L
@@ -253,6 +253,24 @@ func (g *GGuard[L]) Lock() { g.l.Lock() }
 func (g *GGuard[L]) Unlock() { g.l.Unlock() }
 
 func genericWrapperSplits(g *GGuard[*sync.Mutex]) {
+	g.Lock()
+	g.Unlock()
+	g.Lock()
+	g.Unlock()
+}
+
+// +checklockslocktype
+type DGuard[L sync.Locker] struct {
+	l L
+}
+
+// +checklocksignore
+func (g *DGuard[L]) Lock() { g.l.Lock() }
+
+// +checklocksignore
+func (g *DGuard[L]) Unlock() { g.l.Unlock() }
+
+func declaredGenericWrapperSplits(g *DGuard[*sync.Mutex]) {
 	g.Lock()
 	g.Unlock() // +lockgapfail=taken again
 	g.Lock()

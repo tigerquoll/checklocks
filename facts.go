@@ -20,7 +20,6 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -771,12 +770,6 @@ func (pc *passContext) findField(structType *types.Struct, fieldName string) (fi
 	return nil, nil, false
 }
 
-var (
-	mutexRE   = regexp.MustCompile(".*Mutex")
-	rwMutexRE = regexp.MustCompile(".*RWMutex")
-	lockerRE  = regexp.MustCompile(".*sync.Locker")
-)
-
 type lockKind interface {
 	isLockKind()
 }
@@ -804,17 +797,15 @@ func (pc *passContext) lockKind(pos token.Pos, obj types.Object) lockKind {
 		return &lockKindMutex{}
 	}
 	// Check that it is indeed a mutex.
-	s := obj.Type().String()
-	switch {
-	case rwMutexRE.MatchString(s):
-		return &lockKindRWMutex{}
-	case mutexRE.MatchString(s), lockerRE.MatchString(s):
+	if t := obj.Type(); isStandardLockType(t) {
+		if named, _ := namedOf(t); strings.HasSuffix(named.Obj().Name(), "RWMutex") {
+			return &lockKindRWMutex{}
+		}
 		return &lockKindMutex{}
-	default:
-		// Not a mutex at all?
-		pc.maybeFail(pos, "field %s is not a Mutex or an RWMutex", obj.Name())
-		return nil
 	}
+	// Not a mutex at all?
+	pc.maybeFail(pos, "field %s is not a Mutex or an RWMutex", obj.Name())
+	return nil
 }
 
 // validateMutex validates the mutex type.

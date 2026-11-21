@@ -104,11 +104,10 @@ func lockPrimitiveIn(pass *analysis.Pass, typ types.Type) (*lockPrimitiveFacts, 
 	return &lpf, true
 }
 
-// isLockTypeIn reports whether a type is a lock: either by the name matching
-// that the standard types are recognised by, or by declaration.
+// isLockTypeIn reports whether a type is a lock: either a standard lock type, or by
+// declaration.
 func isLockTypeIn(pass *analysis.Pass, typ types.Type) bool {
-	s := typ.String()
-	if rwMutexRE.MatchString(s) || mutexRE.MatchString(s) || lockerRE.MatchString(s) {
+	if isStandardLockType(typ) {
 		return true
 	}
 	_, ok := lockPrimitiveIn(pass, typ)

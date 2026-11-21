@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
@@ -58,11 +59,25 @@ func declaredLockMethod(pass *analysis.Pass, fn *types.Func) bool {
 	return false
 }
 
-// isStandardLock reports whether the function is a lock method of a standard lock type,
-// recognised by name the way the checklocks analyzer recognises them.
+// isStandardLockType reports whether a type is a standard lock, judged by its own named
+// type alone: a name that is or ends in "Mutex", or sync.Locker. Neither the package path
+// nor a type argument counts, and an unnamed type is not a lock.
+func isStandardLockType(t types.Type) bool {
+	named, ok := namedOf(t)
+	if !ok {
+		return false
+	}
+	obj := named.Origin().Obj()
+	if strings.HasSuffix(obj.Name(), "Mutex") {
+		return true
+	}
+	return obj.Name() == "Locker" && obj.Pkg() != nil && obj.Pkg().Path() == "sync"
+}
+
+// isStandardLock reports whether the function is a lock method of a standard lock type or
+// of a declared lock primitive.
 func isStandardLock(pass *analysis.Pass, fn *types.Func) bool {
-	name := fn.FullName()
-	if mutexRE.MatchString(name) || lockerRE.MatchString(name) {
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil && isStandardLockType(sig.Recv().Type()) {
 		return true
 	}
 	return declaredLockMethod(pass, fn)

@@ -205,8 +205,7 @@ func (pc *passContext) isLockField(fieldObj *types.Var) bool {
 	if _, ok := pc.lockPrimitiveFor(fieldObj.Type()); ok {
 		return true
 	}
-	s := fieldObj.Type().String()
-	return rwMutexRE.MatchString(s) || mutexRE.MatchString(s) || lockerRE.MatchString(s)
+	return isStandardLockType(fieldObj.Type())
 }
 
 // fieldHasAnnotation reports whether a field carries an annotation, in either of the two
