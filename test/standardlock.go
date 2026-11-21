@@ -109,3 +109,30 @@ func usesLockHolders(t *lockHolders, i int) {
 	t.l.Unlock()
 	t.n = 1 // +checklocksfail
 }
+
+type aliasMutex = sync.Mutex
+type aliasLocks = []*aliasMutex
+type notALock struct{ x int }
+
+// Slice, chan, map key, pointer and alias paths of the lock-holding field walk.
+// +checklocks:mu
+type lockHolders2 struct {
+	mu    sync.Mutex
+	ss    []sync.Mutex
+	ch    chan *sync.Mutex
+	mk    map[*sync.Mutex]int
+	pp    **sync.Mutex
+	as    aliasLocks
+	named []notALock
+	plain struct{ x int }
+}
+
+func usesLockHolders2(t *lockHolders2, i int) {
+	_ = &t.ss[i]
+	_ = t.ch
+	_ = t.mk
+	_ = t.pp
+	_ = t.as
+	_ = t.named // +checklocksfail
+	_ = t.plain // +checklocksfail
+}
