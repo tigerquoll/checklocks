@@ -325,3 +325,85 @@ func TestIsLockAcquireTable(t *testing.T) {
 		}
 	}
 }
+
+func TestLockCallSiteTable(t *testing.T) {
+	const src = `package probe
+
+import "sync"
+
+type Guard struct{}
+
+func (*Guard) DowngradeLock() {}
+
+type G[L any] struct{ l L }
+
+func (*G[L]) Lock() {}
+
+type E struct{ sync.Mutex }
+
+type W struct{ sync.RWMutex }
+
+func (*W) DowngradeLock() {}
+
+func typeParam[L sync.Locker](l L)  { l.Lock() }
+func methodExpr(l sync.Locker)      { sync.Locker.Lock(l) }
+func promoted(e *E)                 { e.Lock() }
+func downgradeDeclared(g *Guard)    { g.DowngradeLock() }
+func generic(g *G[*sync.Mutex])     { g.Lock() }
+func downgradeUndeclared(w *W)      { w.DowngradeLock() }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "probe/x.go", src, 0)
+	if err != nil {
+		t.Fatalf("parsing probe: %v", err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset,
+		types.NewPackage("probe", "probe"), []*ast.File{f}, ssa.BuilderMode(0))
+	if err != nil {
+		t.Fatalf("building probe: %v", err)
+	}
+	guard := pkg.Pkg.Scope().Lookup("Guard")
+	pass := &analysis.Pass{ImportObjectFact: func(o types.Object, fact analysis.Fact) bool {
+		_, ok := fact.(*lockPrimitiveFacts)
+		return ok && o == guard
+	}}
+
+	want := []struct {
+		driver string
+		name   string
+		op     lockOp
+		ok     bool
+	}{
+		{"typeParam", "(sync.Locker).Lock", opAcquire, true},
+		{"methodExpr", "(sync.Locker).Lock", opAcquire, true},
+		{"promoted", "(*sync.Mutex).Lock", opAcquire, true},
+		{"downgradeDeclared", "(*probe.Guard).DowngradeLock", opDowngrade, true},
+		{"generic", "(*probe.G[*sync.Mutex]).Lock", opAcquire, true},
+		{"downgradeUndeclared", "(*probe.W).DowngradeLock", opNone, false},
+	}
+	for _, w := range want {
+		var common *ssa.CallCommon
+		for _, b := range pkg.Func(w.driver).Blocks {
+			for _, inst := range b.Instrs {
+				if ci, ok := inst.(ssa.CallInstruction); ok {
+					common = ci.Common()
+				}
+			}
+		}
+		if common == nil {
+			t.Errorf("%s: no call", w.driver)
+			continue
+		}
+		fn, op, recv, ok := lockCallSite(pass, common)
+		if fn == nil {
+			t.Errorf("%s: no callee", w.driver)
+			continue
+		}
+		if fn.FullName() != w.name || op != w.op || ok != w.ok {
+			t.Errorf("%s: got %s, %v, %v; want %s, %v, %v", w.driver, fn.FullName(), op, ok, w.name, w.op, w.ok)
+		}
+		if ok && recv == nil {
+			t.Errorf("%s: ok with no receiver", w.driver)
+		}
+	}
+}

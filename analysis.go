@@ -759,15 +759,12 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 	// Check if it's a method dispatch for something in the sync package.
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#Function
 
-	if (lockerRE.MatchString(fn.FullName()) || mutexRE.MatchString(fn.FullName()) || pc.isLockPrimitiveMethod(fn)) && len(args) > 0 {
-		rv := makeResolvedValue(args[0], nil)
-		isExclusive := false
-		switch fn.Name() {
-		case "Lock", "NestedLock":
-			isExclusive = true
-			fallthrough
-		case "RLock":
-			p, ok := ls.lockField(rv, isExclusive)
+	if _, op, recv, ok := lockCallSite(pc.pass, site.Common()); ok {
+		rv := makeResolvedValue(recv, nil)
+		exclusive := !lockOpShared(fn.Name())
+		switch op {
+		case opAcquire:
+			p, ok := ls.lockField(rv, exclusive)
 			pc.decide(at, lockOpLock, ok)
 			if !ok {
 				// The lock is really taken here, whatever assumed it earlier.
@@ -779,11 +776,8 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 					pc.suppressed()
 				}
 			}
-		case "Unlock", "NestedUnlock":
-			isExclusive = true
-			fallthrough
-		case "RUnlock":
-			p, ok := ls.unlockField(rv, isExclusive)
+		case opRelease:
+			p, ok := ls.unlockField(rv, exclusive)
 			pc.decide(at, lockOpUnlock, ok)
 			if !ok {
 				if !forced && !lff.Ignore {
@@ -793,7 +787,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 					pc.suppressed()
 				}
 			}
-		case "DowngradeLock":
+		case opDowngrade:
 			p, ok := ls.downgradeField(rv)
 			pc.decide(at, lockOpDowngrade, ok)
 			if !ok {

@@ -776,3 +776,16 @@ func callsCrossPackageGenericUnderLock(a *App, b *dep.Box[int]) {
 	b.Sleeps() // +lockblockingfail=which may block (calling Sleep at dep/dep.go:77)
 	a.Unlock()
 }
+
+// --- a downgrade is not a lock operation to this analysis ---------------------------------
+
+var downgradeWait chan int
+
+// +checklocksignore
+func (a *App) DowngradeLock() { <-downgradeWait }
+
+func callsDowngradeUnderLock(a *App) {
+	a.Lock()
+	a.DowngradeLock() // +lockblockingfail=calling (*App).DowngradeLock, which may block (a channel receive at lockblocking/lockblocking.go:785)
+	a.Unlock()
+}

@@ -121,23 +121,5 @@ func isLockTypeIn(pass *analysis.Pass, typ types.Type) bool {
 // Only the operations this analysis knows how to interpret count. Any other
 // method of the type is an ordinary method and is analyzed as one.
 func (pc *passContext) isLockPrimitiveMethod(fn *types.Func) bool {
-	sig, ok := fn.Type().(*types.Signature)
-	if !ok || sig.Recv() == nil {
-		return false
-	}
-	if !isLockOpName(fn.Name()) {
-		return false
-	}
-	_, ok = pc.lockPrimitiveFor(sig.Recv().Type())
-	return ok
-}
-
-// isLockOpName reports whether a method name is a lock operation this analysis
-// interprets. It matches the names handled at the call site in checkFunctionCall.
-func isLockOpName(name string) bool {
-	switch name {
-	case "Lock", "NestedLock", "RLock", "Unlock", "NestedUnlock", "RUnlock", "DowngradeLock":
-		return true
-	}
-	return false
+	return lockOpName(fn.Name()) != opNone && declaredLockMethod(pc.pass, fn)
 }

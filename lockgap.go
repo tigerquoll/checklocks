@@ -239,7 +239,8 @@ func (pc *lockGapContext) lockOperations(fn *ssa.Function) []lockOperation {
 				continue
 			}
 			op := lockOpName(obj.Name())
-			if op == opNone {
+			// A downgrade leaves the lock held, so it neither opens nor closes a gap.
+			if op != opAcquire && op != opRelease {
 				continue
 			}
 			recv, ok := receiverOf(call)
@@ -273,7 +274,7 @@ func (pc *lockGapContext) lockOperations(fn *ssa.Function) []lockOperation {
 				op:   op,
 				inst: inst,
 				at:   at,
-				read: obj.Name() == "RLock" || obj.Name() == "RUnlock",
+				read: lockOpShared(obj.Name()),
 				name: lockDisplayName(recv, obj),
 			})
 		}

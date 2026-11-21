@@ -204,7 +204,8 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// wraps its own lock and forwards to it are recognised, since the code bases this is
 	// aimed at reach their locks through such a wrapper.
 	if obj := calledFunc(callee); obj != nil {
-		if op := lockOpName(obj.Name()); op != opNone {
+		// A downgrade leaves the lock held and its class unchanged, so it is no event here.
+		if op := lockOpName(obj.Name()); op == opAcquire || op == opRelease {
 			recv, ok := receiverOf(call)
 			var class string
 			if ok {
