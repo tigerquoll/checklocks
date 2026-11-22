@@ -467,6 +467,7 @@ func (pc *passContext) checkGlobalAccess(wc *walkContext, inst ssa.Instruction, 
 }
 
 func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) {
+	pc.shadowCall(site, wc, ls)
 	lff := wc.lff
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#CallCommon
 	//
@@ -1506,6 +1507,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		return
 	}
 	if wc.gaveUp || pc.overBudget {
+		pc.shadowGaveUp(fn)
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
 		pc.withdrawDecisions(decisionsAt)
 		pc.statOverflow()

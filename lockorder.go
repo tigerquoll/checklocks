@@ -113,6 +113,9 @@ type lockOrderContext struct {
 	// witness collects the waits and the calls that reach one, and is set only for the
 	// extra walk the witness derivation makes.
 	witness *witnessGraph
+
+	// shadow is what the tagged build records and compares against the engine; see shadow_parity.go.
+	shadow lockOrderShadow
 }
 
 // run is the main entrypoint.
@@ -135,6 +138,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 		// A cycle is a declaration bug rather than a finding in the analyzed code, so it
 		// is reported once against the package rather than at a call site.
 		pc.pass.Reportf(token.NoPos, "%s", err.Error())
+		pc.shadowFlush(true)
 		return snapshotOf(own), nil
 	}
 	pc.exportOrderFact()
@@ -154,6 +158,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 
 	pc.flushGroups()
 	pc.checkFailures()
+	pc.shadowFlush(false)
 	return snapshotOf(own), nil
 }
 

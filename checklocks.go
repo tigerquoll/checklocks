@@ -132,6 +132,9 @@ type passContext struct {
 
 	// decisions is what the tagged build keeps about check decisions; see decide.
 	decisions decisionState
+
+	// shadow is what the tagged build records for lockorder's shadow comparison; see shadow_parity.go.
+	shadow shadowEngine
 }
 
 // emitMode says what maybeFail and recordObservation do with what they are given.
@@ -501,5 +504,7 @@ func run(pass *analysis.Pass) (any, error) {
 	// Check for expected failures.
 	pc.checkFailures()
 
-	return snapshotOf(pass), nil
+	res := snapshotOf(pass)
+	res.shadow = pc.shadowResult()
+	return res, nil
 }

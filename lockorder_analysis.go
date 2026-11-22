@@ -214,6 +214,7 @@ func blockOrder(fn *ssa.Function) []*ssa.BasicBlock {
 // visitCall handles one call: the lock operations it performs, and the classes it may
 // acquire through its callee.
 func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, curInst *instanceSet, summary *summaryFact, report bool) {
+	pc.shadowCall(call, cur, report)
 	callee := staticCallee(call)
 
 	// A lock operation changes what is held. Both the standard lock types and a type that
@@ -553,6 +554,7 @@ func (pc *lockOrderContext) analyzePackage(fns []*ssa.Function) {
 	for _, fn := range fns {
 		pc.analyzeFunction(fn, summaries[fn], true)
 	}
+	pc.shadowCompare()
 }
 
 // maxFixpointRounds bounds the fixpoint. The summaries grow monotonically over a finite set
