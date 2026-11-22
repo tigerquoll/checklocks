@@ -15,6 +15,7 @@
 package checklocks_test
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -331,18 +332,31 @@ func TestAnalyzerStandalone(t *testing.T) {
 			}
 			out, err := exec.Command(bin, append(extra, tcArgs...)...).CombinedOutput()
 			s := strings.TrimSpace(string(out))
+			wantCode := 0
 			if name == "checklocks" {
-				// Standalone-only: the driver drops a dependency's fact on an unexported function.
+				// Standalone loads crosspkg from source, so the unexported guard barMu resolves here; vet cannot.
+				wantCode = 3
 				var kept []string
 				for _, line := range strings.Split(s, "\n") {
 					if !strings.Contains(line, "test/globals.go:255:11") {
 						kept = append(kept, line)
 					}
 				}
+				if n := len(strings.Split(s, "\n")) - len(kept); n != 1 {
+					t.Errorf("want exactly one barMu line, got %d:\n%s", n, s)
+				}
 				s = strings.TrimSpace(strings.Join(kept, "\n"))
 			}
-			if s != "" {
-				t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)
+			code := 0
+			if err != nil {
+				code = -1
+				var ee *exec.ExitError
+				if errors.As(err, &ee) {
+					code = ee.ExitCode()
+				}
+			}
+			if s != "" || code != wantCode {
+				t.Errorf("analyzer reported unexpected output or exit code (want %d, got %d, err: %v):\n%s", wantCode, code, err, s)
 			}
 			return
 		}
@@ -355,8 +369,8 @@ func TestAnalyzerStandalone(t *testing.T) {
 	t.Run("lockblocking-scope-debug", func(t *testing.T) { run(t, "lockblocking-scope", "-debug=s") })
 }
 
-// TestLockOrderCycle requires a declared cycle to be reported once, with every
-// analyzer on, standalone and under vet.
+// TestLockOrderCycle requires the declared-cycle report to be the only output,
+// with every analyzer on, standalone and under vet.
 func TestLockOrderCycle(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "checklocks")
 	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {

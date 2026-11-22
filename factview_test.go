@@ -69,13 +69,14 @@ func TestFactViewRouting(t *testing.T) {
 		t.Errorf("routed miss: got %+v", got)
 	}
 
+	cold := stubOwner(analysis.ObjectFact{Object: hit, Fact: &classFact{Class: "c"}})
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var f classFact
-			if !lockorder.importObject(hit, &f) || f.Class != "c" {
+			if !cold.importObject(hit, &f) || f.Class != "c" {
 				t.Errorf("concurrent lookup: got %+v", f)
 			}
 		}()
