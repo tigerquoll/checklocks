@@ -144,7 +144,7 @@ type shP1b struct{ mu sync.Mutex }
 func (s *shP1b) M()      { p := &s; func() { (*p).mu.Lock(); (*p).mu.Unlock() }() }
 func callShP1b(s *shP1b) { s.mu.Lock(); s.M(); s.mu.Unlock() } // +checklocksfail=must not hold
 
-// A value receiver copied nine times with the address of each copy taken, then locked.
+// A value receiver copied nine times, the first eight address-taken, then locked.
 type shQ struct{ mu *sync.Mutex }
 
 func (s shQ) M() {
