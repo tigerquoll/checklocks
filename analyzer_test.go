@@ -102,10 +102,10 @@ var analyzerCases = []struct {
 	{
 		name: "checklocks",
 		// -checklocks.wrappers=false suppresses diagnostics that have
-		// no source position. Those arise from functions with no source,
-		// such as bound-method wrappers, cannot be annotated, and are
-		// excluded by gVisor's own nogo configuration for the same
-		// reason. The flag disables no analysis.
+		// no source position: those from functions with no source, such
+		// as bound-method wrappers, and from a function's recover path.
+		// They cannot be annotated, and gVisor's own nogo configuration
+		// excludes them for the same reason. The flag disables no analysis.
 		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg"},
 	},
 	{
@@ -208,7 +208,7 @@ var analyzerCases = []struct {
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "-lockorder.group=true", "./test/grouping"},
 	},
 	{
-		// Wrappers on, so a report without a position would be output.
+		// The one run with the wrappers on; the inline literal's implicit return must not report.
 		name: "inlinereturn",
 		args: []string{"-lockstringer=false", "-lockorder=false", "-lockblocking=false", "./test/inlinereturn"},
 	},
