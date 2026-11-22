@@ -511,8 +511,9 @@ In general, both annotations should be highly discouraged. It should be possible
 to avoid their use by factoring functions in such a way that annotations can be
 applied consistently and without the need for ignoring and forcing.
 
-For `lockorder`, `+lockorderignore` on a function drops its acquisitions and its
-ordering reports; it does not hide the function's waits from `lockblocking`.
+For `lockorder`, `+lockorderignore` on a function drops its ordering reports and keeps
+its acquisitions from reaching its callers; on a single line it drops that line's
+ordering reports. It does not hide the function's waits from `lockblocking`.
 
 ### More than one annotation on a comment
 
