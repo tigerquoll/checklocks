@@ -154,6 +154,7 @@ var k8sRequests = map[string]bool{
 
 // runLockBlocking is the entrypoint for the lockblocking analyzer.
 func runLockBlocking(pass *analysis.Pass) (any, error) {
+	pass = withOwnerFacts(pass, Analyzer, LockOrderAnalyzer)
 	// The walk, the class resolution and the summaries are the ordering analyzer's, which
 	// has already run over this package and exported them; only the question asked at a
 	// call site is this analyzer's. The order itself is not consulted, so it is left empty.

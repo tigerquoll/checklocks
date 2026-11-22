@@ -44,10 +44,11 @@ import (
 
 // Analyzer is the main entrypoint.
 var Analyzer = &analysis.Analyzer{
-	Name:     "checklocks",
-	Doc:      "checks lock preconditions on functions and fields",
-	Run:      run,
-	Requires: []*analysis.Analyzer{buildssa.Analyzer},
+	Name:       "checklocks",
+	Doc:        "checks lock preconditions on functions and fields",
+	Run:        run,
+	Requires:   []*analysis.Analyzer{buildssa.Analyzer},
+	ResultType: ownerResultType,
 	FactTypes: []analysis.Fact{
 		(*atomicAlignment)(nil),
 		(*freshFacts)(nil),
@@ -488,5 +489,5 @@ func run(pass *analysis.Pass) (any, error) {
 	// Check for expected failures.
 	pc.checkFailures()
 
-	return nil, nil
+	return snapshotOf(pass), nil
 }

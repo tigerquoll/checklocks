@@ -53,10 +53,11 @@ import (
 
 // Analyzer is the entrypoint.
 var LockOrderAnalyzer = &analysis.Analyzer{
-	Name:     "lockorder",
-	Doc:      "checks that lock classes are acquired in the declared order",
-	Run:      runLockOrder,
-	Requires: []*analysis.Analyzer{buildssa.Analyzer, Analyzer},
+	Name:       "lockorder",
+	Doc:        "checks that lock classes are acquired in the declared order",
+	Run:        runLockOrder,
+	Requires:   []*analysis.Analyzer{buildssa.Analyzer, Analyzer},
+	ResultType: ownerResultType,
 	FactTypes: []analysis.Fact{
 		(*classFact)(nil),
 		(*hierarchyEdgeFact)(nil),
@@ -116,6 +117,8 @@ type lockOrderContext struct {
 
 // run is the main entrypoint.
 func runLockOrder(pass *analysis.Pass) (any, error) {
+	own := pass
+	pass = withOwnerFacts(pass, Analyzer)
 	pc := &lockOrderContext{
 		expectations: newExpectations(pass, lockOrderAnnotations, true /* reportInvalidPos */),
 		pass:         pass,
@@ -132,7 +135,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 		// A cycle is a declaration bug rather than a finding in the analyzed code, so it
 		// is reported once against the package rather than at a call site.
 		pc.pass.Reportf(token.NoPos, "%s", err.Error())
-		return nil, nil
+		return snapshotOf(own), nil
 	}
 	pc.exportOrderFact()
 
@@ -151,7 +154,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 
 	pc.flushGroups()
 	pc.checkFailures()
-	return nil, nil
+	return snapshotOf(own), nil
 }
 
 // loadDeclaredOrder reads the order declarations out of the package doc comments.

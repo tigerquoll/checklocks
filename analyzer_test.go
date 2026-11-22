@@ -307,3 +307,94 @@ func TestAnalyzerAllEnabled(t *testing.T) {
 		})
 	}
 }
+
+// TestAnalyzerStandalone runs each case with every analyzer on through the
+// binary itself, where each analyzer keeps its own fact store, as go vet does not.
+func TestAnalyzerStandalone(t *testing.T) {
+	if n := readCorpus(t); n == 0 {
+		t.Fatalf("no source files found in %s", corpus)
+	}
+
+	bin := filepath.Join(t.TempDir(), "checklocks")
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
+		t.Fatalf("building the vettool failed: %v\n%s", err, out)
+	}
+
+	run := func(t *testing.T, name string, extra ...string) {
+		for _, tc := range analyzerCases {
+			if tc.name != name {
+				continue
+			}
+			tcArgs := allEnabledArgs(tc.args)
+			if tc.fileList {
+				tcArgs = expandToFiles(t, tcArgs)
+			}
+			out, err := exec.Command(bin, append(extra, tcArgs...)...).CombinedOutput()
+			s := strings.TrimSpace(string(out))
+			if name == "checklocks" {
+				// Standalone-only: the driver drops a dependency's fact on an unexported function.
+				var kept []string
+				for _, line := range strings.Split(s, "\n") {
+					if !strings.Contains(line, "test/globals.go:255:11") {
+						kept = append(kept, line)
+					}
+				}
+				s = strings.TrimSpace(strings.Join(kept, "\n"))
+			}
+			if s != "" {
+				t.Errorf("analyzer reported unexpected output (err: %v):\n%s", err, s)
+			}
+			return
+		}
+		t.Fatalf("no case named %s", name)
+	}
+
+	for _, tc := range analyzerCases {
+		t.Run(tc.name, func(t *testing.T) { run(t, tc.name) })
+	}
+	t.Run("lockblocking-scope-debug", func(t *testing.T) { run(t, "lockblocking-scope", "-debug=s") })
+}
+
+// TestLockOrderCycle requires a declared cycle to be reported once, with every
+// analyzer on, standalone and under vet.
+func TestLockOrderCycle(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "checklocks")
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
+		t.Fatalf("building the vettool failed: %v\n%s", err, out)
+	}
+
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod": "module cyc\n\ngo 1.21\n",
+		"cyc.go": "// Package cyc declares a cycle.\n//\n// +lockorder:A < B\n// +lockorder:B < A\npackage cyc\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, argv := range map[string][]string{
+		"standalone": {bin, "-lockgap.enable=true", "./..."},
+		"vet":        {"go", "vet", "-vettool=" + bin, "-lockgap.enable=true", "./..."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd.Dir = dir
+			out, _ := cmd.CombinedOutput()
+			found := false
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				switch {
+				case strings.HasPrefix(line, "#"):
+				case strings.Contains(line, "lock order declarations contain a cycle"):
+					found = true
+				default:
+					t.Errorf("unexpected output line: %s", line)
+				}
+			}
+			if !found {
+				t.Errorf("no cycle report in output:\n%s", out)
+			}
+		})
+	}
+}

@@ -112,6 +112,7 @@ func isLazyMethod(fn *ssa.Function) bool {
 
 // runLockStringer is the entrypoint for the lockstringer analyzer.
 func runLockStringer(pass *analysis.Pass) (any, error) {
+	pass = withOwnerFacts(pass, Analyzer)
 	// N.B. passContext is reused for its fact importers. The parts that
 	// belong to the checklocks analysis are simply unused here.
 	pc := &passContext{

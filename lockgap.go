@@ -94,6 +94,7 @@ type lockGapContext struct {
 
 // runLockGap is the entrypoint for the lockgap analyzer.
 func runLockGap(pass *analysis.Pass) (any, error) {
+	pass = withOwnerFacts(pass, Analyzer)
 	if !enableLockGap {
 		return nil, nil
 	}
