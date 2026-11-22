@@ -17,6 +17,7 @@
 package checklocks
 
 import (
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -41,6 +42,7 @@ type orderDiff struct {
 }
 
 // knownOrderDiffs are the differences measured today, each with the orders it occurs in.
+// The keys hold source positions: a line shift in test/loops.go or test/order/order.go means re-measuring them.
 var knownOrderDiffs = map[orderDiff][]string{
 	// loopIrreducible: the on-stack cut makes the decisions depend on the edge walked first.
 	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\tfalse", "+"}: {"1", "reverse"},
@@ -68,15 +70,16 @@ var knownOrderDiffs = map[orderDiff][]string{
 	{orderPkg, "order.go:92:4\tretargetThen\tb2.i1\tguardHeld\tmu order.T.g\tretargetThen\ttrue", "+"}:  {"1", "reverse"},
 }
 
-// walkLogsOf vets the checklocks case under one order and returns the log lines of each module package.
-func walkLogsOf(t *testing.T, bin, order string) map[string]map[string]bool {
+// walkLogsOf vets the checklocks case under one order and returns the log lines of each module package
+// and the output of vet.
+func walkLogsOf(t *testing.T, bin, order string) (map[string]map[string]bool, []byte) {
 	t.Helper()
 	dir := t.TempDir()
 	args := []string{"vet", "-vettool=" + bin, "-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg", "./test/order"}
 	cmd := exec.Command("go", args...)
 	cmd.Env = append(os.Environ(), "GOCACHE="+t.TempDir(), "CHECKLOCKS_DECISION_LOG="+dir, "CHECKLOCKS_WALK_ORDER="+order)
 	// Reports differ by order, so the exit status says nothing.
-	_ = cmd.Run()
+	out, _ := cmd.CombinedOutput()
 
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -97,31 +100,48 @@ func walkLogsOf(t *testing.T, bin, order string) map[string]map[string]bool {
 		}
 		lines := make(map[string]bool)
 		for _, l := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
-			lines[l] = true
+			if l != "" {
+				lines[l] = true
+			}
 		}
 		logs[name] = lines
 	}
-	return logs
+	return logs, out
 }
 
 // TestWalkOrder compares the decision logs of the module's packages across successor orders.
 func TestWalkOrder(t *testing.T) {
+	// The analyzer runs in a subprocess; reading the corpus registers it as an input of this test's cache entry.
+	files := 0
+	if err := filepath.WalkDir("test", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		files++
+		_, err = os.ReadFile(path)
+		return err
+	}); err != nil || files == 0 {
+		t.Fatalf("reading the corpus failed after %d files: %v", files, err)
+	}
+
 	bin := filepath.Join(t.TempDir(), "checklocks")
 	if out, err := exec.Command("go", "build", "-tags=checklocks_parity", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
 		t.Fatalf("building the vettool failed: %v\n%s", err, out)
 	}
 
-	forward := walkLogsOf(t, bin, walkOrders[0])
+	forward, out := walkLogsOf(t, bin, walkOrders[0])
 	if len(forward[testPkg]) == 0 {
+		t.Logf("vet output:\n%s", out)
 		t.Fatalf("the forward log of %s is empty", testPkg)
 	}
 
 	found := make(map[orderDiff][]string)
 	for _, order := range walkOrders[1:] {
-		logs := walkLogsOf(t, bin, order)
+		logs, out := walkLogsOf(t, bin, order)
 		for pkg := range forward {
 			if logs[pkg] == nil {
 				t.Errorf("order %q wrote no log for %s", order, pkg)
+				t.Logf("vet output:\n%s", out)
 			}
 		}
 		for pkg := range logs {

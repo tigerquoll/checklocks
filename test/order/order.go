@@ -31,7 +31,7 @@ type T struct {
 func nop()       {}
 func cond() bool { return len(os.Args) > 2 }
 
-// P5a: unlock deferred on one branch only. Truth: returns locked when !c.
+// memoDefersFirstGood: unlock deferred on one branch only, so it returns locked when !c.
 func memoDefersFirstGood(t *T, c bool) {
 	t.mu.Lock()
 	if c {
@@ -41,7 +41,7 @@ func memoDefersFirstGood(t *T, c bool) {
 	return
 }
 
-// P5b: same, deferring branch walked second.
+// memoDefersFirstBad: the same, with the deferring branch walked second.
 func memoDefersFirstBad(t *T, c bool) {
 	t.mu.Lock()
 	if c {
@@ -55,7 +55,7 @@ func memoDefersFirstBad(t *T, c bool) {
 
 func sink(pp **T) {}
 
-// P4a: p is a on the branch walked first. Truth: p may be b.
+// memoStoredFirstGood: p is a on the branch walked first, though it may be b.
 func memoStoredFirstGood(a, b *T, c bool) {
 	p := b
 	if c {
@@ -67,7 +67,7 @@ func memoStoredFirstGood(a, b *T, c bool) {
 	a.mu.Unlock()
 }
 
-// P4b: branch sense swapped.
+// memoStoredFirstBad: the same with the branch sense swapped.
 func memoStoredFirstBad(a, b *T, c bool) {
 	p := a
 	if c {
@@ -79,7 +79,7 @@ func memoStoredFirstBad(a, b *T, c bool) {
 	a.mu.Unlock()
 }
 
-// b3/b4: retarget through a pointer to the local.
+// retargetThen: p is retargeted through a pointer to it on one branch.
 func retargetThen(a, b *T, c bool) {
 	p := a
 	pp := &p
@@ -108,7 +108,7 @@ func retargetElse(a, b *T, c bool) {
 	_ = pp
 }
 
-// nonMono: the Fable review's non-monotone loop (must terminate).
+// nonMono: a loop whose lock moves between two mutexes must terminate.
 func nonMono(a, b *T) {
 	mu := &a.mu
 	g := func() { _ = mu }
