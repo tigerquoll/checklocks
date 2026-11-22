@@ -1329,7 +1329,7 @@ func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent 
 	rec.parity.walked(ls)
 
 	// Analyze all successors.
-	for _, succ := range block.Succs {
+	for _, succ := range succOrder(wc.fn, block) {
 		if wc.gaveUp {
 			return rls
 		}

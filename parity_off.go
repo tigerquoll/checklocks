@@ -53,3 +53,6 @@ func qualifiedName(ssa.Value, types.Object) string { return "" }
 
 // recoverPanics contains a panic to the function being analyzed.
 var recoverPanics = true
+
+// succOrder is the order the walk visits a block's successors in.
+func succOrder(_ *ssa.Function, block *ssa.BasicBlock) []*ssa.BasicBlock { return block.Succs }

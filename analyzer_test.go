@@ -106,7 +106,7 @@ var analyzerCases = []struct {
 		// as bound-method wrappers, and from a function's recover path.
 		// They cannot be annotated, and gVisor's own nogo configuration
 		// excludes them for the same reason. The flag disables no analysis.
-		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg"},
+		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg", "./test/order"},
 	},
 	{
 		name: "lockstringer",

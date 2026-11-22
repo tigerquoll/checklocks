@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"hash/fnv"
 	"maps"
 	"net/url"
 	"os"
@@ -33,6 +34,39 @@ import (
 
 // decisionLogDir is where the decision log goes; empty writes none.
 var decisionLogDir = os.Getenv("CHECKLOCKS_DECISION_LOG")
+
+// walkOrder picks the order the walk visits successors in: empty for SSA order, "reverse", or a decimal seed.
+var walkOrder = os.Getenv("CHECKLOCKS_WALK_ORDER")
+
+// succOrder is the order the walk visits a block's successors in.
+func succOrder(fn *ssa.Function, block *ssa.BasicBlock) []*ssa.BasicBlock {
+	return permuteSuccs(walkOrder, fn, block)
+}
+
+// permuteSuccs returns block's successors in the given order, never changing block.Succs.
+// A seed flips a per-block coin, so the same seed gives the same order in every process.
+func permuteSuccs(order string, fn *ssa.Function, block *ssa.BasicBlock) []*ssa.BasicBlock {
+	reversed := false
+	switch order {
+	case "":
+	case "reverse":
+		reversed = true
+	default:
+		seed, err := strconv.ParseUint(order, 10, 64)
+		if err != nil {
+			panic(fmt.Sprintf("CHECKLOCKS_WALK_ORDER %q is not empty, \"reverse\" or a decimal seed", order))
+		}
+		h := fnv.New64a()
+		fmt.Fprintf(h, "%d\x00%s\x00%d", seed, fn.String(), block.Index)
+		reversed = h.Sum64()&1 == 1
+	}
+	if !reversed {
+		return block.Succs
+	}
+	out := slices.Clone(block.Succs)
+	slices.Reverse(out)
+	return out
+}
 
 // parityCheck panics unless the typed path and object match the string builders'.
 func parityCheck(rv *resolvedValue, ls *lockState, path lockPath, obj types.Object) {
