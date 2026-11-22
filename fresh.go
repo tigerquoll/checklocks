@@ -692,7 +692,7 @@ func (pc *passContext) freshArgument(wc *walkContext, site callSite, fg function
 
 // checkFreshArgs checks, at a call site, that what is passed to a parameter declared to
 // arrive unpublished is an object nothing else can reach yet.
-func (pc *passContext) checkFreshArgs(wc *walkContext, call ssa.CallInstruction) {
+func (pc *passContext) checkFreshArgs(wc *walkContext, call ssa.CallInstruction, suppress bool) {
 	common := call.Common()
 	callee := common.StaticCallee()
 	if callee == nil {
@@ -714,6 +714,10 @@ func (pc *passContext) checkFreshArgs(wc *walkContext, call ssa.CallInstruction)
 		fresh := wc.fresh.isFreshAt(arg, call, allFields)
 		pc.decide(decisionAt{inst: call, pos: call.Pos(), context: wc.context}, freshArg, fresh, callee.Name(), index)
 		if fresh {
+			continue
+		}
+		if suppress {
+			pc.suppressed()
 			continue
 		}
 		pc.maybeFail(call.Pos(), "%s requires an unpublished object for parameter %d, and this one is not provably unpublished here", callee.Name(), index)

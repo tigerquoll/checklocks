@@ -195,6 +195,39 @@ func addSomeoneElses(parent *Queue, child *Queue) {
 	parent.addChild(child) // +checklocksfail=requires an unpublished object
 }
 
+// +checklocksignore
+func addUnderIgnore(parent *Queue, child *Queue) {
+	parent.addChild(child)
+}
+
+// +checklocksignore
+func addDeferredUnderIgnore(parent *Queue, child *Queue) {
+	defer parent.addChild(child)
+}
+
+// +checklocksignore
+func addInPlaceUnderIgnore(parent *Queue, child *Queue) {
+	func() {
+		parent.addChild(child)
+	}()
+}
+
+func addDeferredForced(parent *Queue, child *Queue) {
+	defer parent.addChild(child) // +checklocksforce
+}
+
+func addForced(parent *Queue, child *Queue) {
+	parent.addChild(child) // +checklocksforce
+}
+
+// +checklocksfresh:child
+// +checklocksignore
+func (q *Queue) addChildUnchecked(child *Queue) {}
+
+func addToIgnoringCallee(parent *Queue, child *Queue) {
+	parent.addChildUnchecked(child)
+}
+
 // --- what the callee does to it carries back to the caller ---------------------------------------
 
 // addChild puts the child in a map and then releases the lock, so by the time it returns the

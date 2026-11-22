@@ -761,7 +761,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 	// Check that what is passed to a parameter declared to arrive unpublished is an
 	// object nothing else can reach yet. This is the other half of the check that makes
 	// the declaration mean something; the first half is at the constructor.
-	pc.checkFreshArgs(wc, site.instr)
+	pc.checkFreshArgs(wc, site.instr, forced || lff.Ignore)
 
 	// Check all guards required are held.
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, nil, resolve) {
