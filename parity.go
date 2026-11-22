@@ -311,7 +311,7 @@ func (pc *passContext) decide(at decisionAt, kind decisionKind, ok bool, subject
 // decisionMark returns a point withdrawDecisions can return the log to.
 func (pc *passContext) decisionMark() int { return len(pc.decisions.logged) }
 
-// withdrawDecisions drops the lines logged since mark.
+// withdrawDecisions drops the lines first logged since mark.
 func (pc *passContext) withdrawDecisions(mark int) {
 	for _, line := range pc.decisions.logged[mark:] {
 		delete(pc.decisions.lines, line)
