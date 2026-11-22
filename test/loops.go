@@ -159,6 +159,44 @@ func loopUnlockBefore(get func() *loopT, c func() bool) { // +checklocksfail=inc
 	}
 } // +checklocksfail=return with unexpected locks held
 
+// A deferred unlock runs at exit against the value cur then has, so it stays quiet.
+func loopDeferStored(ts []*loopT, get func() *loopT) {
+	var cur *loopT
+	g := func() { _ = cur }
+	for _, t := range ts {
+		cur = t
+		cur.mu.Lock()
+		defer cur.mu.Unlock()
+	}
+	cur = get()
+	g()
+}
+
+func loopDeferStoredInside(ts []*loopT, get func() *loopT) {
+	var cur *loopT
+	g := func() { _ = cur }
+	for _, t := range ts {
+		cur = t
+		cur.mu.Lock()
+		defer cur.mu.Unlock()
+		cur = get()
+	}
+	g()
+}
+
+// The literal unlocks the value cur has at exit, which nothing locked.
+func loopDeferLiteralStored(ts []*loopT, get func() *loopT) {
+	var cur *loopT
+	for _, t := range ts {
+		cur = t
+		cur.mu.Lock()
+		defer func() {
+			cur.mu.Unlock() // +checklocksfail=already unlocked or locked differently
+		}()
+	}
+	cur = get()
+}
+
 // Neither label's block dominates the other, so the jump back is not a back edge.
 func loopIrreducible(t *loopT, c func() bool) {
 	if c() {

@@ -663,7 +663,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		p, ok := ls.unlockField(g.rv, g.fg.Exclusive)
 		pc.decide(at, release, ok, g.fieldName)
 		if !ok {
-			if lff.Ignore || ls.silencesRelease(p) {
+			if lff.Ignore || ls.silencesRelease(p, site.kind == siteDefer) {
 				pc.suppressed()
 			} else if _, forced := pc.forced[pc.positionKey(site.Pos())]; forced {
 				pc.suppressed()
@@ -818,7 +818,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.unlockField(rv, exclusive)
 			pc.decide(at, lockOpUnlock, ok)
 			if !ok {
-				if !forced && !lff.Ignore && !ls.silencesRelease(p) {
+				if !forced && !lff.Ignore && !ls.silencesRelease(p, site.kind == siteDefer) {
 					// Unlocking something that is already unlocked.
 					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
 				} else {
@@ -829,7 +829,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.downgradeField(rv)
 			pc.decide(at, lockOpDowngrade, ok)
 			if !ok {
-				if !forced && !lff.Ignore && !ls.silencesRelease(p) {
+				if !forced && !lff.Ignore && !ls.silencesRelease(p, site.kind == siteDefer) {
 					// Downgrading something that may not be downgraded.
 					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
 				} else {

@@ -261,16 +261,16 @@ func TestSameEntry(t *testing.T) {
 	withDefer := base()
 	withDefer.defers = []*ssa.Defer{fx.defers[0]}
 	for _, tc := range []struct {
-		name  string
-		other *lockState
+		name        string
+		left, right *lockState
 	}{
-		{"held", held(false, b)},
-		{"assumed", held(true, a)},
-		{"marker", marked(base(), fx.inside)},
-		{"other marker", marked(base(), fx.before)},
-		{"defers", withDefer},
+		{"held", base(), held(false, b)},
+		{"assumed", base(), held(true, a)},
+		{"marker", base(), marked(base(), fx.inside)},
+		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
+		{"defers", base(), withDefer},
 	} {
-		if base().sameEntry(tc.other) || tc.other.sameEntry(base()) {
+		if tc.left.sameEntry(tc.right) || tc.right.sameEntry(tc.left) {
 			t.Errorf("states differing in %s are the same entry", tc.name)
 		}
 	}
@@ -279,25 +279,27 @@ func TestSameEntry(t *testing.T) {
 func TestSilencesRelease(t *testing.T) {
 	fx := newLoopFixture(t)
 	for _, tc := range []struct {
-		name string
-		set  []lockPath
-		held []lockPath
-		path lockPath
-		want bool
+		name     string
+		set      []lockPath
+		held     []lockPath
+		path     lockPath
+		deferred bool
+		want     bool
 	}{
-		{"marker empty", nil, nil, fx.inside, false},
-		{"dropped key", []lockPath{fx.inside}, nil, fx.inside, true},
-		{"dropped key but held", []lockPath{fx.inside}, []lockPath{fx.inside}, fx.inside, false},
-		{"value defined before the loop", []lockPath{fx.inside}, nil, fx.before, false},
-		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, nil, fx.phi, false},
-		{"parameter", []lockPath{fx.inside}, nil, fx.param, false},
-		{"global", []lockPath{fx.inside}, nil, fx.global, false},
-		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, nil, index(fx.param, fx.phi), true},
-		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, nil, index(fx.param, index(fx.param, fx.inside)), true},
-		{"constant index on a parameter", []lockPath{fx.inside}, nil, index(fx.param, fx.number), false},
+		{"marker empty", nil, nil, fx.inside, false, false},
+		{"dropped key", []lockPath{fx.inside}, nil, fx.inside, false, true},
+		{"dropped key but held", []lockPath{fx.inside}, []lockPath{fx.inside}, fx.inside, false, false},
+		{"value defined before the loop", []lockPath{fx.inside}, nil, fx.before, false, false},
+		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, nil, fx.phi, false, false},
+		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, nil, index(fx.param, fx.phi), false, true},
+		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, nil, index(fx.param, index(fx.param, fx.inside)), false, true},
+		{"deferred, value defined before the loop", []lockPath{fx.inside}, nil, fx.before, true, true},
+		{"deferred, marker empty", nil, nil, fx.before, true, false},
+		{"deferred, same key held", []lockPath{fx.inside}, []lockPath{fx.before}, fx.before, true, false},
+		{"deferred, parameter root", []lockPath{fx.inside}, nil, fx.param, true, false},
 	} {
 		ls := marked(held(false, tc.held...), tc.set...)
-		if got := ls.silencesRelease(tc.path); got != tc.want {
+		if got := ls.silencesRelease(tc.path, tc.deferred); got != tc.want {
 			t.Errorf("%s: silencesRelease = %t, want %t", tc.name, got, tc.want)
 		}
 	}

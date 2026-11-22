@@ -681,7 +681,7 @@ func (l *lockState) sameEntry(o *lockState) bool {
 	return l.isCompatible(o) && maps.Equal(l.marker, o.marker) && slices.Equal(l.defers, o.defers)
 }
 
-// joinMarker adds to the marker the locks dropped by every entry with the same locks and defers.
+// joinMarker adds to the marker every lock dropped by any entry with the same locks and defers.
 func (l *lockState) joinMarker(entries []*lockState) {
 	for _, e := range entries {
 		if !e.isCompatible(l) || !slices.Equal(e.defers, l.defers) {
@@ -701,10 +701,14 @@ func (l *lockState) joinMarker(entries []*lockState) {
 }
 
 // silencesRelease reports whether a release of p that is not held goes unreported: a
-// loop's back edge dropped it.
-func (l *lockState) silencesRelease(p lockPath) bool {
+// loop's back edge dropped it. A deferred release runs at exit, against the value its
+// variable then has, so any value-rooted path counts once something was dropped.
+func (l *lockState) silencesRelease(p lockPath, deferred bool) bool {
 	if _, held := l.lockedMutexes[p.Key()]; held {
 		return false
+	}
+	if deferred {
+		return len(l.marker) > 0 && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
 	}
 	_, dropped := l.marker[p.Key()]
 	return dropped
