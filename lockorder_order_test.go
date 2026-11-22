@@ -14,7 +14,10 @@
 
 package checklocks
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // yunikornOrder builds the taxonomy the yunikorn scheduler declares, which is the order the
 // runtime checker in its locking package enforces. It is used here to keep the two in step.
@@ -280,5 +283,36 @@ func TestBlockingBitSurvivesMerge(t *testing.T) {
 	}
 	if !a.Blocking {
 		t.Error("the blocking bit must survive a merge")
+	}
+}
+
+func TestAddParamCallKeepsSortedUniqueFirst(t *testing.T) {
+	f := &summaryFact{}
+	f.addParamCall(1, "Wait", nil, "p/a.go:9")
+	f.addParamCall(0, "Wait", []string{"Task"}, "p/a.go:5")
+	f.addParamCall(0, "Wait", nil, "p/a.go:4")
+	if f.addParamCall(0, "Wait", nil, "p/a.go:7") {
+		t.Error("a duplicate must report no change")
+	}
+	want := []paramCall{
+		{Index: 0, Method: "Wait", At: "p/a.go:4"},
+		{Index: 0, Method: "Wait", Released: []string{"Task"}, At: "p/a.go:5"},
+		{Index: 1, Method: "Wait", At: "p/a.go:9"},
+	}
+	if !slices.EqualFunc(f.ParamCalls, want, func(a, b paramCall) bool {
+		return a.Index == b.Index && a.Method == b.Method && a.At == b.At && equalClasses(a.Released, b.Released)
+	}) {
+		t.Errorf("ParamCalls = %v, want %v", f.ParamCalls, want)
+	}
+}
+
+func TestEqualSeesParamCalls(t *testing.T) {
+	a, b := &summaryFact{}, &summaryFact{}
+	if !a.equal(b) {
+		t.Fatal("empty summaries are equal")
+	}
+	b.addParamCall(0, "Wait", nil, "p/a.go:4")
+	if a.equal(b) {
+		t.Error("a ParamCalls difference must be seen")
 	}
 }

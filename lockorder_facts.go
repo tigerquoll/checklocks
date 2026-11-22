@@ -15,6 +15,7 @@
 package checklocks
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"sort"
@@ -128,6 +129,25 @@ type summaryFact struct {
 	// way, for a call site to choose by what it holds. Derived after the summaries settle, so
 	// they take no part in merge, addBlocking or equal.
 	Witnesses []witnessPath
+
+	// ParamCalls are the methods the function calls on a value of one of its type
+	// parameters, for a call site to resolve against its type arguments. Sorted by
+	// Index, Method and Released.
+	ParamCalls []paramCall
+}
+
+// paramCall is a method call on a value whose type is a type parameter of the function.
+type paramCall struct {
+	// Index is the position of the type parameter in the function's own list.
+	Index  int
+	Method string
+
+	// Released is what the function had released at the call, in the sense of
+	// acquisition.ReleasedBefore.
+	Released []string
+
+	// At is the position of the call, rendered as a witness hop renders it.
+	At string
 }
 
 // witnessPath is one path from a function to a wait it reaches, hop by hop.
@@ -257,6 +277,20 @@ func (f *summaryFact) addBlocking(releasedBefore []string, named bool) bool {
 	return true
 }
 
+// addParamCall records a call on a type parameter, keeping the slice sorted and unique by
+// index, method and released set. The first position seen stays.
+func (f *summaryFact) addParamCall(index int, method string, released []string, at string) bool {
+	rec := paramCall{Index: index, Method: method, Released: slices.Clone(released), At: at}
+	i, found := slices.BinarySearchFunc(f.ParamCalls, rec, func(a, b paramCall) int {
+		return cmp.Or(cmp.Compare(a.Index, b.Index), cmp.Compare(a.Method, b.Method), slices.Compare(a.Released, b.Released))
+	})
+	if found {
+		return false
+	}
+	f.ParamCalls = slices.Insert(f.ParamCalls, i, rec)
+	return true
+}
+
 // equal reports whether two summaries hold the same content.
 //
 // The fixpoint needs this rather than a size comparison: the released sets shrink as more
@@ -267,6 +301,11 @@ func (f *summaryFact) equal(other *summaryFact) bool {
 		return false
 	}
 	if f.BlockingNamed != other.BlockingNamed {
+		return false
+	}
+	if !slices.EqualFunc(f.ParamCalls, other.ParamCalls, func(a, b paramCall) bool {
+		return a.Index == b.Index && a.Method == b.Method && a.At == b.At && equalClasses(a.Released, b.Released)
+	}) {
 		return false
 	}
 	if !equalClasses(f.BlockingReleased, other.BlockingReleased) {

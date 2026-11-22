@@ -248,6 +248,16 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// function this analysis has no summary for contributes nothing, which is the
 	// documented unsoundness of a modular analysis.
 	if callee == nil {
+		if common := call.Common(); common.Method != nil {
+			if tp, ok := types.Unalias(common.Value.Type()).(*types.TypeParam); ok {
+				for i := range fn.TypeParams().Len() {
+					if fn.TypeParams().At(i) == tp {
+						at := strings.TrimPrefix(pc.witnessHop("", call.Pos()), " at ")
+						summary.addParamCall(i, common.Method.Name(), cur.releasedClasses(), at)
+					}
+				}
+			}
+		}
 		return
 	}
 	if isSelfRecursive(fn, callee) {
@@ -276,6 +286,10 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		onReceiver = isReceiver(fn, recv)
 	}
 	released := cur.releasedClasses()
+	var resolved []witnessPath
+	if !isSink && len(cs.ParamCalls) > 0 {
+		resolved = pc.instanceSummary(callee, obj, &cs)
+	}
 	// A sink on the list has been reported already; its own summary is very likely to say
 	// it blocks as well, and saying so twice at one call site is noise.
 	//
@@ -295,6 +309,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		namedOnly := !pc.blockingInScope(obj)
 		if obj.Pkg() == pc.pass.Pkg {
 			pc.recordWitnessEdge(fn, call, callee, obj, released, onReceiver)
+			pc.recordWitnessPaths(fn, call, callee, resolved, released, onReceiver, namedOnly)
 		} else {
 			pc.recordWitnessPaths(fn, call, callee, cs.Witnesses, released, onReceiver, namedOnly)
 		}

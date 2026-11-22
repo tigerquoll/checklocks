@@ -789,3 +789,162 @@ func callsDowngradeUnderLock(a *App) {
 	a.DowngradeLock() // +lockblockingfail=calling (*App).DowngradeLock, which may block (a channel receive at lockblocking/lockblocking.go:785)
 	a.Unlock()
 }
+
+// --- a wait a generic body makes through a type parameter ---------------------------------
+
+type g1Waiter interface{ Wait() }
+
+type g1B[W g1Waiter] struct{ w W }
+
+func (b *g1B[W]) Wait() { b.w.Wait() }
+
+type g1N struct{ w *sync.WaitGroup }
+
+func (n *g1N) Wait() { n.w.Wait() }
+
+func g1Twin(a *App, n *g1N) {
+	a.Lock()
+	n.Wait() // +lockblockingfail=calling (*g1N).Wait, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:803)
+	a.Unlock()
+}
+
+func g1S4(a *App, b *g1B[*sync.WaitGroup]) {
+	a.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:799)
+	a.Unlock()
+}
+
+type g1Sleeps struct{}
+
+func (*g1Sleeps) Wait() { time.Sleep(time.Millisecond) }
+
+func g1S4b(a *App, b *g1B[*g1Sleeps]) {
+	a.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g1Sleeps).Wait at lockblocking/lockblocking.go:799 -> calling Sleep at lockblocking/lockblocking.go:819)
+	a.Unlock()
+}
+
+type g1Quiet struct{}
+
+func (*g1Quiet) Wait() {}
+
+func g1S4c(a *App, b *g1B[*g1Quiet]) {
+	a.Lock()
+	b.Wait()
+	a.Unlock()
+}
+
+// A generic that calls another generic with its own type parameter resolves nothing.
+type g1Fwd[W g1Waiter] struct{ w W }
+
+func (f *g1Fwd[W]) Wait() { (&g1B[W]{f.w}).Wait() }
+
+func g1S4d(a *App, f *g1Fwd[*sync.WaitGroup]) {
+	a.Lock()
+	f.Wait()
+	a.Unlock()
+}
+
+func g1MethodValue(a *App, b *g1B[*sync.WaitGroup]) {
+	f := b.Wait
+	a.Lock()
+	f() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:799)
+	a.Unlock()
+}
+
+type g1Gap[W g1Waiter] struct {
+	App
+	w W
+}
+
+// +checklocks:g.mu
+func (g *g1Gap[W]) Wait() {
+	g.mu.Unlock() // +lockgapfail=caller's critical section is split
+	defer g.mu.Lock()
+	g.w.Wait()
+}
+
+func g1ReceiverIdiom(g *g1Gap[*sync.WaitGroup]) {
+	g.mu.Lock()
+	g.Wait()
+	g.mu.Unlock()
+}
+
+type g1Pair[A, B g1Waiter] struct {
+	a A
+	b B
+}
+
+func (p *g1Pair[A, B]) Wait() {
+	p.a.Wait()
+	p.b.Wait()
+}
+
+func g1TwoParams(a *App, p *g1Pair[*sync.WaitGroup, *g1Sleeps]) {
+	a.Lock()
+	p.Wait() // +lockblockingfail=calling (*g1Pair[A, B]).Wait, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:879)
+	a.Unlock()
+}
+
+type g1Local struct{}
+
+func (*g1Local) Wait() { time.Sleep(time.Millisecond) }
+
+func g1CrossPackage(a *App, w *dep.Waiter[*g1Local], s *dep.Waiter[*dep.Sleepy]) {
+	a.Lock()
+	w.Wait() // +lockblockingfail=calling (*Waiter[W]).Wait, which may block (calling (*g1Local).Wait at dep/dep.go:83 -> calling Sleep at lockblocking/lockblocking.go:891)
+	s.Wait() // +lockblockingfail=calling (*Waiter[W]).Wait, which may block (calling (*Sleepy).Wait at dep/dep.go:83 -> calling Sleep at dep/dep.go:88)
+	a.Unlock()
+}
+
+func g1Nested(a *App, o *g1B[*g1B[*sync.WaitGroup]]) {
+	a.Lock()
+	o.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g1B[W]).Wait at lockblocking/lockblocking.go:799 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:799)
+	a.Unlock()
+}
+
+func g1S7[W g1Waiter](a *App, b W) {
+	a.Lock()
+	b.Wait()
+	a.Unlock()
+}
+
+func g1f[W g1Waiter](w W) { w.Wait() }
+
+func g1GenericFunc(a *App, wg *sync.WaitGroup) {
+	a.Lock()
+	g1f(wg) // +lockblockingfail=calling g1f, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:912)
+	a.Unlock()
+}
+
+func g1Caller(b *g1B[*sync.WaitGroup]) { b.Wait() }
+
+func g1CallersCaller(a *App, b *g1B[*sync.WaitGroup]) {
+	a.Lock()
+	g1Caller(b) // +lockblockingfail=calling g1Caller, which may block (calling (*g1B[W]).Wait at lockblocking/lockblocking.go:920 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:799)
+	a.Unlock()
+}
+
+type g1Ignored struct{}
+
+// +lockblockingignore
+func (*g1Ignored) Wait() { time.Sleep(time.Millisecond) }
+
+func g1IgnoredArg(a *App, b *g1B[*g1Ignored]) {
+	a.Lock()
+	b.Wait()
+	a.Unlock()
+}
+
+type g1Both[W g1Waiter] struct{ w W }
+
+func (b *g1Both[W]) Wait() {
+	time.Sleep(time.Millisecond)
+	b.w.Wait()
+}
+
+func g1WaitsTwice(a *App, b *g1Both[*sync.WaitGroup]) {
+	a.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1Both[W]).Wait, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:943)
+	a.Unlock()
+}

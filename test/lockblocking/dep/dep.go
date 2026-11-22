@@ -76,3 +76,13 @@ type Box[T any] struct{}
 func (b *Box[T]) Sleeps() {
 	time.Sleep(time.Millisecond)
 }
+
+// Waiter waits through a method of its type parameter.
+type Waiter[W interface{ Wait() }] struct{ w W }
+
+func (b *Waiter[W]) Wait() { b.w.Wait() }
+
+// Sleepy is a type argument whose method waits by a named wait.
+type Sleepy struct{}
+
+func (*Sleepy) Wait() { time.Sleep(time.Millisecond) }

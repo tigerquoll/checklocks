@@ -33,6 +33,7 @@ package checklocks
 
 import (
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -192,6 +193,98 @@ func blockingCallee(call ssa.CallInstruction, callee *ssa.Function) (string, str
 		return "", "", false
 	}
 	return displayName(callee), calleeKey(callee), true
+}
+
+// instanceSummary resolves the calls a generic callee makes on its type parameters against
+// the type arguments of this call. Each wait it finds is folded into cs, a local copy of the
+// callee's summary, and the paths that reach it are returned.
+func (pc *lockOrderContext) instanceSummary(callee *ssa.Function, obj *types.Func, cs *summaryFact) []witnessPath {
+	var args []types.Type
+	if recv := calledFunc(callee).Signature().Recv(); recv != nil {
+		args = namedArgs(recv.Type())
+	}
+	if args == nil {
+		args = callee.TypeArgs()
+	}
+	paths := pc.resolveParamCalls(obj.Pkg(), args, cs.ParamCalls, nil, nil, 0, cs)
+	cs.Witnesses = append(slices.Clone(cs.Witnesses), paths...)
+	return paths
+}
+
+// resolveParamCalls looks each call up on its type argument. A method that does not wait
+// itself may call on its own type parameters in turn, followed two levels deep, with released
+// and lead carrying what the outer calls had released and the hops that led here.
+func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.Type, recs []paramCall, released, lead []string, depth int, cs *summaryFact) []witnessPath {
+	var paths []witnessPath
+	for _, rec := range recs {
+		if rec.Index >= len(args) || parameterized(args[rec.Index]) {
+			continue
+		}
+		found, _, _ := types.LookupFieldOrMethod(args[rec.Index], false, pkg, rec.Method)
+		m, ok := found.(*types.Func)
+		if !ok || pc.calleeIgnored(m.Origin()) {
+			continue
+		}
+		name := m.Name()
+		if recv := m.Origin().Signature().Recv(); recv != nil {
+			name = "(" + shortType(recv.Type()) + ")." + name
+		}
+		rel := unionClasses(released, rec.Released)
+		hops := append(slices.Clone(lead), "calling "+name+" at "+rec.At)
+
+		if isBlockingFunc(m) || pc.annotatedBlocking(m.Origin()) {
+			cs.addBlocking(rel, true /* named */)
+			paths = append(paths, witnessPath{Released: rel, Named: true, Hops: hops})
+			continue
+		}
+		var ms summaryFact
+		pc.pass.ImportObjectFact(m.Origin(), &ms)
+		if ms.Blocking && (ms.BlockingNamed || pc.blockingInScope(m)) {
+			cs.addBlocking(rel, ms.BlockingNamed)
+			if len(ms.Witnesses) == 0 {
+				paths = append(paths, witnessPath{Released: rel, Named: ms.BlockingNamed, Hops: hops})
+			}
+			for _, w := range ms.Witnesses {
+				paths = append(paths, witnessPath{Released: rel, Named: w.Named, Hops: append(slices.Clone(hops), w.Hops...)})
+			}
+			continue
+		}
+		if len(ms.ParamCalls) > 0 && depth < 2 {
+			paths = append(paths, pc.resolveParamCalls(m.Pkg(), namedArgs(m.Signature().Recv().Type()), ms.ParamCalls, rel, hops, depth+1, cs)...)
+		}
+	}
+	return paths
+}
+
+// namedArgs returns the type arguments of a possibly pointer receiver type, nil if it has none.
+func namedArgs(t types.Type) []types.Type {
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return nil
+	}
+	var args []types.Type
+	for i := range named.TypeArgs().Len() {
+		args = append(args, named.TypeArgs().At(i))
+	}
+	return args
+}
+
+// parameterized reports whether a type is, or is instantiated by, a type parameter.
+func parameterized(t types.Type) bool {
+	switch t := types.Unalias(t).(type) {
+	case *types.TypeParam:
+		return true
+	case *types.Named:
+		for i := range t.TypeArgs().Len() {
+			if parameterized(t.TypeArgs().At(i)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isBlockingFunc reports whether a function is on the built-in sink list.
