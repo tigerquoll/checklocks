@@ -22,6 +22,8 @@ import (
 
 // resolver answers where a value comes from without walking a body: it reads a
 // state seeded from what the ssa builder introduced, never the walk's own.
+// A closure capturing the receiver has it spilled to a local, and a closure
+// receives it as a free variable; both are the receiver itself.
 type resolver struct {
 	states map[*ssa.Function]*lockState
 

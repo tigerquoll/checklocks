@@ -133,3 +133,30 @@ func dumpGuard(g functionGuardResolver) string {
 	}
 	return fmt.Sprintf("%T", g)
 }
+
+// resolvesToReceiver is the receiver test synthexclude used before the resolver, kept as the
+// shadow's reference.
+func resolvesToReceiver(v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
+	cur := v
+	for i := 0; i < maxCaptureHops; i++ {
+		switch x := unwrapAssertValue(cur).(type) {
+		case *ssa.Parameter:
+			return x == recv
+		case *ssa.FreeVar:
+			outer, ok := captured[x]
+			if !ok {
+				return false
+			}
+			cur = outer
+		case *ssa.Alloc:
+			stored, ok := singleStore(x)
+			if !ok {
+				return false
+			}
+			cur = stored
+		default:
+			return false
+		}
+	}
+	return false
+}

@@ -174,7 +174,7 @@ func (pc *passContext) noteDirectSelfLock(rs *resolver, call ssa.CallInstruction
 		return
 	}
 	rs.shadowDirect(call, fa.X, recv, captured)
-	if !resolvesToReceiver(fa.X, recv, captured) {
+	if !rs.isReceiver(fa.X, recv, false) {
 		return
 	}
 	if fa.Field >= structType.NumFields() {
@@ -222,7 +222,7 @@ func callsOwnMethod(rs *resolver, call ssa.CallInstruction, recv *ssa.Parameter,
 		return false
 	}
 	rs.shadowOwn(call, args[0], recv, captured)
-	return resolvesToReceiver(args[0], recv, captured)
+	return rs.isReceiver(args[0], recv, true)
 }
 
 // lockOpIsWrite reports whether a lock operation takes the lock for writing.
@@ -332,46 +332,6 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 	if changed {
 		pc.pass.ExportObjectFact(funcObj, &lff)
 	}
-}
-
-// The receiver is not always the parameter itself.
-//
-// A method whose body contains a closure capturing the receiver has that
-// receiver spilled to a local by the ssa builder, so an acquisition written
-// plainly in the method reaches the lock through a load of that local rather
-// than through the parameter. A closure may also take the lock itself, in
-// which case the receiver arrives as one of its free variables. Both are the
-// same lock on the same object, and neither was attributed before.
-//
-// The resolution is deliberately narrow: a local is followed only when exactly
-// one value is ever stored into it, so a variable that holds different objects
-// at different times resolves to nothing rather than to the wrong one.
-
-// resolvesToReceiver reports whether v is the receiver, reached through the
-// spills and captures the ssa builder introduces.
-func resolvesToReceiver(v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
-	cur := v
-	for i := 0; i < maxCaptureHops; i++ {
-		switch x := unwrapAssertValue(cur).(type) {
-		case *ssa.Parameter:
-			return x == recv
-		case *ssa.FreeVar:
-			outer, ok := captured[x]
-			if !ok {
-				return false
-			}
-			cur = outer
-		case *ssa.Alloc:
-			stored, ok := singleStore(x)
-			if !ok {
-				return false
-			}
-			cur = stored
-		default:
-			return false
-		}
-	}
-	return false
 }
 
 // closureCaptures returns the free variables of an anonymous function bound to
