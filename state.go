@@ -701,8 +701,8 @@ func (l *lockState) joinMarker(entries []*lockState) {
 }
 
 // silencesRelease reports whether a release of p that is not held goes unreported: a
-// loop's back edge dropped it. A deferred release runs at exit, against the value its
-// variable then has, so any value-rooted path counts once something was dropped.
+// loop's back edge dropped it. A deferred release is resolved at exit, so its key need not
+// be the one dropped; any value-rooted path counts once something was dropped.
 func (l *lockState) silencesRelease(p lockPath, deferred bool) bool {
 	if _, held := l.lockedMutexes[p.Key()]; held {
 		return false

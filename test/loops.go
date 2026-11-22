@@ -159,7 +159,7 @@ func loopUnlockBefore(get func() *loopT, c func() bool) { // +checklocksfail=inc
 	}
 } // +checklocksfail=return with unexpected locks held
 
-// A deferred unlock runs at exit against the value cur then has, so it stays quiet.
+// The deferred receiver is resolved at exit, not at the defer, so only the earlier rule keeps this quiet.
 func loopDeferStored(ts []*loopT, get func() *loopT) {
 	var cur *loopT
 	g := func() { _ = cur }
