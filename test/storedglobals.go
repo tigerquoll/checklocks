@@ -14,8 +14,7 @@
 
 package test
 
-// Probes for the slots a function's walk keeps apart: a global is a slot only where a lock
-// resolution loads it, and an alias-typed value passed to a literal is a root.
+// Probes for globals that a lock resolution loads and for alias-typed values reaching a literal.
 
 var sg0, sg1, sg2, sg3, sg4, sg5, sg6, sg7, sg8, sg9, sg10, sg11, sg12, sg13, sg14, sg15, sg16, sg17, sg18, sg19 int
 

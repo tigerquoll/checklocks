@@ -40,7 +40,6 @@ type slotInfo struct {
 // relevantSlots returns the slots of fn whose stored values a lock resolution may load,
 // computed once from fn's code and facts, never from walk state. It resolves no values:
 // it follows the operands valueAndObject follows.
-// A global any literal of fn's family loads is a slot of every member that stores it.
 func (pc *passContext) relevantSlots(fn *ssa.Function) *slotInfo {
 	si := pc.slotPass(fn)
 	if si == nil || si.slots != nil {
