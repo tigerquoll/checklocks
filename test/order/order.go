@@ -63,7 +63,7 @@ func memoStoredFirstGood(a, b *T, c bool) {
 	}
 	sink(&p)
 	a.mu.Lock()
-	p.g = 1
+	p.g = 1 // +checklocksfail=invalid field access
 	a.mu.Unlock()
 }
 
@@ -103,22 +103,22 @@ func retargetElse(a, b *T, c bool) {
 	} else {
 		*pp = b
 	}
-	p.g = 1
+	p.g = 1 // +checklocksfail=invalid field access
 	a.mu.Unlock()
 	_ = pp
 }
 
 // nonMono: a loop whose lock moves between two mutexes must terminate.
-func nonMono(a, b *T) {
+func nonMono(a, b *T) { // +checklocksfail=incompatible return states
 	mu := &a.mu
 	g := func() { _ = mu }
 	for cond() {
-		mu.Lock()
+		mu.Lock() // +checklocksfail=already locked
 		mu = &b.mu
-		a.mu.Unlock()
+		a.mu.Unlock() // +checklocksfail=already unlocked or locked differently
 	}
 	g()
-}
+} // +checklocksfail=return with unexpected locks held
 
 // closeDefers: five conditional irrelevant defers (2^5 defer lists) before a lock loop.
 func closeDefers(t *T, f1, f2, f3, f4, f5 *os.File) {

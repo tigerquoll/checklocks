@@ -78,6 +78,9 @@ type lockState struct {
 	// is not held may have meant it. It is copied on write like the held map.
 	marker map[pathKey]struct{}
 
+	// oracle is the parity build's check of the walk's stored reads.
+	oracle oracleRef
+
 	// refs indicates the number of references on this structure. If it's
 	// greater than one, we will do copy-on-write.
 	refs *int32
@@ -115,6 +118,7 @@ func (l *lockState) fork() *lockState {
 		consts:        l.consts,
 		defers:        l.defers,
 		marker:        l.marker,
+		oracle:        l.oracle,
 		refs:          l.refs,
 	}
 }
@@ -406,11 +410,13 @@ func (l *lockState) valueAndObject(v ssa.Value) (lockPath, types.Object) {
 	case *ssa.FreeVar:
 		// Attempt to resolve this, in case we are being invoked in a
 		// scope where all the variables are bound.
+		l.oracle.read(x)
 		v, ok := l.stored[x]
 		if ok {
 			// The FreeVar is typically bound to a location, so we
 			// check what's been stored there. Note that the second
 			// may map to the same FreeVar, which we can check.
+			l.oracle.read(v)
 			stored, ok := l.stored[v]
 			if ok {
 				return l.valueAndObject(stored)
@@ -444,6 +450,7 @@ func (l *lockState) valueAndObject(v ssa.Value) (lockPath, types.Object) {
 		if _, ok := l.used[x.X]; !ok {
 			// Check if we know what the accessed location holds.
 			// This is used to disambiguate memory locations.
+			l.oracle.read(x.X)
 			v, ok := l.stored[x.X]
 			if ok {
 				l.used[x.X] = struct{}{}
@@ -676,10 +683,10 @@ func (l *lockState) dropDead(dies func(lockPath) bool) {
 	}
 }
 
-// joinMarker adds to the marker every lock dropped by any entry with the same locks and relevant defers.
-func (l *lockState) joinMarker(pc *passContext, entries []*lockState) {
+// joinMarker adds to the marker every lock dropped by any entry that is the same element as l but for the marker.
+func (l *lockState) joinMarker(pc *passContext, fn *ssa.Function, entries []*lockState) {
 	for _, e := range entries {
-		if !e.isCompatible(l) || !pc.sameRelevantDefers(e, l) {
+		if !pc.sameElementAside(fn, e, l) {
 			continue
 		}
 		for k := range e.marker {

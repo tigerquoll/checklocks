@@ -22,19 +22,43 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// sameElement reports whether two states are one element of the walk: the memo, loop-head
+// sameElement reports whether two states are one element of the walk of fn: the memo, loop-head
 // admission and the marker join all ask it. A lockState component is identity or payload:
 //
 //	held locks, with mode and assumed tag    identity
 //	marker                                   identity
 //	defers that can matter, in stack order   identity
-//	other defers                             payload
-//	stored, bound, used                      payload
-//	aliases, substitutions, consts           payload
+//	aliases                                  identity
+//	stored values of fn's relevant slots     identity
+//	other stored values, bound, used         payload
+//	other defers, substitutions, consts      payload
 //
-// Payload is not compared; the first arrival's is kept.
-func (pc *passContext) sameElement(a, b *lockState) bool {
-	return a.isCompatible(b) && maps.Equal(a.marker, b.marker) && pc.sameRelevantDefers(a, b)
+// Payload is not compared; the first arrival's is kept. See relevantSlots for the slots.
+func (pc *passContext) sameElement(fn *ssa.Function, a, b *lockState) bool {
+	return pc.sameElementAside(fn, a, b) && maps.Equal(a.marker, b.marker)
+}
+
+// sameElementAside is sameElement without the marker, which a loop head joins instead.
+func (pc *passContext) sameElementAside(fn *ssa.Function, a, b *lockState) bool {
+	return a.isCompatible(b) && pc.sameRelevantDefers(a, b) && maps.EqualFunc(a.aliases, b.aliases, func(x, y lockPath) bool {
+		return x.Key() == y.Key()
+	}) && pc.sameRelevantStored(fn, a, b)
+}
+
+// sameRelevantStored reports whether a and b hold the same values in fn's relevant slots.
+func (pc *passContext) sameRelevantStored(fn *ssa.Function, a, b *lockState) bool {
+	si := pc.relevantSlots(fn)
+	if si == nil {
+		return true
+	}
+	for slot := range si.slots {
+		va, oka := a.stored[slot]
+		vb, okb := b.stored[slot]
+		if oka != okb || va != vb {
+			return false
+		}
+	}
+	return true
 }
 
 // sameRelevantDefers reports whether the defers of a and b that can matter are the same, in order.

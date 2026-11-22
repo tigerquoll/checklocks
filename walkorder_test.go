@@ -48,18 +48,6 @@ var knownOrderDiffs = map[orderDiff][]string{
 	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\tfalse", "+"}: {"1", "reverse"},
 	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\ttrue", "-"}:  {"1", "reverse"},
 	{testPkg, "loops.go:211:1\tloopIrreducible\tb3.i0\treturnCount\t\tloopIrreducible\tfalse", "+"}:         {"1", "reverse"},
-	// memoStoredFirstBad: the path stored in p is the one from the branch walked first.
-	{orderPkg, "order.go:78:4\tmemoStoredFirstBad\tb2.i4\tguardHeld\tmu order.T.g\tmemoStoredFirstBad\tfalse", "-"}: {"2", "reverse"},
-	{orderPkg, "order.go:78:4\tmemoStoredFirstBad\tb2.i4\tguardHeld\tmu order.T.g\tmemoStoredFirstBad\ttrue", "+"}:  {"2", "reverse"},
-	// memoStoredFirstGood: the path stored in p is the one from the branch walked first.
-	{orderPkg, "order.go:66:4\tmemoStoredFirstGood\tb2.i4\tguardHeld\tmu order.T.g\tmemoStoredFirstGood\tfalse", "+"}: {"2", "reverse"},
-	{orderPkg, "order.go:66:4\tmemoStoredFirstGood\tb2.i4\tguardHeld\tmu order.T.g\tmemoStoredFirstGood\ttrue", "-"}:  {"2", "reverse"},
-	// retargetElse: the report moves with the branch walked first.
-	{orderPkg, "order.go:106:4\tretargetElse\tb2.i1\tguardHeld\tmu order.T.g\tretargetElse\tfalse", "+"}: {"1", "reverse"},
-	{orderPkg, "order.go:106:4\tretargetElse\tb2.i1\tguardHeld\tmu order.T.g\tretargetElse\ttrue", "-"}:  {"1", "reverse"},
-	// retargetThen: the report moves with the branch walked first.
-	{orderPkg, "order.go:92:4\tretargetThen\tb2.i1\tguardHeld\tmu order.T.g\tretargetThen\tfalse", "-"}: {"1", "reverse"},
-	{orderPkg, "order.go:92:4\tretargetThen\tb2.i1\tguardHeld\tmu order.T.g\tretargetThen\ttrue", "+"}:  {"1", "reverse"},
 }
 
 // walkLogsOf vets the checklocks case under one order and returns the log lines of each module package

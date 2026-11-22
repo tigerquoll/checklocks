@@ -1199,9 +1199,13 @@ func (pc *passContext) replay() {
 // maxHeadStates bounds the distinct states a loop head is entered with in one frame.
 const maxHeadStates = 16
 
+// maxFunctionWalks bounds the block walks of one top-level function, inline walks included.
+var maxFunctionWalks = 40000
+
 // loopHead is the frame of a loop head being walked: the states it was entered with and
 // the back-edge states waiting to be walked.
 type loopHead struct {
+	fn      *ssa.Function
 	entries []*lockState
 	queue   []*lockState
 }
@@ -1209,8 +1213,9 @@ type loopHead struct {
 // admit adds s to the entry set unless it is there already. over is true when s is new
 // and the set is full.
 func (h *loopHead) admit(pc *passContext, s *lockState) (added, over bool) {
-	s.joinMarker(pc, h.entries)
-	if slices.ContainsFunc(h.entries, func(e *lockState) bool { return pc.sameElement(s, e) }) {
+	s.joinMarker(pc, h.fn, h.entries)
+	if i := slices.IndexFunc(h.entries, func(e *lockState) bool { return pc.sameElement(h.fn, s, e) }); i >= 0 {
+		pc.cutCheck(h.fn, h.entries[i], s)
 		return false, false
 	}
 	if len(h.entries) >= maxHeadStates {
@@ -1256,7 +1261,8 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 	// Check for cached results from entering this block from a *different*
 	// execution path. Note that this is not the same path, which is
 	// checked with the recursion guard below.
-	if oldLS, ok := seen[block]; ok && pc.sameElement(oldLS, parent) {
+	if oldLS, ok := seen[block]; ok && pc.sameElement(wc.fn, oldLS, parent) {
+		pc.cutCheck(wc.fn, oldLS, parent)
 		return nil
 	}
 
@@ -1273,7 +1279,7 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 
 	var head *loopHead
 	if isLoopHead(block) {
-		head = &loopHead{entries: []*lockState{parent}}
+		head = &loopHead{fn: wc.fn, entries: []*lockState{parent}}
 		if wc.heads == nil {
 			wc.heads = make(map[*ssa.BasicBlock]*loopHead)
 		}
@@ -1284,7 +1290,7 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 	rls := pc.walkBlock(wc, block, parent, seen, rg)
 
 	// The head is walked again, on its own frame, with each state the loop ends an iteration in.
-	for head != nil && len(head.queue) > 0 && !wc.gaveUp {
+	for head != nil && len(head.queue) > 0 && !wc.gaveUp && !pc.overBudget {
 		s := head.queue[0]
 		head.queue = head.queue[1:]
 		added, over := head.admit(pc, s)
@@ -1320,6 +1326,10 @@ func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent 
 
 	// Analyze this block.
 	seen[block] = parent
+	if pc.walks++; pc.walks > maxFunctionWalks {
+		pc.overBudget = true
+	}
+	pc.statWalk(wc, block, parent)
 	rec := &blockRecord{wc: wc, block: block, parent: parent}
 	pc.records = append(pc.records, rec)
 	outerRec, outerEmit := pc.current, pc.emit
@@ -1330,7 +1340,7 @@ func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent 
 
 	// Analyze all successors.
 	for _, succ := range succOrder(wc.fn, block) {
-		if wc.gaveUp {
+		if wc.gaveUp || pc.overBudget {
 			return rls
 		}
 		if _, onStack := rg[succ]; onStack {
@@ -1363,6 +1373,10 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	outerEmit := pc.emit
 	pc.emit = emitDirect
 	defer func() { pc.emit = outerEmit }()
+	if outer == nil {
+		pc.walks, pc.overBudget = 0, false
+	}
+	defer pc.walkChain(fn)()
 	pc.decisions.enter()
 	defer pc.decisions.leave()
 	defer func() {
@@ -1386,6 +1400,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	// of cases, parent will be nil. However, in the case of closures and
 	// anonymous functions, we may start with a non-nil lock state.
 	ls := parent.fork()
+	ls.oracle = pc.oracle()
 	ls.nameConstants(fn)
 	for _, param := range fn.Params {
 		pc.applyTypeAliases(ls, param)
@@ -1461,7 +1476,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		// A state the body returns in is no alternative to one the recover block returns in.
 		wc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(wc, root, ls, seen, nil)
-		if wc.gaveUp {
+		if wc.gaveUp || pc.overBudget {
 			break
 		}
 		// Two states that cannot both hold are one finding about the function,
@@ -1480,12 +1495,20 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		}
 	}
 
-	if wc.gaveUp {
+	if pc.overBudget && outer != nil {
+		return
+	}
+	if wc.gaveUp || pc.overBudget {
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
 		pc.withdrawDecisions(decisionsAt)
+		pc.statOverflow()
 		pc.decide(decisionAt{fn: fn, label: "overflow", pos: fn.Pos(), context: context}, loopOverflow, false)
 		if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
-			pc.maybeFail(fn.Pos(), "checklocks gave up on this function: more than %d lock states reach one loop", maxHeadStates)
+			if pc.overBudget {
+				pc.maybeFail(fn.Pos(), "checklocks gave up on this function: more than %d block walks", maxFunctionWalks)
+			} else {
+				pc.maybeFail(fn.Pos(), "checklocks gave up on this function: more than %d lock states reach one loop", maxHeadStates)
+			}
 		} else {
 			pc.suppressed()
 		}

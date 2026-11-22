@@ -1,0 +1,231 @@
+// Copyright 2026 The YuniKorn Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package checklocks
+
+import (
+	"go/token"
+	"go/types"
+
+	"golang.org/x/tools/go/ssa"
+)
+
+// slotInfo is the stored-slot pre-pass of one function.
+type slotInfo struct {
+	// loaded holds the addresses a lock-relevant resolution in the function's walk may read.
+	loaded map[ssa.Value]bool
+
+	// params holds the parameters such a resolution reaches, which an inline caller binds.
+	params map[*ssa.Parameter]bool
+
+	// slots are the loaded addresses the function stores to, and every global it stores to.
+	slots map[ssa.Value]bool
+}
+
+// relevantSlots returns the slots of fn whose stored values a lock resolution may load,
+// computed once. It reads facts of fn alone, so the result does not depend on the walk
+// that asks. It resolves no values: it follows the operands valueAndObject follows.
+func (pc *passContext) relevantSlots(fn *ssa.Function) *slotInfo {
+	if fn == nil {
+		return nil
+	}
+	if si, ok := pc.slotInfos[fn]; ok {
+		return si
+	}
+	si := &slotInfo{loaded: map[ssa.Value]bool{}, params: map[*ssa.Parameter]bool{}, slots: map[ssa.Value]bool{}}
+	if pc.slotInfos == nil {
+		pc.slotInfos = map[*ssa.Function]*slotInfo{}
+	}
+	pc.slotInfos[fn] = si
+
+	stores := map[ssa.Value][]ssa.Value{}
+	for _, b := range fn.Blocks {
+		for _, inst := range b.Instrs {
+			if st, ok := inst.(*ssa.Store); ok {
+				stores[st.Addr] = append(stores[st.Addr], st.Val)
+			}
+		}
+	}
+
+	seen := map[ssa.Value]bool{}
+	var visit func(v ssa.Value)
+	load := func(addr ssa.Value) {
+		si.loaded[addr] = true
+		for _, val := range stores[addr] {
+			if _, ok := addr.(*ssa.FreeVar); ok {
+				si.loaded[val] = true // a free variable resolves through stored[stored[fv]]
+			}
+			visit(val)
+		}
+	}
+	visit = func(v ssa.Value) {
+		if v == nil || seen[v] {
+			return
+		}
+		seen[v] = true
+		switch x := v.(type) {
+		case *ssa.Parameter:
+			si.params[x] = true
+		case *ssa.FreeVar:
+			load(x)
+		case *ssa.Convert:
+			visit(x.X)
+		case *ssa.ChangeType:
+			visit(x.X)
+		case *ssa.UnOp:
+			if x.Op == token.MUL {
+				load(x.X)
+				visit(x.X)
+			}
+		case *ssa.Field:
+			visit(x.X)
+		case *ssa.FieldAddr:
+			visit(x.X)
+		case *ssa.Index:
+			visit(x.X)
+			visit(x.Index)
+		case *ssa.IndexAddr:
+			visit(x.X)
+			visit(x.Index)
+		case *ssa.Lookup:
+			visit(x.X)
+			visit(x.Index)
+		case *ssa.Extract:
+			visit(x.Tuple)
+		}
+	}
+
+	var own lockFunctionFacts
+	if tf, ok := fn.Object().(*types.Func); ok {
+		pc.importLockFunctionFacts(tf, &own)
+	} else if annotated, ok := pc.closureFactsFor(fn.Syntax()); ok {
+		own = *annotated
+	}
+	for _, b := range fn.Blocks {
+		for _, inst := range b.Instrs {
+			switch x := inst.(type) {
+			case *ssa.Field:
+				pc.accessRoot(x.X, x.Field, visit)
+			case *ssa.FieldAddr:
+				pc.accessRoot(x.X, x.Field, visit)
+			case ssa.CallInstruction:
+				pc.callRoots(x, visit, load)
+			case *ssa.Return:
+				for _, g := range own.HeldOnExit {
+					if rg, ok := g.Resolver.(*returnGuard); ok && rg.Index < len(x.Results) {
+						visit(x.Results[rg.Index])
+					}
+				}
+			}
+		}
+	}
+
+	for addr := range stores {
+		_, isGlobal := addr.(*ssa.Global)
+		if si.loaded[addr] || isGlobal {
+			si.slots[addr] = true
+		}
+	}
+	return si
+}
+
+// accessRoot visits the base of a field access whose guards or aliases resolve through it.
+func (pc *passContext) accessRoot(base ssa.Value, field int, visit func(ssa.Value)) {
+	if freshAlloc(base) {
+		return
+	}
+	if obj, ok := findField(base.Type(), field); ok {
+		var lgf lockGuardFacts
+		pc.importLockGuardFacts(obj, &lgf)
+		if len(lgf.GuardedBy) != 0 {
+			visit(base)
+		}
+	}
+	if pc.hasAliasFacts(base) {
+		visit(base)
+	}
+}
+
+// visitGuardArgs visits the arguments the parameter guards of lff name.
+func visitGuardArgs(lff *lockFunctionFacts, args []ssa.Value, visit func(ssa.Value)) {
+	for _, guards := range []map[string]functionGuardInfo{lff.HeldOnEntry, lff.HeldOnExit, lff.ExcludedOnEntry} {
+		for _, g := range guards {
+			if pg, ok := g.Resolver.(*parameterGuard); ok && pg.Index < len(args) {
+				visit(args[pg.Index])
+			}
+		}
+	}
+}
+
+// visitParamArgs visits the arguments bound to the parameters of fn that its own pre-pass reaches.
+func (pc *passContext) visitParamArgs(fn *ssa.Function, args []ssa.Value, visit func(ssa.Value)) {
+	si := pc.relevantSlots(fn)
+	for i, arg := range args {
+		if i < len(fn.Params) && si.params[fn.Params[i]] {
+			visit(arg)
+		}
+	}
+}
+
+// callRoots visits the operands of a call, go or defer whose checking resolves them.
+func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.Value)) {
+	common := call.Common()
+	args := common.Args
+	var tf *types.Func
+	if common.Method != nil {
+		tf = common.Method
+		args = append([]ssa.Value{common.Value}, args...)
+	} else {
+		switch fn := common.Value.(type) {
+		case *ssa.Function:
+			if fn.Object() == nil {
+				pc.visitParamArgs(fn, args, visit)
+				if _, isGo := call.(*ssa.Go); isGo {
+					if annotated, ok := pc.closureFactsFor(fn.Syntax()); ok {
+						visitGuardArgs(annotated, args, visit)
+					}
+				}
+				return
+			}
+			var ok bool
+			if tf, ok = fn.Object().(*types.Func); !ok {
+				return
+			}
+		case *ssa.MakeClosure:
+			clfn := fn.Fn.(*ssa.Function)
+			for i, fv := range clfn.FreeVars {
+				if pc.relevantSlots(clfn).loaded[fv] {
+					load(fn.Bindings[i])
+					visit(fn.Bindings[i])
+				}
+			}
+			pc.visitParamArgs(clfn, args, visit)
+			return
+		default:
+			return
+		}
+	}
+
+	var lff lockFunctionFacts
+	pc.importLockFunctionFacts(tf, &lff)
+	if _, _, recv, ok := lockCallSite(pc.pass, common); ok {
+		visit(recv)
+	}
+	visitGuardArgs(&lff, args, visit)
+	for _, arg := range args {
+		if pc.hasAliasFacts(arg) {
+			visit(arg)
+		}
+	}
+}

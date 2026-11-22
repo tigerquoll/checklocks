@@ -98,6 +98,17 @@ type passContext struct {
 	// relevantDefers memoises deferRelevant per defer site.
 	relevantDefers map[*ssa.Defer]bool
 
+	// slotInfos memoises relevantSlots per function.
+	slotInfos map[*ssa.Function]*slotInfo
+
+	// walks counts the block walks of the top-level function being checked, and overBudget
+	// is set when they pass maxFunctionWalks. Both are cleared when a top-level check starts.
+	walks      int
+	overBudget bool
+
+	// stats is what the tagged build keeps about the walk; see walkstats.go.
+	stats walkStats
+
 	// collect holds the reports back until flushReports emits them, and pending is
 	// what has been held. Only checklocks' own run collects; see maybeFail.
 	collect bool
@@ -485,6 +496,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	pc.flushReports()
 	pc.writeDecisions()
+	pc.writeWalkStats()
 
 	// Check for expected failures.
 	pc.checkFailures()

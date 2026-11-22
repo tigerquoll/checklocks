@@ -264,7 +264,7 @@ func TestSameElement(t *testing.T) {
 	a, b := fx.param, fx.global
 	pc := noFactsPC()
 	base := func() *lockState { return held(false, a) }
-	if !pc.sameElement(base(), base()) {
+	if !pc.sameElement(nil, base(), base()) {
 		t.Error("equal states differ")
 	}
 	for _, tc := range []struct {
@@ -276,7 +276,7 @@ func TestSameElement(t *testing.T) {
 		{"marker", base(), marked(base(), fx.inside)},
 		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
 	} {
-		if pc.sameElement(tc.left, tc.right) || pc.sameElement(tc.right, tc.left) {
+		if pc.sameElement(nil, tc.left, tc.right) || pc.sameElement(nil, tc.right, tc.left) {
 			t.Errorf("states differing in %s are the same element", tc.name)
 		}
 	}
@@ -292,7 +292,7 @@ func TestSameElement(t *testing.T) {
 	}
 
 	plain, extra := withDefers(first), withDefers(noop, first)
-	if !pc.sameElement(plain, extra) {
+	if !pc.sameElement(nil, plain, extra) {
 		t.Error("states differing in a no-op defer are not the same element")
 	}
 	h := &loopHead{entries: []*lockState{plain}}
@@ -300,7 +300,7 @@ func TestSameElement(t *testing.T) {
 		t.Errorf("admitting a state that differs in a no-op defer: added %t, over %t, want neither", added, over)
 	}
 
-	if pc.sameElement(withDefers(first), withDefers(first, second)) {
+	if pc.sameElement(nil, withDefers(first), withDefers(first, second)) {
 		t.Error("states differing in a relevant defer are the same element")
 	}
 	h = &loopHead{entries: []*lockState{withDefers(first)}}
@@ -309,13 +309,107 @@ func TestSameElement(t *testing.T) {
 	}
 
 	ab, ba := withDefers(first, second), withDefers(second, first)
-	if pc.sameElement(ab, ba) {
+	if pc.sameElement(nil, ab, ba) {
 		t.Error("states with the relevant defers in another order are the same element")
 	}
 	ba.marker = dropped(fx.before)
-	ba.joinMarker(pc, []*lockState{ab})
+	ba.joinMarker(pc, nil, []*lockState{ab})
 	if !maps.Equal(ba.marker, dropped(fx.before)) {
 		t.Errorf("joining entries with the defers in another order changed the marker to %v", ba.marker)
+	}
+}
+
+const slotSource = `package p
+
+type T struct{ mu int }
+
+var G *T
+
+func sink(*int) {}
+
+func slots(t, u *T) {
+	G = t
+	n := 0
+	sink(&n)
+	n = 1
+}
+`
+
+// slotFixture is a function that stores to a global, which is always a relevant slot, and to a
+// local that no lock resolution loads.
+type slotFixture struct {
+	fn            *ssa.Function
+	global, local ssa.Value
+	val, other    ssa.Value
+}
+
+func newSlotFixture(t *testing.T) slotFixture {
+	t.Helper()
+	pkg := buildTestPackage(t, "slots", slotSource)
+	fx := slotFixture{fn: pkg.Func("slots"), global: pkg.Members["G"].(*ssa.Global)}
+	fx.val, fx.other = fx.fn.Params[0], fx.fn.Params[1]
+	for _, b := range fx.fn.Blocks {
+		for _, inst := range b.Instrs {
+			if a, ok := inst.(*ssa.Alloc); ok {
+				fx.local = a
+			}
+		}
+	}
+	if fx.local == nil {
+		t.Fatal("slots has no local to store to")
+	}
+	return fx
+}
+
+func TestSameElementStored(t *testing.T) {
+	fx := newSlotFixture(t)
+	lf := newLoopFixture(t)
+	pc := noFactsPC()
+	if si := pc.relevantSlots(fx.fn); !si.slots[fx.global] || si.slots[fx.local] {
+		t.Fatalf("relevant slots %v, want the global and not the local", si.slots)
+	}
+	state := func(slot, val ssa.Value) *lockState {
+		ls := held(false, lf.param)
+		if slot != nil {
+			ls.stored[slot] = val
+		}
+		return ls
+	}
+	aliased := func(to lockPath) *lockState {
+		ls := held(false, lf.param)
+		ls.aliases[lf.param.Key()] = to
+		return ls
+	}
+	substituted := func() *lockState {
+		ls := held(false, lf.param)
+		ls.substitute(fx.val, lf.param, nil)
+		return ls
+	}
+	for _, tc := range []struct {
+		name        string
+		left, right *lockState
+		same        bool
+	}{
+		{"relevant slot, other value", state(fx.global, fx.val), state(fx.global, fx.other), false},
+		{"relevant slot, presence", state(fx.global, fx.val), state(nil, nil), false},
+		{"relevant slot, same value", state(fx.global, fx.val), state(fx.global, fx.val), true},
+		{"irrelevant slot, other value", state(fx.local, fx.val), state(fx.local, fx.other), true},
+		{"irrelevant slot, presence", state(fx.local, fx.val), state(nil, nil), true},
+		{"alias, other target", aliased(lf.global), aliased(lf.before), false},
+		{"alias, presence", aliased(lf.global), state(nil, nil), false},
+		{"substitution, presence", substituted(), state(nil, nil), true},
+	} {
+		if got := pc.sameElement(fx.fn, tc.left, tc.right); got != tc.same {
+			t.Errorf("%s: same element = %t, want %t", tc.name, got, tc.same)
+		}
+	}
+
+	h := &loopHead{fn: fx.fn, entries: []*lockState{state(fx.global, fx.val)}}
+	if added, over := h.admit(pc, state(fx.global, fx.other)); !added || over {
+		t.Errorf("admitting a state that differs in a relevant slot: added %t, over %t, want added", added, over)
+	}
+	if added, over := h.admit(pc, state(fx.global, fx.val)); added || over {
+		t.Errorf("admitting a state equal in its relevant slot: added %t, over %t, want neither", added, over)
 	}
 }
 

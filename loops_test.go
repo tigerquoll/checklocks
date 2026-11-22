@@ -209,6 +209,9 @@ func TestJoinMarker(t *testing.T) {
 	pkg := buildTestPackage(t, "defers", deferSource)
 	pc := deferPC(pkg.Prog.Fset)
 	withDefer := func(ls *lockState) *lockState { ls.defers = []*ssa.Defer{fx.defers[0]}; return ls }
+	slots := newSlotFixture(t)
+	withStored := func(ls *lockState, slot ssa.Value) *lockState { ls.stored[slot] = slots.val; return ls }
+	withAlias := func(ls *lockState) *lockState { ls.aliases[a.Key()] = b; return ls }
 	withRelevant := func(ls *lockState) *lockState { ls.defers = deferSites(pkg.Func("relevant"))[:1]; return ls }
 	for _, tc := range []struct {
 		name    string
@@ -220,11 +223,14 @@ func TestJoinMarker(t *testing.T) {
 		{"entry with a marker, other locks", []*lockState{marked(held(false, b), fx.inside)}, dropped()},
 		{"entry with a marker, a no-op defer more", []*lockState{withDefer(marked(held(false, a), fx.inside))}, dropped(fx.inside)},
 		{"entry with a marker, a relevant defer more", []*lockState{withRelevant(marked(held(false, a), fx.inside))}, dropped()},
+		{"entry with a marker, a relevant slot more", []*lockState{withStored(marked(held(false, a), fx.inside), slots.global)}, dropped()},
+		{"entry with a marker, an irrelevant slot more", []*lockState{withStored(marked(held(false, a), fx.inside), slots.local)}, dropped(fx.inside)},
+		{"entry with a marker, an alias more", []*lockState{withAlias(marked(held(false, a), fx.inside))}, dropped()},
 		{"union of two entries", []*lockState{marked(held(false, a), fx.inside), marked(held(false, a), fx.before)}, dropped(fx.inside, fx.before)},
 		{"no entries", nil, dropped()},
 	} {
 		s := held(false, a)
-		s.joinMarker(pc, tc.entries)
+		s.joinMarker(pc, slots.fn, tc.entries)
 		if !maps.Equal(s.marker, tc.want) {
 			t.Errorf("%s: marker %v, want %v", tc.name, s.marker, tc.want)
 		}
@@ -232,7 +238,7 @@ func TestJoinMarker(t *testing.T) {
 
 	orig := marked(held(false, a), fx.inside)
 	fork := orig.fork()
-	fork.joinMarker(pc, []*lockState{marked(held(false, a), fx.before)})
+	fork.joinMarker(pc, slots.fn, []*lockState{marked(held(false, a), fx.before)})
 	if !maps.Equal(fork.marker, dropped(fx.inside, fx.before)) {
 		t.Errorf("joining into a fork: marker %v, want both keys", fork.marker)
 	}
