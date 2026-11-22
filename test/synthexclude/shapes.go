@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Shapes of receiver access that decide whether a method is derived as taking its own lock.
-// A holding caller is reported where the shape is attributed and silent where it is not.
+// Receiver shapes: a holding caller is reported where the method is derived as taking its own lock.
 
 package synthexclude
 
 import "sync"
 
-// A mutex whose Unlock returns a value, so go vet's copylocks does not take it for a lock
-// and the shapes that copy it stay vet-clean.
+// shMutex's Unlock returns a value, so copylocks does not flag the shapes that copy it.
 type shMutex struct{ held bool }
 
 func (m *shMutex) Lock()        {}
@@ -46,7 +44,7 @@ type shO struct{ mu sync.Mutex }
 func (s *shO) M()    { var l sync.Locker = &s.mu; l.Lock(); l.Unlock() }
 func callShO(s *shO) { s.mu.Lock(); s.M(); s.mu.Unlock() } // +checklocksfail=must not hold
 
-// The receiver is stored twice, so it is spilled to a local with two stores.
+// The closure stores the receiver back through its free variable; the local keeps one direct store.
 type shJ struct{ mu sync.Mutex }
 
 func (s *shJ) M()    { func() { *(&s) = s }(); s.mu.Lock(); s.mu.Unlock() }
@@ -131,3 +129,151 @@ type shGN struct {
 
 func (s *shGN) M()     { s.in.mu.Lock(); s.in.mu.Unlock() }
 func callShGN(s *shGN) { s.mu.Lock(); s.M(); s.mu.Unlock() }
+
+func sink(any) {}
+
+// A pointer to the receiver's own spill, then a load through both.
+type shP1 struct{ mu sync.Mutex }
+
+func (s *shP1) M()     { p := &s; pp := &p; (**pp).mu.Lock(); (**pp).mu.Unlock() }
+func callShP1(s *shP1) { s.mu.Lock(); s.M(); s.mu.Unlock() } // +checklocksfail=must not hold
+
+// The lock is taken in an invoked closure through a pointer to the receiver.
+type shP1b struct{ mu sync.Mutex }
+
+func (s *shP1b) M()      { p := &s; func() { (*p).mu.Lock(); (*p).mu.Unlock() }() }
+func callShP1b(s *shP1b) { s.mu.Lock(); s.M(); s.mu.Unlock() } // +checklocksfail=must not hold
+
+// A value receiver copied nine times with the address of each copy taken, then locked.
+type shQ struct{ mu *sync.Mutex }
+
+func (s shQ) M() {
+	c1 := s
+	c2 := c1
+	c3 := c2
+	c4 := c3
+	c5 := c4
+	c6 := c5
+	c7 := c6
+	c8 := c7
+	c9 := c8
+	sink(&c1)
+	sink(&c2)
+	sink(&c3)
+	sink(&c4)
+	sink(&c5)
+	sink(&c6)
+	sink(&c7)
+	sink(&c8)
+	c9.mu.Lock()
+	c9.mu.Unlock()
+}
+func (s *shQ) N()    { s.M() }
+func callShQ(s *shQ) { s.mu.Lock(); s.N(); s.mu.Unlock() } // +checklocksfail=must not hold
+
+// The same copies, then a pointer-receiver method that locks.
+type shQO struct{ mu *sync.Mutex }
+
+func (s *shQO) lock() { s.mu.Lock(); s.mu.Unlock() }
+func (s shQO) M() {
+	c1 := s
+	c2 := c1
+	c3 := c2
+	c4 := c3
+	c5 := c4
+	c6 := c5
+	c7 := c6
+	c8 := c7
+	c9 := c8
+	sink(&c1)
+	sink(&c2)
+	sink(&c3)
+	sink(&c4)
+	sink(&c5)
+	sink(&c6)
+	sink(&c7)
+	sink(&c8)
+	c9.lock()
+}
+func (s *shQO) N()     { s.M() }
+func callShQO(s *shQO) { s.mu.Lock(); s.N(); s.mu.Unlock() } // +checklocksfail=must not hold
+
+// A chain of copies that takes fifteen hops back to the receiver.
+type shD15 struct{ mu *sync.Mutex }
+
+func (s shD15) M() {
+	c1 := s
+	c2 := c1
+	c3 := c2
+	c4 := c3
+	c5 := c4
+	c6 := c5
+	c7 := c6
+	c8 := c7
+	c9 := c8
+	c10 := c9
+	c11 := c10
+	c12 := c11
+	c13 := c12
+	c14 := c13
+	c15 := c14
+	sink(&c1)
+	sink(&c2)
+	sink(&c3)
+	sink(&c4)
+	sink(&c5)
+	sink(&c6)
+	sink(&c7)
+	sink(&c8)
+	sink(&c9)
+	sink(&c10)
+	sink(&c11)
+	sink(&c12)
+	sink(&c13)
+	sink(&c14)
+	c15.mu.Lock()
+	c15.mu.Unlock()
+}
+func (s *shD15) N()      { s.M() }
+func callShD15(s *shD15) { s.mu.Lock(); s.N(); s.mu.Unlock() } // +checklocksfail=must not hold
+
+// A chain of copies that takes sixteen hops, one more than the rule follows.
+type shD16 struct{ mu *sync.Mutex }
+
+func (s shD16) M() {
+	c1 := s
+	c2 := c1
+	c3 := c2
+	c4 := c3
+	c5 := c4
+	c6 := c5
+	c7 := c6
+	c8 := c7
+	c9 := c8
+	c10 := c9
+	c11 := c10
+	c12 := c11
+	c13 := c12
+	c14 := c13
+	c15 := c14
+	c16 := c15
+	sink(&c1)
+	sink(&c2)
+	sink(&c3)
+	sink(&c4)
+	sink(&c5)
+	sink(&c6)
+	sink(&c7)
+	sink(&c8)
+	sink(&c9)
+	sink(&c10)
+	sink(&c11)
+	sink(&c12)
+	sink(&c13)
+	sink(&c14)
+	sink(&c15)
+	c16.mu.Lock()
+	c16.mu.Unlock()
+}
+func (s *shD16) N()      { s.M() }
+func callShD16(s *shD16) { s.mu.Lock(); s.N(); s.mu.Unlock() }

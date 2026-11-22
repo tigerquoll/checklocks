@@ -14,16 +14,10 @@
 
 package checklocks
 
-import (
-	"go/token"
+import "golang.org/x/tools/go/ssa"
 
-	"golang.org/x/tools/go/ssa"
-)
-
-// resolver answers where a value comes from without walking a body: it reads a
-// state seeded from what the ssa builder introduced, never the walk's own.
-// A closure capturing the receiver has it spilled to a local, and a closure
-// receives it as a free variable; both are the receiver itself.
+// resolver says where a value comes from without walking a body, from a state seeded
+// with the spills and captures the ssa builder introduces, never the walk's own.
 type resolver struct {
 	states map[*ssa.Function]*lockState
 
@@ -34,10 +28,9 @@ func newResolver() *resolver {
 	return &resolver{states: make(map[*ssa.Function]*lockState)}
 }
 
-// state returns fn's static state. A local is seeded only when exactly one
-// value is ever stored into it, so a variable that holds different objects at
-// different times resolves to nothing rather than to the wrong one. A free
-// variable is bound to the outermost value its chain of closures captured.
+// state returns fn's static state. A local is seeded only when exactly one value is
+// stored into it, so a reused variable resolves to nothing rather than the wrong object;
+// a free variable is bound to the outermost value its closures captured.
 func (r *resolver) state(fn *ssa.Function) *lockState {
 	if ls, ok := r.states[fn]; ok {
 		return ls
@@ -115,19 +108,19 @@ func (r *resolver) path(v ssa.Value) lockPath {
 // maxCaptureHops bounds the walk back to the receiver.
 const maxCaptureHops = 16
 
-// isReceiver reports whether v is the receiver or, when derefs is set, memory
-// reached from it by loads alone.
-func (r *resolver) isReceiver(v ssa.Value, recv *ssa.Parameter, derefs bool) bool {
+// isReceiver reports whether v is the receiver, or memory reached from it by
+// loads alone.
+func (r *resolver) isReceiver(v ssa.Value, recv *ssa.Parameter) bool {
 	p := r.path(v)
 	for _, step := range p.steps {
-		if !derefs || step.kind != stepDeref {
+		if step.kind != stepDeref {
 			return false
 		}
 	}
 	ls := r.state(v.Parent())
 	cur := p.root.value
-	for i := 0; i < maxCaptureHops && cur != nil; i++ {
-		switch x := cur.(type) {
+	for i := 0; i < maxCaptureHops; i++ {
+		switch x := unwrapAssertValue(cur).(type) {
 		case *ssa.Parameter:
 			return x == recv
 		case *ssa.FreeVar:
@@ -142,17 +135,6 @@ func (r *resolver) isReceiver(v ssa.Value, recv *ssa.Parameter, derefs bool) boo
 				return false
 			}
 			cur = stored
-		case *ssa.ChangeType:
-			cur = x.X
-		case *ssa.Convert:
-			cur = x.X
-		case *ssa.MakeInterface:
-			cur = x.X
-		case *ssa.UnOp:
-			if x.Op != token.MUL {
-				return false
-			}
-			cur = x.X
 		default:
 			return false
 		}

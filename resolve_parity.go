@@ -30,16 +30,35 @@ import (
 type shadowCounts struct {
 	direct, own int
 	mismatches  []string
+	seen        map[ssa.CallInstruction]bool
 }
 
 func (r *resolver) shadowDirect(call ssa.CallInstruction, v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) {
+	if r.shadowSeen(call) {
+		return
+	}
 	r.shadow.direct++
-	r.shadowCompare("direct", call, resolvesToReceiver(v, recv, captured), r.isReceiver(v, recv, false))
+	r.shadowCompare("direct", call, resolvesToReceiver(v, recv, captured), r.isReceiver(v, recv))
 }
 
 func (r *resolver) shadowOwn(call ssa.CallInstruction, v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) {
+	if r.shadowSeen(call) {
+		return
+	}
 	r.shadow.own++
-	r.shadowCompare("own", call, resolvesToReceiver(v, recv, captured), r.isReceiver(v, recv, true))
+	r.shadowCompare("own", call, resolvesToReceiver(v, recv, captured), r.isReceiver(v, recv))
+}
+
+// shadowSeen reports whether the site was already compared in an earlier fixpoint round.
+func (r *resolver) shadowSeen(call ssa.CallInstruction) bool {
+	if r.shadow.seen[call] {
+		return true
+	}
+	if r.shadow.seen == nil {
+		r.shadow.seen = make(map[ssa.CallInstruction]bool)
+	}
+	r.shadow.seen[call] = true
+	return false
 }
 
 func (r *resolver) shadowCompare(leg string, call ssa.CallInstruction, old, resolved bool) {
@@ -130,12 +149,14 @@ func dumpGuard(g functionGuardResolver) string {
 		return fmt.Sprintf("ret%d/%v%s", x.Index, x.NeedsExtract, dumpFieldList(x.FieldList))
 	case *globalGuard:
 		return fmt.Sprintf("global %s.%s/%v%s", x.PackageName, x.ObjectName, x.Deref, dumpFieldList(x.FieldList))
+	case *typeAssertGuard:
+		return fmt.Sprintf("assert%d%v.(%s)%s", x.ParamIndex, x.Steps, x.TypeName, dumpFieldList(x.FieldList))
 	}
 	return fmt.Sprintf("%T", g)
 }
 
-// resolvesToReceiver is the receiver test synthexclude used before the resolver, kept as the
-// shadow's reference.
+// resolvesToReceiver is the shadow's reference rule: the receiver reached through
+// single-store locals and captures only.
 func resolvesToReceiver(v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
 	cur := v
 	for i := 0; i < maxCaptureHops; i++ {

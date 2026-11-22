@@ -174,7 +174,7 @@ func (pc *passContext) noteDirectSelfLock(rs *resolver, call ssa.CallInstruction
 		return
 	}
 	rs.shadowDirect(call, fa.X, recv, captured)
-	if !rs.isReceiver(fa.X, recv, false) {
+	if !rs.isReceiver(fa.X, recv) {
 		return
 	}
 	if fa.Field >= structType.NumFields() {
@@ -222,7 +222,7 @@ func callsOwnMethod(rs *resolver, call ssa.CallInstruction, recv *ssa.Parameter,
 		return false
 	}
 	rs.shadowOwn(call, args[0], recv, captured)
-	return rs.isReceiver(args[0], recv, true)
+	return rs.isReceiver(args[0], recv)
 }
 
 // lockOpIsWrite reports whether a lock operation takes the lock for writing.
