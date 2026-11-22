@@ -1449,7 +1449,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if fn.Recover != nil {
 		roots = append(roots, fn.Recover)
 	}
-	recordsAt, pendingAt := len(pc.records), len(pc.pending)
+	recordsAt, pendingAt, decisionsAt := len(pc.records), len(pc.pending), pc.decisionMark()
 	for _, root := range roots {
 		// A state the body returns in is no alternative to one the recover block returns in.
 		wc.returnStates = make(map[string]string)
@@ -1475,6 +1475,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 
 	if wc.gaveUp {
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
+		pc.withdrawDecisions(decisionsAt)
 		pc.decide(decisionAt{fn: fn, label: "overflow", pos: fn.Pos(), context: context}, loopOverflow, false)
 		if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
 			pc.maybeFail(fn.Pos(), "checklocks gave up on this function: more than %d lock states reach one loop", maxHeadStates)

@@ -278,6 +278,9 @@ type decisionState struct {
 	region int
 
 	lines map[string]struct{}
+
+	// logged lists the lines in the order they entered lines.
+	logged []string
 }
 
 func (d *decisionState) enter() { d.region++ }
@@ -298,8 +301,22 @@ func (pc *passContext) decide(at decisionAt, kind decisionKind, ok bool, subject
 		if pc.decisions.lines == nil {
 			pc.decisions.lines = make(map[string]struct{})
 		}
-		pc.decisions.lines[line] = struct{}{}
+		if _, ok := pc.decisions.lines[line]; !ok {
+			pc.decisions.lines[line] = struct{}{}
+			pc.decisions.logged = append(pc.decisions.logged, line)
+		}
 	}
+}
+
+// decisionMark returns a point withdrawDecisions can return the log to.
+func (pc *passContext) decisionMark() int { return len(pc.decisions.logged) }
+
+// withdrawDecisions drops the lines logged since mark.
+func (pc *passContext) withdrawDecisions(mark int) {
+	for _, line := range pc.decisions.logged[mark:] {
+		delete(pc.decisions.lines, line)
+	}
+	pc.decisions.logged = pc.decisions.logged[:mark]
 }
 
 func (pc *passContext) decisionLine(at decisionAt, kind decisionKind, ok bool, subject []any) string {

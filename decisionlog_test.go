@@ -14,11 +14,12 @@
 
 //go:build checklocks_parity
 
-package checklocks_test
+package checklocks
 
 import (
 	"bytes"
 	"fmt"
+	"go/types"
 	"net/url"
 	"os"
 	"os/exec"
@@ -26,6 +27,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 const decisionPkg = "github.com/tigerquoll/checklocks/test/decisionlog"
@@ -137,5 +140,50 @@ func TestDecisionLog(t *testing.T) {
 	slices.Sort(contexts)
 	if len(slices.Compact(contexts)) != 2 {
 		t.Errorf("want the literal's guardHeld decisions under two contexts, got %q", contexts)
+	}
+
+	gaveUp := find(func(f []string) bool { return f[1] == "overflowWithLiteral" || f[1] == "overflowWithLiteral$1" })
+	if len(gaveUp) != 1 || gaveUp[0][3] != "loopOverflow" || gaveUp[0][6] != "false" {
+		t.Errorf("want one failed loopOverflow decision for overflowWithLiteral and its literal, got %q", gaveUp)
+	}
+}
+
+func TestWithdrawDecisions(t *testing.T) {
+	saved := decisionLogDir
+	decisionLogDir = t.TempDir()
+	defer func() { decisionLogDir = saved }()
+
+	pc := &passContext{}
+	fn := &ssa.Function{Signature: types.NewSignatureType(nil, nil, nil, nil, nil, false)}
+	decide := func(kind decisionKind) string {
+		at := decisionAt{fn: fn, label: "x"}
+		pc.decide(at, kind, false)
+		return pc.decisionLine(at, kind, false, nil)
+	}
+	has := func(line string) bool { _, ok := pc.decisions.lines[line]; return ok }
+
+	before := decide("a")
+	mark := pc.decisionMark()
+	decide("a")
+	after := decide("b")
+	pc.withdrawDecisions(mark)
+	if !has(before) || has(after) || len(pc.decisions.lines) != 1 {
+		t.Errorf("want only the line from before the mark, got %v", pc.decisions.lines)
+	}
+
+	outer := pc.decisionMark()
+	decide("c")
+	inner := pc.decisionMark()
+	decide("d")
+	pc.withdrawDecisions(inner)
+	decide("e")
+	pc.withdrawDecisions(outer)
+	if len(pc.decisions.lines) != 1 || !has(before) {
+		t.Errorf("want only the line from before the outer mark, got %v", pc.decisions.lines)
+	}
+
+	again := decide("c")
+	if !has(again) {
+		t.Errorf("want a withdrawn line present once decided again")
 	}
 }

@@ -79,3 +79,32 @@ func sameName() {
 	val.mu.Unlock()
 	mu.Unlock()
 }
+
+type fiveLocks struct {
+	a, b, c, d, e sync.Mutex
+}
+
+func overflowWithLiteral(f *fiveLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	func() {
+		if c() {
+			f.a.Lock()
+		}
+	}()
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+	}
+}

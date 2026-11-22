@@ -43,6 +43,8 @@ func (*decisionState) leave() {}
 
 func (*passContext) decide(decisionAt, decisionKind, bool, ...any) {}
 func (*passContext) suppressed()                                   {}
+func (*passContext) decisionMark() int                             { return 0 }
+func (*passContext) withdrawDecisions(int)                         {}
 func (*passContext) writeDecisions()                               {}
 
 func inlineContext(*walkContext, callSite, *ssa.Function) string { return "" }
