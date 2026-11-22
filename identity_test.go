@@ -154,6 +154,8 @@ func needsLock(m *Mutex)  {}
 func useAliased(a *Aliased) {}
 func makeFresh(p *Plain)  {}
 func noop()               {}
+func heldOnExit(m *Mutex) {}
+func excludedOnEntry(m *Mutex) {}
 
 func relevant(m *Mutex, p *Plain, a *Aliased) {
 	defer m.Unlock()
@@ -171,6 +173,12 @@ func irrelevant(m *Mutex, p *Plain, fn func(), ch chan int, i interface{ M() }) 
 	defer noop()
 }
 
+func more(m *Mutex) {
+	defer func() { m.Unlock() }()
+	defer heldOnExit(m)
+	defer excludedOnEntry(m)
+}
+
 func ordered(m, n *Mutex) {
 	defer noop()
 	defer m.Unlock()
@@ -178,7 +186,7 @@ func ordered(m, n *Mutex) {
 }
 `
 
-// noFactsPC is a passContext whose pass has no facts.
+// noFactsPC is a passContext for states whose defers name none of deferPC's faked objects.
 func noFactsPC() *passContext {
 	return deferPC(token.NewFileSet())
 }
@@ -189,8 +197,15 @@ func deferPC(fset *token.FileSet) *passContext {
 		ImportObjectFact: func(o types.Object, fact analysis.Fact) bool {
 			switch f := fact.(type) {
 			case *lockFunctionFacts:
-				if o.Name() == "needsLock" {
+				switch o.Name() {
+				case "needsLock":
 					f.HeldOnEntry = map[string]functionGuardInfo{"m": {}}
+					return true
+				case "heldOnExit":
+					f.HeldOnExit = map[string]functionGuardInfo{"m": {}}
+					return true
+				case "excludedOnEntry":
+					f.ExcludedOnEntry = map[string]functionGuardInfo{"m": {}}
 					return true
 				}
 			case *lockTypeFacts:
@@ -226,10 +241,15 @@ func deferSites(fn *ssa.Function) []*ssa.Defer {
 func TestDeferRelevant(t *testing.T) {
 	pkg := buildTestPackage(t, "defers", deferSource)
 	pc := deferPC(pkg.Prog.Fset)
-	for fn, want := range map[string]bool{"relevant": true, "irrelevant": false} {
+	for _, tc := range []struct {
+		fn    string
+		count int
+		want  bool
+	}{{"relevant", 5, true}, {"more", 3, true}, {"irrelevant", 5, false}} {
+		fn, want := tc.fn, tc.want
 		sites := deferSites(pkg.Func(fn))
-		if len(sites) != 5 {
-			t.Fatalf("%s has %d defers, want 5", fn, len(sites))
+		if len(sites) != tc.count {
+			t.Fatalf("%s has %d defers, want %d", fn, len(sites), tc.count)
 		}
 		for i, d := range sites {
 			if got := pc.deferRelevant(d); got != want {
@@ -289,10 +309,10 @@ func TestSameElement(t *testing.T) {
 	}
 
 	ab, ba := withDefers(first, second), withDefers(second, first)
-	ba.marker = dropped(fx.before)
 	if pc.sameElement(ab, ba) {
 		t.Error("states with the relevant defers in another order are the same element")
 	}
+	ba.marker = dropped(fx.before)
 	ba.joinMarker(pc, []*lockState{ab})
 	if !maps.Equal(ba.marker, dropped(fx.before)) {
 		t.Errorf("joining entries with the defers in another order changed the marker to %v", ba.marker)

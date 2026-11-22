@@ -206,8 +206,10 @@ func TestDropDead(t *testing.T) {
 func TestJoinMarker(t *testing.T) {
 	fx := newLoopFixture(t)
 	a, b := fx.param, fx.global
-	pc := noFactsPC()
+	pkg := buildTestPackage(t, "defers", deferSource)
+	pc := deferPC(pkg.Prog.Fset)
 	withDefer := func(ls *lockState) *lockState { ls.defers = []*ssa.Defer{fx.defers[0]}; return ls }
+	withRelevant := func(ls *lockState) *lockState { ls.defers = deferSites(pkg.Func("relevant"))[:1]; return ls }
 	for _, tc := range []struct {
 		name    string
 		entries []*lockState
@@ -217,6 +219,7 @@ func TestJoinMarker(t *testing.T) {
 		{"entry without a marker", []*lockState{held(false, a)}, dropped()},
 		{"entry with a marker, other locks", []*lockState{marked(held(false, b), fx.inside)}, dropped()},
 		{"entry with a marker, a no-op defer more", []*lockState{withDefer(marked(held(false, a), fx.inside))}, dropped(fx.inside)},
+		{"entry with a marker, a relevant defer more", []*lockState{withRelevant(marked(held(false, a), fx.inside))}, dropped()},
 		{"union of two entries", []*lockState{marked(held(false, a), fx.inside), marked(held(false, a), fx.before)}, dropped(fx.inside, fx.before)},
 		{"no entries", nil, dropped()},
 	} {
