@@ -993,3 +993,126 @@ func g1LiftCaller(a *App, f *g1Lift[*sync.WaitGroup]) {
 	f.Wait()
 	a.Unlock()
 }
+
+// --- a type argument's own release on a receiver chain -----------------------------------
+
+// +lockclass:G2T
+type g2T struct {
+	mu sync.Mutex
+	wg sync.WaitGroup
+}
+
+// +checklocks:t.mu
+func (t *g2T) Wait() {
+	t.mu.Unlock() // +lockgapfail=caller's critical section is split
+	t.wg.Wait()
+	t.mu.Lock()
+}
+
+type g2N struct{ w *g2T }
+
+func (n *g2N) Wait() { n.w.Wait() } // +checklocksfail=must hold t.mu exclusively
+
+func g2Twin(n *g2N) {
+	n.w.mu.Lock()
+	n.Wait()
+	n.w.mu.Unlock()
+}
+
+func g2Generic(b *g1B[*g2T]) {
+	b.w.mu.Lock()
+	b.Wait()
+	b.w.mu.Unlock()
+}
+
+func g2OtherClass(a *App, b *g1B[*g2T]) {
+	a.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g2T).Wait at lockblocking/lockblocking.go:799 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:1008)
+	a.Unlock()
+}
+
+func g2f[W g1Waiter](w W) { w.Wait() }
+
+func g2fn(t *g2T) { t.Wait() } // +checklocksfail=must hold t.mu exclusively
+
+func g2FuncGeneric(t *g2T) {
+	t.mu.Lock()
+	g2f(t) // +lockblockingfail=calling g2f, which may block (calling (*g2T).Wait at lockblocking/lockblocking.go:1034 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:1008)
+	t.mu.Unlock()
+}
+
+func g2FuncTwin(t *g2T) {
+	t.mu.Lock()
+	g2fn(t) // +lockorderfail=two locks of one class must not nest +lockblockingfail=calling g2fn, which may block (calling (*g2T).Wait at lockblocking/lockblocking.go:1036 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:1008)
+	t.mu.Unlock()
+}
+
+// +lockclass:G2M
+type g2M[W g1Waiter] struct {
+	mu sync.Mutex
+	w  W // +checklocksfail=may require checklocks annotation for mu, used with lock held 100% of the time
+}
+
+// +checklocks:m.mu
+func (m *g2M[W]) Wait() {
+	m.mu.Unlock() // +lockgapfail=caller's critical section is split
+	time.Sleep(time.Millisecond)
+	m.mu.Lock()
+	m.w.Wait()
+}
+
+type g2MN struct{ w *g2M[*sync.WaitGroup] }
+
+func (n *g2MN) Wait() { n.w.Wait() } // +checklocksfail=must hold m.mu exclusively
+
+func g2OriginGeneric(b *g1B[*g2M[*sync.WaitGroup]]) {
+	b.w.mu.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g2M[W]).Wait at lockblocking/lockblocking.go:799 -> calling Sleep at lockblocking/lockblocking.go:1059)
+	b.w.mu.Unlock()
+}
+
+func g2OriginTwin(n *g2MN) {
+	n.w.mu.Lock()
+	n.Wait() // +lockblockingfail=calling (*g2MN).Wait, which may block
+	n.w.mu.Unlock()
+}
+
+type g2U struct{}
+
+func (*g2U) Wait() { time.Sleep(time.Millisecond) }
+
+func g2PairGeneric(p *g1Pair[*g2T, *g2U]) {
+	p.a.mu.Lock()
+	p.Wait() // +lockblockingfail=calling (*g1Pair[A, B]).Wait, which may block (calling (*g2U).Wait at lockblocking/lockblocking.go:880 -> calling Sleep at lockblocking/lockblocking.go:1082)
+	p.a.mu.Unlock()
+}
+
+type g2PN struct {
+	a *g2T
+	b *g2U
+}
+
+func (p *g2PN) Wait() {
+	p.a.Wait() // +checklocksfail=must hold t.mu exclusively
+	p.b.Wait()
+}
+
+func g2PairTwin(p *g2PN) {
+	p.a.mu.Lock()
+	p.Wait() // +lockblockingfail=calling (*g2PN).Wait, which may block (calling (*g2U).Wait at lockblocking/lockblocking.go:1097 -> calling Sleep at lockblocking/lockblocking.go:1082)
+	p.a.mu.Unlock()
+}
+
+func g2DeepGeneric(b *g1B[*g2T]) {
+	b.w.mu.Lock()
+	g1f(b) // +lockblockingfail=calling g1f, which may block (calling (*g1B[W]).Wait at lockblocking/lockblocking.go:912 -> calling (*g2T).Wait at lockblocking/lockblocking.go:799 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:1008)
+	b.w.mu.Unlock()
+}
+
+func g2fnN(n *g2N) { n.Wait() }
+
+func g2DeepTwin(n *g2N) {
+	n.w.mu.Lock()
+	g2fnN(n) // +lockorderfail=two locks of one class must not nest +lockblockingfail=calling g2fnN, which may block (calling (*g2N).Wait at lockblocking/lockblocking.go:1112 -> calling (*g2T).Wait at lockblocking/lockblocking.go:1014 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:1008)
+	n.w.mu.Unlock()
+}

@@ -243,12 +243,21 @@ func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.T
 		var ms summaryFact
 		pc.pass.ImportObjectFact(m.Origin(), &ms)
 		if ms.Blocking && (ms.BlockingNamed || pc.blockingInScope(m)) {
-			cs.addBlocking(rel, ms.BlockingNamed)
+			own := carry && rec.OnReceiver && len(ms.ParamCalls) == 0
+			total := rel
+			if own {
+				total = unionClasses(rel, ms.BlockingReleased)
+			}
+			cs.addBlocking(total, ms.BlockingNamed)
 			if len(ms.Witnesses) == 0 {
-				paths = append(paths, witnessPath{Released: rel, Named: ms.BlockingNamed, Hops: hops})
+				paths = append(paths, witnessPath{Released: total, Named: ms.BlockingNamed, Hops: hops})
 			}
 			for _, w := range ms.Witnesses {
-				paths = append(paths, witnessPath{Released: rel, Named: w.Named, Hops: append(slices.Clone(hops), w.Hops...)})
+				wrel := rel
+				if own {
+					wrel = unionClasses(rel, w.Released)
+				}
+				paths = append(paths, witnessPath{Released: wrel, Named: w.Named, Hops: append(slices.Clone(hops), w.Hops...)})
 			}
 			continue
 		}
