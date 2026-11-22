@@ -1249,7 +1249,7 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 	// Check for cached results from entering this block from a *different*
 	// execution path. Note that this is not the same path, which is
 	// checked with the recursion guard below.
-	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) && oldLS.marker == parent.marker {
+	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) && maps.Equal(oldLS.marker, parent.marker) {
 		return nil
 	}
 

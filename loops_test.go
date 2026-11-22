@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"go/constant"
 	"go/types"
+	"maps"
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
@@ -160,14 +161,29 @@ func TestPathDies(t *testing.T) {
 	}
 }
 
+// dropped makes a marker holding the keys of the paths.
+func dropped(paths ...lockPath) map[pathKey]struct{} {
+	m := make(map[pathKey]struct{})
+	for _, p := range paths {
+		m[p.Key()] = struct{}{}
+	}
+	return m
+}
+
+// marked sets the marker of ls to the keys of the paths.
+func marked(ls *lockState, paths ...lockPath) *lockState {
+	ls.marker = dropped(paths...)
+	return ls
+}
+
 func TestDropDead(t *testing.T) {
 	fx := newLoopFixture(t)
 	dies := func(p lockPath) bool { return pathDies(p, fx.body) }
 
 	ls := held(false, fx.param, fx.inside)
 	ls.dropDead(dies)
-	if ls.count() != 1 || !ls.marker {
-		t.Errorf("a dead acquired lock: %d held, marker %t, want 1 held and the marker set", ls.count(), ls.marker)
+	if ls.count() != 1 || !maps.Equal(ls.marker, dropped(fx.inside)) {
+		t.Errorf("a dead acquired lock: %d held, marker %v, want 1 held and the dropped key in the marker", ls.count(), ls.marker)
 	}
 	if _, ok := ls.lockedMutexes[fx.param.Key()]; !ok {
 		t.Error("the parameter lock was dropped")
@@ -175,14 +191,14 @@ func TestDropDead(t *testing.T) {
 
 	ls = held(true, fx.inside)
 	ls.dropDead(dies)
-	if ls.count() != 0 || ls.marker {
-		t.Errorf("a dead assumed lock: %d held, marker %t, want none held and the marker unset", ls.count(), ls.marker)
+	if ls.count() != 0 || len(ls.marker) != 0 {
+		t.Errorf("a dead assumed lock: %d held, marker %v, want none held and the marker empty", ls.count(), ls.marker)
 	}
 
 	shared := held(false, fx.inside)
 	fork := shared.fork()
 	fork.dropDead(dies)
-	if shared.count() != 1 || shared.marker {
+	if shared.count() != 1 || len(shared.marker) != 0 {
 		t.Error("dropping from a fork changed the state it was forked from")
 	}
 }
@@ -190,25 +206,34 @@ func TestDropDead(t *testing.T) {
 func TestJoinMarker(t *testing.T) {
 	fx := newLoopFixture(t)
 	a, b := fx.param, fx.global
-	marked := func(ls *lockState) *lockState { ls.marker = true; return ls }
 	withDefer := func(ls *lockState) *lockState { ls.defers = []*ssa.Defer{fx.defers[0]}; return ls }
 	for _, tc := range []struct {
 		name    string
 		entries []*lockState
-		want    bool
+		want    map[pathKey]struct{}
 	}{
-		{"entry with the marker, same locks", []*lockState{marked(held(false, a))}, true},
-		{"entry without the marker", []*lockState{held(false, a)}, false},
-		{"entry with the marker, other locks", []*lockState{marked(held(false, b))}, false},
-		{"entry with the marker, other defers", []*lockState{withDefer(marked(held(false, a)))}, false},
-		{"any entry", []*lockState{held(false, a), marked(held(false, a))}, true},
-		{"no entries", nil, false},
+		{"entry with a marker, same locks", []*lockState{marked(held(false, a), fx.inside)}, dropped(fx.inside)},
+		{"entry without a marker", []*lockState{held(false, a)}, dropped()},
+		{"entry with a marker, other locks", []*lockState{marked(held(false, b), fx.inside)}, dropped()},
+		{"entry with a marker, other defers", []*lockState{withDefer(marked(held(false, a), fx.inside))}, dropped()},
+		{"union of two entries", []*lockState{marked(held(false, a), fx.inside), marked(held(false, a), fx.before)}, dropped(fx.inside, fx.before)},
+		{"no entries", nil, dropped()},
 	} {
 		s := held(false, a)
 		s.joinMarker(tc.entries)
-		if s.marker != tc.want {
-			t.Errorf("%s: marker %t, want %t", tc.name, s.marker, tc.want)
+		if !maps.Equal(s.marker, tc.want) {
+			t.Errorf("%s: marker %v, want %v", tc.name, s.marker, tc.want)
 		}
+	}
+
+	orig := marked(held(false, a), fx.inside)
+	fork := orig.fork()
+	fork.joinMarker([]*lockState{marked(held(false, a), fx.before)})
+	if !maps.Equal(fork.marker, dropped(fx.inside, fx.before)) {
+		t.Errorf("joining into a fork: marker %v, want both keys", fork.marker)
+	}
+	if !maps.Equal(orig.marker, dropped(fx.inside)) {
+		t.Errorf("joining into a fork changed the original's marker to %v", orig.marker)
 	}
 }
 
@@ -233,8 +258,6 @@ func TestSameEntry(t *testing.T) {
 	if !base().sameEntry(base()) {
 		t.Error("equal states differ")
 	}
-	marked := base()
-	marked.marker = true
 	withDefer := base()
 	withDefer.defers = []*ssa.Defer{fx.defers[0]}
 	for _, tc := range []struct {
@@ -243,7 +266,8 @@ func TestSameEntry(t *testing.T) {
 	}{
 		{"held", held(false, b)},
 		{"assumed", held(true, a)},
-		{"marker", marked},
+		{"marker", marked(base(), fx.inside)},
+		{"other marker", marked(base(), fx.before)},
 		{"defers", withDefer},
 	} {
 		if base().sameEntry(tc.other) || tc.other.sameEntry(base()) {
@@ -255,24 +279,24 @@ func TestSameEntry(t *testing.T) {
 func TestSilencesRelease(t *testing.T) {
 	fx := newLoopFixture(t)
 	for _, tc := range []struct {
-		name   string
-		marker bool
-		held   []lockPath
-		path   lockPath
-		want   bool
+		name string
+		set  []lockPath
+		held []lockPath
+		path lockPath
+		want bool
 	}{
-		{"marker unset", false, nil, fx.inside, false},
-		{"loop-defined value", true, nil, fx.inside, true},
-		{"value defined before the loop", true, nil, fx.before, true},
-		{"parameter", true, nil, fx.param, false},
-		{"global", true, nil, fx.global, false},
-		{"index of a value on a parameter", true, nil, index(fx.param, fx.phi), true},
-		{"index of an index of a value", true, nil, index(fx.param, index(fx.param, fx.inside)), true},
-		{"constant index on a parameter", true, nil, index(fx.param, fx.number), false},
-		{"value held in the other mode", true, []lockPath{fx.inside}, fx.inside, false},
+		{"marker empty", nil, nil, fx.inside, false},
+		{"dropped key", []lockPath{fx.inside}, nil, fx.inside, true},
+		{"dropped key but held", []lockPath{fx.inside}, []lockPath{fx.inside}, fx.inside, false},
+		{"value defined before the loop", []lockPath{fx.inside}, nil, fx.before, false},
+		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, nil, fx.phi, false},
+		{"parameter", []lockPath{fx.inside}, nil, fx.param, false},
+		{"global", []lockPath{fx.inside}, nil, fx.global, false},
+		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, nil, index(fx.param, fx.phi), true},
+		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, nil, index(fx.param, index(fx.param, fx.inside)), true},
+		{"constant index on a parameter", []lockPath{fx.inside}, nil, index(fx.param, fx.number), false},
 	} {
-		ls := held(false, tc.held...)
-		ls.marker = tc.marker
+		ls := marked(held(false, tc.held...), tc.set...)
 		if got := ls.silencesRelease(tc.path); got != tc.want {
 			t.Errorf("%s: silencesRelease = %t, want %t", tc.name, got, tc.want)
 		}

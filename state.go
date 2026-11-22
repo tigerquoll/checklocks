@@ -74,9 +74,9 @@ type lockState struct {
 	// defers are the stack of defers that have been pushed.
 	defers []*ssa.Defer
 
-	// marker is set once a lock was dropped at a loop's back edge: a later release of a
-	// path that is not held may have meant it.
-	marker bool
+	// marker holds the locks dropped at a loop's back edge: a later release of one that
+	// is not held may have meant it. It is copied on write like the held map.
+	marker map[pathKey]struct{}
 
 	// refs indicates the number of references on this structure. If it's
 	// greater than one, we will do copy-on-write.
@@ -142,6 +142,9 @@ func (l *lockState) modify() {
 
 		// Copy the defers.
 		l.defers = slices.Clone(l.defers)
+
+		// Copy the dropped locks.
+		l.marker = maps.Clone(l.marker)
 
 		// Drop our reference.
 		atomic.AddInt32(l.refs, -1)
@@ -650,7 +653,7 @@ func pathDies(p lockPath, body map[*ssa.BasicBlock]bool) bool {
 	return pathHasValue(p, func(b *ssa.BasicBlock) bool { return body[b] })
 }
 
-// dropDead removes the held locks whose paths die. Dropping one that was acquired sets the marker.
+// dropDead removes the held locks whose paths die. Dropping one that was acquired adds it to the marker.
 func (l *lockState) dropDead(dies func(lockPath) bool) {
 	var dead []pathKey
 	for k, info := range l.lockedMutexes {
@@ -664,7 +667,10 @@ func (l *lockState) dropDead(dies func(lockPath) bool) {
 	l.modify()
 	for _, k := range dead {
 		if !l.lockedMutexes[k].assumed {
-			l.marker = true
+			if l.marker == nil {
+				l.marker = make(map[pathKey]struct{})
+			}
+			l.marker[k] = struct{}{}
 		}
 		delete(l.lockedMutexes, k)
 	}
@@ -672,27 +678,34 @@ func (l *lockState) dropDead(dies func(lockPath) bool) {
 
 // sameEntry reports whether two states enter a loop head alike: the same locks, marker and defers.
 func (l *lockState) sameEntry(o *lockState) bool {
-	return l.isCompatible(o) && l.marker == o.marker && slices.Equal(l.defers, o.defers)
+	return l.isCompatible(o) && maps.Equal(l.marker, o.marker) && slices.Equal(l.defers, o.defers)
 }
 
-// joinMarker sets the marker when an entry with the same locks and defers has it.
+// joinMarker adds to the marker the locks dropped by every entry with the same locks and defers.
 func (l *lockState) joinMarker(entries []*lockState) {
 	for _, e := range entries {
-		if e.marker && e.isCompatible(l) && slices.Equal(e.defers, l.defers) {
-			l.marker = true
-			return
+		if !e.isCompatible(l) || !slices.Equal(e.defers, l.defers) {
+			continue
+		}
+		for k := range e.marker {
+			if _, ok := l.marker[k]; ok {
+				continue
+			}
+			l.modify()
+			if l.marker == nil {
+				l.marker = make(map[pathKey]struct{})
+			}
+			l.marker[k] = struct{}{}
 		}
 	}
 }
 
-// silencesRelease reports whether a release of p that is not held goes unreported: the
-// marker is set and p is a path a loop's back edge can drop.
+// silencesRelease reports whether a release of p that is not held goes unreported: a
+// loop's back edge dropped it.
 func (l *lockState) silencesRelease(p lockPath) bool {
-	if !l.marker {
-		return false
-	}
 	if _, held := l.lockedMutexes[p.Key()]; held {
 		return false
 	}
-	return pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
+	_, dropped := l.marker[p.Key()]
+	return dropped
 }

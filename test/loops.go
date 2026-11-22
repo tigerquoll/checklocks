@@ -140,7 +140,7 @@ func loopEarlyReturn(t *loopT, n int) int {
 	return -1
 }
 
-// The kill of it.mu sets the marker, but s.mu is held on a parameter, so it still reports.
+// The kill of it.mu does not silence the release of s.mu, which the loop did not drop.
 // +checklocks:s.mu
 func (s *loopSet) loopNarrowed(items []*loopT) { // +checklocksfail=incompatible return states
 	for _, it := range items {
@@ -148,6 +148,16 @@ func (s *loopSet) loopNarrowed(items []*loopT) { // +checklocksfail=incompatible
 		it.mu.Lock()
 	}
 } // +checklocksfail=not held exclusively
+
+func loopUnlockBefore(get func() *loopT, c func() bool) { // +checklocksfail=incompatible return states
+	u := get()
+	u.mu.Lock()
+	for c() {
+		t := get()
+		t.mu.Lock()
+		u.mu.Unlock() // +checklocksfail=already unlocked or locked differently
+	}
+} // +checklocksfail=return with unexpected locks held
 
 // Neither label's block dominates the other, so the jump back is not a back edge.
 func loopIrreducible(t *loopT, c func() bool) {
