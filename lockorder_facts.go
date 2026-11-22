@@ -142,7 +142,7 @@ type paramCall struct {
 	Index  int
 	Method string
 
-	// OnReceiver is whether the value called on is the function's own receiver.
+	// OnReceiver is whether the value called on is the function's receiver or reached from it through fields.
 	OnReceiver bool
 
 	// Released is what the function had released at the call, in the sense of
