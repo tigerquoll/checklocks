@@ -35,7 +35,23 @@ import (
 // the outer fixpoint rather than by iterating here: a summary that grows re-runs the
 // function, so a class acquired on the second time round a loop is still seen.
 func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFact, report bool) {
-	if obj := funcObject(fn); obj != nil && pc.annotatedBlocking(obj) {
+	obj := funcObject(fn)
+	var ff funcFact
+	if obj != nil && pc.pass.ImportObjectFact(obj, &ff) && ff.BlockingIgnore {
+		// Its waits count for no caller: only a declared wait is left of its blocking part.
+		defer func() {
+			summary.Blocking, summary.BlockingReleased, summary.BlockingNamed = false, nil, false
+			summary.Witnesses, summary.ParamCalls = nil, nil
+			if pc.witness != nil {
+				pc.witness.paths[fn] = slices.DeleteFunc(pc.witness.paths[fn], func(c witnessCandidate) bool { return !c.annotated })
+				delete(pc.witness.edges, fn)
+			}
+			if ff.Blocking {
+				summary.addBlocking(nil, true /* named */)
+			}
+		}()
+	}
+	if obj != nil && ff.Blocking {
 		// A function declared to block is a sink whatever its body does, which is how a
 		// wait this analysis cannot see through is named: one reached by an indirect call,
 		// or one inside a dependency that is not analyzed.
@@ -274,9 +290,8 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	if !pc.pass.ImportObjectFact(obj, &cs) {
 		return
 	}
-	if pc.calleeIgnored(obj) {
-		return
-	}
+	var ff funcFact
+	pc.pass.ImportObjectFact(obj, &ff)
 	// A callee called on this function's own receiver acts on the same object, so a lock it
 	// releases of its receiver's is one of this function's caller's locks too, and that
 	// carries into this summary. A callee called on any other object says nothing about the
@@ -329,6 +344,9 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 			reported, reached, cs.BlockingNamed, summary, report)
 	}
 	for _, a := range cs.Acquires {
+		if ff.Ignore {
+			break
+		}
 		// The callee dropped these before it acquired, so they are not held across the
 		// acquisition however it looks from here: the unlock-relock gap.
 		pc.checkAcquire(call.Pos(), a.Class, displayName(callee), subtractClasses(cur.held(), a.ReleasedBefore), summary, report)
@@ -383,23 +401,19 @@ func (pc *lockOrderContext) entryClasses(fn *ssa.Function) *classSet {
 	return cs
 }
 
-// functionIgnored reports whether reporting is suppressed inside a function.
+// functionIgnored reports whether reporting is suppressed inside a function, by the
+// ignore annotation of the analyzer the walk is running for.
 func (pc *lockOrderContext) functionIgnored(fn *ssa.Function) bool {
 	obj := funcObject(fn)
 	if obj == nil {
 		return false
 	}
-	return pc.calleeIgnored(obj)
-}
-
-// calleeIgnored reports whether a function carries the ignore annotation of the analyzer
-// the walk is running for. Each analyzer has its own: silencing an ordering report is not a
-// statement about waiting under a lock, or the other way round.
-func (pc *lockOrderContext) calleeIgnored(obj *types.Func) bool {
 	var ff funcFact
 	if !pc.pass.ImportObjectFact(obj, &ff) {
 		return false
 	}
+	// Each analyzer has its own annotation: silencing an ordering report is not a statement
+	// about waiting under a lock, or the other way round.
 	if pc.check == checkBlocking {
 		return ff.BlockingIgnore
 	}

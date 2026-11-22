@@ -464,7 +464,7 @@ func reachesPastAGoCallUnderLock(a *App, c chan int) {
 	a.Unlock()
 }
 
-// A lockblocking ignore does not reach the ordering walk the path comes from, so the hop stays.
+// An ignored callee's wait does not travel to its callers.
 func reachesThroughAnIgnoredCallee(c chan int) {
 	ignoredWaiter(c)
 	waitsIndirectly(c)
@@ -477,7 +477,7 @@ func ignoredWaiter(c chan int) {
 
 func reachesThroughAnIgnoredCalleeUnderLock(a *App, c chan int) {
 	a.Lock()
-	reachesThroughAnIgnoredCallee(c) // +lockblockingfail=which may block (calling ignoredWaiter at lockblocking/lockblocking.go:469 -> a channel receive at lockblocking/lockblocking.go:475)
+	reachesThroughAnIgnoredCallee(c) // +lockblockingfail=which may block (calling waitsIndirectly at lockblocking/lockblocking.go:470 -> calling waits at lockblocking/lockblocking.go:168 -> a channel receive at lockblocking/lockblocking.go:164)
 	a.Unlock()
 }
 
@@ -1131,4 +1131,149 @@ func g2NestTwin(n *g2N2) {
 	n.w.w.mu.Lock()
 	n.Wait()
 	n.w.w.mu.Unlock()
+}
+
+// --- each ignore annotation suppresses only its own analyzer's part of a summary ----------
+
+// +lockorderignore
+func g3F1(o *App) {
+	time.Sleep(time.Millisecond)
+	o.Lock()
+	o.Unlock()
+}
+
+func g3W1(o *App) { g3F1(o) }
+
+func g3W1b(o *App) { g3W1(o) }
+
+func g3T1(a, o *App) {
+	a.Lock()
+	g3F1(o) // +lockblockingfail=calling g3F1, which may block (calling Sleep at lockblocking/lockblocking.go:1140)
+	a.Unlock()
+}
+
+func g3T1w(a, o *App) {
+	a.Lock()
+	g3W1(o) // +lockblockingfail=calling g3W1, which may block (calling g3F1 at lockblocking/lockblocking.go:1145 -> calling Sleep at lockblocking/lockblocking.go:1140)
+	a.Unlock()
+}
+
+func g3T1w2(a, o *App) {
+	a.Lock()
+	g3W1b(o) // +lockblockingfail=calling g3W1b, which may block (calling g3W1 at lockblocking/lockblocking.go:1147 -> calling g3F1 at lockblocking/lockblocking.go:1145 -> calling Sleep at lockblocking/lockblocking.go:1140)
+	a.Unlock()
+}
+
+// +lockblockingignore
+func g3F2() { time.Sleep(time.Millisecond) }
+
+func g3W2() { g3F2() }
+
+func g3W2b() { g3W2() }
+
+func g3T2(a *App) {
+	a.Lock()
+	g3F2()
+	g3W2()
+	g3W2b()
+	a.Unlock()
+}
+
+func g3W3() {
+	g3F2()
+	time.Sleep(time.Millisecond)
+}
+
+func g3T3(a *App) {
+	a.Lock()
+	g3W3() // +lockblockingfail=calling g3W3, which may block (calling Sleep at lockblocking/lockblocking.go:1184)
+	a.Unlock()
+}
+
+// +blocking
+// +lockblockingignore
+func g3F4() { time.Sleep(time.Millisecond) }
+
+func g3W4() { g3F4() }
+
+func g3T4(a *App) {
+	a.Lock()
+	g3F4() // +lockblockingfail=calling g3F4, which may block
+	a.Unlock()
+}
+
+func g3T4w(a *App) {
+	a.Lock()
+	g3W4() // +lockblockingfail=calling g3W4, which may block (calling g3F4 at lockblocking/lockblocking.go:1197 -> g3F4 is declared blocking at lockblocking/lockblocking.go:1195)
+	a.Unlock()
+}
+
+type g3X struct{}
+
+// +lockorderignore
+func (*g3X) Wait() { time.Sleep(time.Millisecond) }
+
+func g3T5(a *App, b *g1B[*g3X]) {
+	a.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g3X).Wait at lockblocking/lockblocking.go:799 -> calling Sleep at lockblocking/lockblocking.go:1214)
+	a.Unlock()
+}
+
+func g3W5(b *g1B[*g3X]) { b.Wait() }
+
+func g3T5w(a *App, b *g1B[*g3X]) {
+	a.Lock()
+	g3W5(b) // +lockblockingfail=calling g3W5, which may block (calling (*g1B[W]).Wait at lockblocking/lockblocking.go:1222 -> calling (*g3X).Wait at lockblocking/lockblocking.go:799)
+	a.Unlock()
+}
+
+func g3W6() { dep.OrderIgnoredSleeps() }
+
+func g3T6(a *App) {
+	a.Lock()
+	g3W6() // +lockblockingfail=calling g3W6, which may block (calling OrderIgnoredSleeps at lockblocking/lockblocking.go:1230 -> calling Sleep at dep/dep.go:99)
+	a.Unlock()
+}
+
+type g3D struct{}
+
+// +blocking
+// +lockblockingignore
+func (*g3D) Wait() { time.Sleep(time.Millisecond) }
+
+func g3T7(a *App, b *g1B[*g3D]) {
+	a.Lock()
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g3D).Wait at lockblocking/lockblocking.go:799)
+	a.Unlock()
+}
+
+// +lockblockingignore
+func g3gf[W interface{ Wait() }](w W) { w.Wait() }
+
+func g3W8(w *sync.WaitGroup) { g3gf(w) }
+
+func g3T8(a *App, w *sync.WaitGroup) {
+	a.Lock()
+	g3gf(w)
+	g3W8(w)
+	a.Unlock()
+}
+
+type g3ibox[W g1Waiter] struct{ w W }
+
+// +lockblockingignore
+func (b *g3ibox[W]) Wait() { b.w.Wait() }
+
+func g3T8b(a *App, b *g1B[*g3ibox[*sync.WaitGroup]]) {
+	a.Lock()
+	b.Wait()
+	a.Unlock()
+}
+
+func g3W9() { dep.BlockingIgnoredSleeps() }
+
+func g3T9(a *App) {
+	a.Lock()
+	g3W9()
+	a.Unlock()
 }

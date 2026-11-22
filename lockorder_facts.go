@@ -394,8 +394,8 @@ type funcFact struct {
 	// Blocking declares the function to be a blocking sink.
 	Blocking bool
 
-	// BlockingIgnore suppresses blocking reports inside the function and at its call
-	// sites.
+	// BlockingIgnore suppresses blocking reports inside the function, and its waits count
+	// for no caller at any depth, except a wait declared with Blocking.
 	BlockingIgnore bool
 }
 

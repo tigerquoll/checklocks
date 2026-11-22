@@ -1005,8 +1005,9 @@ so including them would report all nesting and say nothing; that nesting is
 
 *   `+blocking`: on a function, declares that it waits. Use it for a wait this
     analysis cannot see: behind an indirect call, or inside a dependency.
-*   `+lockblockingignore`: on a function, drops every diagnostic in its body
-    and at its call sites; on a line, drops the diagnostics on that line.
+*   `+lockblockingignore`: on a function, drops every diagnostic in its body,
+    and its waits count for no caller at any depth, except a wait declared with
+    `+blocking`; on a line, drops the diagnostics on that line.
 *   `+lockblockingfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
 

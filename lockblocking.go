@@ -222,7 +222,7 @@ func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.T
 		}
 		found, _, _ := types.LookupFieldOrMethod(args[rec.Index], false, pkg, rec.Method)
 		m, ok := found.(*types.Func)
-		if !ok || pc.calleeIgnored(m.Origin()) {
+		if !ok {
 			continue
 		}
 		name := m.Name()

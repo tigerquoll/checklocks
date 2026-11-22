@@ -94,3 +94,9 @@ func (b *Both[W]) Wait() {
 	time.Sleep(time.Millisecond)
 	b.w.Wait()
 }
+
+// +lockorderignore
+func OrderIgnoredSleeps() { time.Sleep(time.Millisecond) }
+
+// +lockblockingignore
+func BlockingIgnoredSleeps() { time.Sleep(time.Millisecond) }
