@@ -69,10 +69,11 @@ func (pc *passContext) synthesizeExcludes(fns []*ssa.Function) {
 		return
 	}
 	found := make(map[*ssa.Function]map[int]selfLock)
+	rs := newResolver()
 	for round := 0; round < maxFixpointRounds; round++ {
 		changed := false
 		for _, fn := range fns {
-			locks := pc.selfLocksOf(fn, found)
+			locks := pc.selfLocksOf(rs, fn, found)
 			if len(locks) == 0 {
 				continue
 			}
@@ -91,11 +92,13 @@ func (pc *passContext) synthesizeExcludes(fns []*ssa.Function) {
 	for fn, locks := range found {
 		pc.exportSynthesizedExcludes(fn, locks)
 	}
+	pc.dumpSynthFacts(fns)
+	rs.shadowReport(pc.pass.Pkg.Path())
 }
 
 // selfLocksOf returns the locks of its own receiver that a method takes,
 // directly or through a method of the same receiver.
-func (pc *passContext) selfLocksOf(fn *ssa.Function, found map[*ssa.Function]map[int]selfLock) map[int]selfLock {
+func (pc *passContext) selfLocksOf(rs *resolver, fn *ssa.Function, found map[*ssa.Function]map[int]selfLock) map[int]selfLock {
 	recv := receiverStruct(fn)
 	if recv == nil {
 		return nil
@@ -105,7 +108,7 @@ func (pc *passContext) selfLocksOf(fn *ssa.Function, found map[*ssa.Function]map
 		return nil
 	}
 	out := make(map[int]selfLock)
-	pc.collectSelfLocks(fn, fn, recv, structType, nil, found, out, 0)
+	pc.collectSelfLocks(rs, fn, fn, recv, structType, nil, found, out, 0)
 	if len(out) == 0 {
 		return nil
 	}
@@ -117,7 +120,7 @@ const maxClosureDepth = 4
 
 // collectSelfLocks walks a body and the closures it creates, recording the
 // locks of the receiver it takes.
-func (pc *passContext) collectSelfLocks(fn, body *ssa.Function, recv *ssa.Parameter, structType *types.Struct, captured map[*ssa.FreeVar]ssa.Value, found map[*ssa.Function]map[int]selfLock, out map[int]selfLock, depth int) {
+func (pc *passContext) collectSelfLocks(rs *resolver, fn, body *ssa.Function, recv *ssa.Parameter, structType *types.Struct, captured map[*ssa.FreeVar]ssa.Value, found map[*ssa.Function]map[int]selfLock, out map[int]selfLock, depth int) {
 	for _, block := range body.Blocks {
 		for _, inst := range block.Instrs {
 			call, ok := inst.(ssa.CallInstruction)
@@ -126,7 +129,7 @@ func (pc *passContext) collectSelfLocks(fn, body *ssa.Function, recv *ssa.Parame
 			}
 			common := call.Common()
 			if isLockAcquire(pc.pass, common) {
-				pc.noteDirectSelfLock(common, recv, structType, captured, out)
+				pc.noteDirectSelfLock(rs, call, recv, structType, captured, out)
 				continue
 			}
 			// A method of the same receiver that takes the lock
@@ -135,7 +138,7 @@ func (pc *passContext) collectSelfLocks(fn, body *ssa.Function, recv *ssa.Parame
 			if callee == nil || callee == fn {
 				continue
 			}
-			if !callsOwnMethod(common, recv, captured) {
+			if !callsOwnMethod(rs, call, recv, captured) {
 				continue
 			}
 			for index, sl := range pc.calleeSelfLocks(callee, found) {
@@ -151,13 +154,14 @@ func (pc *passContext) collectSelfLocks(fn, body *ssa.Function, recv *ssa.Parame
 		if spawned || captures == nil {
 			continue
 		}
-		pc.collectSelfLocks(fn, anon, recv, structType, captures, found, out, depth+1)
+		pc.collectSelfLocks(rs, fn, anon, recv, structType, captures, found, out, depth+1)
 	}
 }
 
 // noteDirectSelfLock records a lock operation whose receiver is a lock field of
 // this method's receiver.
-func (pc *passContext) noteDirectSelfLock(common *ssa.CallCommon, recv *ssa.Parameter, structType *types.Struct, captured map[*ssa.FreeVar]ssa.Value, out map[int]selfLock) {
+func (pc *passContext) noteDirectSelfLock(rs *resolver, call ssa.CallInstruction, recv *ssa.Parameter, structType *types.Struct, captured map[*ssa.FreeVar]ssa.Value, out map[int]selfLock) {
+	common := call.Common()
 	args := common.Args
 	if common.Method != nil {
 		args = append([]ssa.Value{common.Value}, args...)
@@ -166,7 +170,11 @@ func (pc *passContext) noteDirectSelfLock(common *ssa.CallCommon, recv *ssa.Para
 		return
 	}
 	fa, ok := underlyingFieldAddr(args[0])
-	if !ok || !resolvesToReceiver(fa.X, recv, captured) {
+	if !ok {
+		return
+	}
+	rs.shadowDirect(call, fa.X, recv, captured)
+	if !resolvesToReceiver(fa.X, recv, captured) {
 		return
 	}
 	if fa.Field >= structType.NumFields() {
@@ -204,12 +212,17 @@ func merge(out map[int]selfLock, index int, sl selfLock) {
 }
 
 // callsOwnMethod reports whether a call is a method call on this receiver.
-func callsOwnMethod(common *ssa.CallCommon, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
+func callsOwnMethod(rs *resolver, call ssa.CallInstruction, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
+	common := call.Common()
 	args := common.Args
 	if common.Method != nil {
 		args = append([]ssa.Value{common.Value}, args...)
 	}
-	return len(args) > 0 && resolvesToReceiver(args[0], recv, captured)
+	if len(args) == 0 {
+		return false
+	}
+	rs.shadowOwn(call, args[0], recv, captured)
+	return resolvesToReceiver(args[0], recv, captured)
 }
 
 // lockOpIsWrite reports whether a lock operation takes the lock for writing.
@@ -334,9 +347,6 @@ func (pc *passContext) exportSynthesizedExcludes(fn *ssa.Function, locks map[int
 // one value is ever stored into it, so a variable that holds different objects
 // at different times resolves to nothing rather than to the wrong one.
 
-// maxCaptureHops bounds the walk back to the receiver.
-const maxCaptureHops = 16
-
 // resolvesToReceiver reports whether v is the receiver, reached through the
 // spills and captures the ssa builder introduces.
 func resolvesToReceiver(v ssa.Value, recv *ssa.Parameter, captured map[*ssa.FreeVar]ssa.Value) bool {
@@ -362,28 +372,6 @@ func resolvesToReceiver(v ssa.Value, recv *ssa.Parameter, captured map[*ssa.Free
 		}
 	}
 	return false
-}
-
-// singleStore returns the only value ever stored into a local.
-func singleStore(alloc *ssa.Alloc) (ssa.Value, bool) {
-	refs := alloc.Referrers()
-	if refs == nil {
-		return nil, false
-	}
-	var found ssa.Value
-	for _, inst := range *refs {
-		st, ok := inst.(*ssa.Store)
-		if !ok || st.Addr != ssa.Value(alloc) {
-			continue
-		}
-		if found != nil {
-			// More than one value passes through it; which one is
-			// live here is not something this can answer.
-			return nil, false
-		}
-		found = st.Val
-	}
-	return found, found != nil
 }
 
 // closureCaptures returns the free variables of an anonymous function bound to
