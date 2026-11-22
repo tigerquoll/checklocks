@@ -129,6 +129,11 @@ func TestShadowAgree(t *testing.T) {
 			t.Errorf("%s: want an N line with compared > 0, got %q", fn, n)
 		}
 	}
+	// The sites without an engine record: the literal's call and the mu.Lock and mu.Unlock calls in Guard's primitive bodies.
+	log, _, _ := shadowCorpus(t, "straight")
+	if n := log[len(log)-1]; !strings.Contains(n, "\tnoengine=3\t") {
+		t.Errorf("want noengine=3 so that every other site is counted, got %q", n)
+	}
 }
 
 func TestShadowEngineOnly(t *testing.T) {
@@ -157,7 +162,7 @@ func TestShadowView(t *testing.T) {
 		if n != 1 {
 			t.Errorf("%s: want one N line, got %d", name, n)
 		}
-		if strings.Contains(log, " noview") || strings.Contains(log, "\nP\t") {
+		if strings.Contains(log, " noview") || strings.HasPrefix(log, "P\t") || strings.Contains(log, "\nP\t") {
 			t.Errorf("%s: want no noview and no P line:\n%s", name, log)
 		}
 	}

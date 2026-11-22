@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ import (
 // shadowLogDir is where the shadow logs go; empty records and writes nothing.
 var shadowLogDir = os.Getenv("CHECKLOCKS_SHADOW_LOG")
 
-// shadowOrigin says how the engine came to hold a lock; the later value wins when states are joined.
+// shadowOrigin says how the engine came to hold a lock; the highest wins when states are joined.
 type shadowOrigin int
 
 const (
@@ -116,10 +117,11 @@ func (pc *passContext) shadowResult() shadowView {
 	if shadowLogDir == "" {
 		return shadowView{}
 	}
-	return shadowView{&pc.shadow}
+	e := pc.shadow
+	return shadowView{&e}
 }
 
-// heldAt returns the locks the engine held at inst, and false when it recorded none.
+// heldAt returns the locks the engine held at inst, and false when it recorded none or gave up on inst's function.
 func (v shadowView) heldAt(inst ssa.Instruction) ([]shadowLock, bool) {
 	rec, ok := v.e.held[inst]
 	if !ok || v.e.gaveUp[inst.Parent()] != "" {
@@ -292,7 +294,7 @@ func (pc *lockOrderContext) shadowCompare() {
 		if !ok {
 			s.noengine++
 			if len(lo) > 0 {
-				s.lines = append(s.lines, shadowLine{inst.Pos(), fmt.Sprintf("X\t%s\t%s\t%s\tL=%s\t%s", pkg, pos, relFuncName(fn), strings.Join(sortedKeys(lo), ","), view.whyNone(fn))})
+				s.lines = append(s.lines, shadowLine{inst.Pos(), fmt.Sprintf("X\t%s\t%s\t%s\tL=%s\t%s", pkg, pos, relFuncName(fn), strings.Join(slices.Sorted(maps.Keys(lo)), ","), view.whyNone(fn))})
 			}
 			continue
 		}
@@ -348,15 +350,6 @@ func (pc *lockOrderContext) shadowCompare() {
 		}
 		s.lines = append(s.lines, shadowLine{inst.Pos(), strings.Join(fields, "\t")})
 	}
-}
-
-func sortedKeys(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
 }
 
 // shadowFlush writes this unit's shadow log; cycle is set for the declared-cycle return, which compares nothing.
