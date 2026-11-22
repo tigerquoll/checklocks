@@ -17,6 +17,7 @@ package checklocks
 import (
 	"go/token"
 	"go/types"
+	"maps"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -29,27 +30,86 @@ type slotInfo struct {
 	// params holds the parameters such a resolution reaches, which an inline caller binds.
 	params map[*ssa.Parameter]bool
 
-	// slots are the loaded addresses the function stores to, and every global it stores to.
+	// stores holds the addresses the function stores to.
+	stores map[ssa.Value][]ssa.Value
+
+	// slots are the stored addresses the function loads; nil until relevantSlots asks.
 	slots map[ssa.Value]bool
 }
 
 // relevantSlots returns the slots of fn whose stored values a lock resolution may load,
-// computed once. It reads facts of fn alone, so the result does not depend on the walk
-// that asks. It resolves no values: it follows the operands valueAndObject follows.
+// computed once from fn's code and facts, never from walk state. It resolves no values:
+// it follows the operands valueAndObject follows.
+// A global any literal of fn's family loads is a slot of every member that stores it.
 func (pc *passContext) relevantSlots(fn *ssa.Function) *slotInfo {
+	si := pc.slotPass(fn)
+	if si == nil || si.slots != nil {
+		return si
+	}
+	si.slots = map[ssa.Value]bool{}
+	for addr := range si.stores {
+		if si.loaded[addr] {
+			si.slots[addr] = true
+		}
+	}
+	return si
+}
+
+// slotPass returns the pre-pass of fn, run over its family (the top-level function enclosing
+// fn and every literal within it) until no member loads a new global, so a global any member
+// loads is a slot of every member that stores it.
+func (pc *passContext) slotPass(fn *ssa.Function) *slotInfo {
 	if fn == nil {
 		return nil
 	}
 	if si, ok := pc.slotInfos[fn]; ok {
 		return si
 	}
-	si := &slotInfo{loaded: map[ssa.Value]bool{}, params: map[*ssa.Parameter]bool{}, slots: map[ssa.Value]bool{}}
-	if pc.slotInfos == nil {
-		pc.slotInfos = map[*ssa.Function]*slotInfo{}
+	root := fn
+	for root.Parent() != nil {
+		root = root.Parent()
 	}
-	pc.slotInfos[fn] = si
+	members := []*ssa.Function{fn}
+	for work := []*ssa.Function{root}; len(work) > 0; {
+		f := work[len(work)-1]
+		work = append(work[:len(work)-1], f.AnonFuncs...)
+		members = append(members, f)
+	}
+	seed := map[*ssa.Global]bool{}
+	for {
+		fam := map[*ssa.Function]*slotInfo{}
+		for _, m := range members {
+			pc.prePass(m, seed, fam)
+		}
+		n := len(seed)
+		for _, si := range fam {
+			for addr := range si.loaded {
+				if g, ok := addr.(*ssa.Global); ok {
+					seed[g] = true
+				}
+			}
+		}
+		if len(seed) == n {
+			if pc.slotInfos == nil {
+				pc.slotInfos = map[*ssa.Function]*slotInfo{}
+			}
+			maps.Copy(pc.slotInfos, fam)
+			return fam[fn]
+		}
+	}
+}
+
+// prePass computes the loaded addresses and parameters of fn, loading the seed globals it stores.
+func (pc *passContext) prePass(fn *ssa.Function, seed map[*ssa.Global]bool, fam map[*ssa.Function]*slotInfo) *slotInfo {
+	if si, ok := fam[fn]; ok {
+		return si
+	}
+	si := &slotInfo{loaded: map[ssa.Value]bool{}, params: map[*ssa.Parameter]bool{}}
+	fam[fn] = si
+	sub := func(f *ssa.Function) *slotInfo { return pc.prePass(f, seed, fam) }
 
 	stores := map[ssa.Value][]ssa.Value{}
+	si.stores = stores
 	for _, b := range fn.Blocks {
 		for _, inst := range b.Instrs {
 			if st, ok := inst.(*ssa.Store); ok {
@@ -120,7 +180,7 @@ func (pc *passContext) relevantSlots(fn *ssa.Function) *slotInfo {
 			case *ssa.FieldAddr:
 				pc.accessRoot(x.X, x.Field, visit)
 			case ssa.CallInstruction:
-				pc.callRoots(x, visit, load)
+				pc.callRoots(x, visit, load, sub)
 			case *ssa.Return:
 				for _, g := range own.HeldOnExit {
 					if rg, ok := g.Resolver.(*returnGuard); ok && rg.Index < len(x.Results) {
@@ -130,11 +190,9 @@ func (pc *passContext) relevantSlots(fn *ssa.Function) *slotInfo {
 			}
 		}
 	}
-
 	for addr := range stores {
-		_, isGlobal := addr.(*ssa.Global)
-		if si.loaded[addr] || isGlobal {
-			si.slots[addr] = true
+		if g, ok := addr.(*ssa.Global); ok && seed[g] {
+			load(g)
 		}
 	}
 	return si
@@ -169,8 +227,7 @@ func visitGuardArgs(lff *lockFunctionFacts, args []ssa.Value, visit func(ssa.Val
 }
 
 // visitParamArgs visits the arguments bound to the parameters of fn that its own pre-pass reaches.
-func (pc *passContext) visitParamArgs(fn *ssa.Function, args []ssa.Value, visit func(ssa.Value)) {
-	si := pc.relevantSlots(fn)
+func visitParamArgs(si *slotInfo, fn *ssa.Function, args []ssa.Value, visit func(ssa.Value)) {
 	for i, arg := range args {
 		if i < len(fn.Params) && si.params[fn.Params[i]] {
 			visit(arg)
@@ -179,9 +236,16 @@ func (pc *passContext) visitParamArgs(fn *ssa.Function, args []ssa.Value, visit 
 }
 
 // callRoots visits the operands of a call, go or defer whose checking resolves them.
-func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.Value)) {
+func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.Value), sub func(*ssa.Function) *slotInfo) {
 	common := call.Common()
 	args := common.Args
+	aliasArgs := func() {
+		for _, arg := range args {
+			if pc.hasAliasFacts(arg) {
+				visit(arg)
+			}
+		}
+	}
 	var tf *types.Func
 	if common.Method != nil {
 		tf = common.Method
@@ -190,7 +254,8 @@ func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.
 		switch fn := common.Value.(type) {
 		case *ssa.Function:
 			if fn.Object() == nil {
-				pc.visitParamArgs(fn, args, visit)
+				visitParamArgs(sub(fn), fn, args, visit)
+				aliasArgs()
 				if _, isGo := call.(*ssa.Go); isGo {
 					if annotated, ok := pc.closureFactsFor(fn.Syntax()); ok {
 						visitGuardArgs(annotated, args, visit)
@@ -205,12 +270,13 @@ func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.
 		case *ssa.MakeClosure:
 			clfn := fn.Fn.(*ssa.Function)
 			for i, fv := range clfn.FreeVars {
-				if pc.relevantSlots(clfn).loaded[fv] {
+				if sub(clfn).loaded[fv] || pc.hasAliasFacts(fv) {
 					load(fn.Bindings[i])
 					visit(fn.Bindings[i])
 				}
 			}
-			pc.visitParamArgs(clfn, args, visit)
+			visitParamArgs(sub(clfn), clfn, args, visit)
+			aliasArgs()
 			return
 		default:
 			return
@@ -223,9 +289,5 @@ func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.
 		visit(recv)
 	}
 	visitGuardArgs(&lff, args, visit)
-	for _, arg := range args {
-		if pc.hasAliasFacts(arg) {
-			visit(arg)
-		}
-	}
+	aliasArgs()
 }

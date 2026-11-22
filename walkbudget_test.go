@@ -97,6 +97,94 @@ func many(c bool) int {
 }
 
 func few(m *Mutex) { needsLock(m) }
+
+func sinkSlot(**Mutex) {}
+
+func diamonds(a, b *Mutex, c bool) {
+	p := a
+	sinkSlot(&p)
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	if c {
+		p = a
+	} else {
+		p = b
+	}
+	needsLock(p)
+}
 `
 
 func TestWalkBudget(t *testing.T) {
@@ -149,4 +237,14 @@ func TestWalkBudget(t *testing.T) {
 	if pc.walks > maxFunctionWalks {
 		t.Errorf("the second function walked %d blocks, over a budget of %d it should not reach", pc.walks, maxFunctionWalks)
 	}
+
+	maxFunctionWalks = 40000
+	got = check("diamonds")
+	if slices.ContainsFunc(got, func(m string) bool { return strings.Contains(m, "gave up") }) {
+		t.Errorf("16 diamonds reassigning a lock-relevant local reported %q, want no give-up", got)
+	}
+	if pc.walks > 400 {
+		t.Errorf("16 diamonds walked %d blocks, want at most 400", pc.walks)
+	}
+	t.Logf("diamonds walks: %d", pc.walks)
 }

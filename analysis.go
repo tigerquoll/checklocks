@@ -1199,6 +1199,9 @@ func (pc *passContext) replay() {
 // maxHeadStates bounds the distinct states a loop head is entered with in one frame.
 const maxHeadStates = 16
 
+// maxSeenStates bounds the states the memo keeps per block; past it the newest replaces the last.
+const maxSeenStates = 64
+
 // maxFunctionWalks bounds the block walks of one top-level function, inline walks included.
 var maxFunctionWalks = 40000
 
@@ -1257,12 +1260,12 @@ func (wc *walkContext) queueBackEdge(latch, head *ssa.BasicBlock, ls *lockState)
 
 // checkBasicBlock traverses the control flow graph starting at a set of given
 // block and checks each instruction for allowed operations.
-func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
+func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock][]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
 	// Check for cached results from entering this block from a *different*
 	// execution path. Note that this is not the same path, which is
 	// checked with the recursion guard below.
-	if oldLS, ok := seen[block]; ok && pc.sameElement(wc.fn, oldLS, parent) {
-		pc.cutCheck(wc.fn, oldLS, parent)
+	if i := slices.IndexFunc(seen[block], func(e *lockState) bool { return pc.sameElement(wc.fn, e, parent) }); i >= 0 {
+		pc.cutCheck(wc.fn, seen[block][i], parent)
 		return nil
 	}
 
@@ -1311,7 +1314,7 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 }
 
 // walkBlock runs block on parent and then walks its successors.
-func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
+func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock][]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
 	// If the lock state is not compatible, then we need to do the
 	// recursive analysis to ensure that it is still sane. For example, the
 	// following is guaranteed to generate incompatible locking states:
@@ -1325,7 +1328,11 @@ func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent 
 	//	}
 
 	// Analyze this block.
-	seen[block] = parent
+	if n := len(seen[block]); n < maxSeenStates {
+		seen[block] = append(seen[block], parent)
+	} else {
+		seen[block][n-1] = parent
+	}
 	if pc.walks++; pc.walks > maxFunctionWalks {
 		pc.overBudget = true
 	}
@@ -1452,7 +1459,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	}
 	wc := &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh), context: context}
 
-	seen := make(map[*ssa.BasicBlock]*lockState)
+	seen := make(map[*ssa.BasicBlock][]*lockState)
 
 	// An inline body is entered with the caller's locks held; only what it takes
 	// itself is its own to release, and a lock merely assumed is no cover.

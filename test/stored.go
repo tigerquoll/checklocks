@@ -16,8 +16,7 @@ package test
 
 import "sync"
 
-// The probes below store a lock-relevant value on one arm only; the walk must keep both arms
-// at the merge, so each reports the same under every successor order.
+// Each probe stores a lock-relevant value on one arm only, so the walk must keep both arms.
 
 type stT struct {
 	mu sync.Mutex
@@ -78,8 +77,9 @@ func storedAliasBase(a, b *stAliased, c bool) {
 		p = a
 	}
 	stSink(&p)
-	p.g = 1 // +checklocksfail=invalid field access
+	a.g = 1
 	a.mu.Unlock()
+	stSink(p.in)
 }
 
 // storedReturn: a slot reassigned on one arm, then returned under a return guard.

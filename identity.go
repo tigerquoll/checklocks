@@ -22,8 +22,8 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// sameElement reports whether two states are one element of the walk of fn: the memo, loop-head
-// admission and the marker join all ask it. A lockState component is identity or payload:
+// sameElement reports whether two states are one element of the walk of fn: the memo and loop-head
+// admission ask it, and the marker join asks it without the marker. A lockState component is identity or payload:
 //
 //	held locks, with mode and assumed tag    identity
 //	marker                                   identity

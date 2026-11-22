@@ -321,22 +321,24 @@ func TestSameElement(t *testing.T) {
 
 const slotSource = `package p
 
-type T struct{ mu int }
+type Aliased struct{ mu int }
 
-var G *T
+var G *Aliased
 
 func sink(*int) {}
 
-func slots(t, u *T) {
+func use(*Aliased) {}
+
+func slots(t, u *Aliased) {
 	G = t
+	use(G)
 	n := 0
 	sink(&n)
 	n = 1
 }
 `
 
-// slotFixture is a function that stores to a global, which is always a relevant slot, and to a
-// local that no lock resolution loads.
+// slotFixture stores a global it passes as an alias-typed argument and a local no lock resolution loads.
 type slotFixture struct {
 	fn            *ssa.Function
 	global, local ssa.Value
