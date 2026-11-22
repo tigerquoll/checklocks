@@ -1067,13 +1067,13 @@ func (n *g2MN) Wait() { n.w.Wait() } // +checklocksfail=must hold m.mu exclusive
 
 func g2OriginGeneric(b *g1B[*g2M[*sync.WaitGroup]]) {
 	b.w.mu.Lock()
-	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block (calling (*g2M[W]).Wait at lockblocking/lockblocking.go:799 -> calling Sleep at lockblocking/lockblocking.go:1059)
+	b.Wait() // +lockblockingfail=calling (*g1B[W]).Wait, which may block while holding G2M
 	b.w.mu.Unlock()
 }
 
 func g2OriginTwin(n *g2MN) {
 	n.w.mu.Lock()
-	n.Wait() // +lockblockingfail=calling (*g2MN).Wait, which may block
+	n.Wait() // +lockblockingfail=calling (*g2MN).Wait, which may block while holding G2M
 	n.w.mu.Unlock()
 }
 
@@ -1115,4 +1115,20 @@ func g2DeepTwin(n *g2N) {
 	n.w.mu.Lock()
 	g2fnN(n) // +lockorderfail=two locks of one class must not nest +lockblockingfail=calling g2fnN, which may block (calling (*g2N).Wait at lockblocking/lockblocking.go:1112 -> calling (*g2T).Wait at lockblocking/lockblocking.go:1014 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:1008)
 	n.w.mu.Unlock()
+}
+
+func g2NestGeneric(b *g1B[*g1B[*g2T]]) {
+	b.w.w.mu.Lock()
+	b.Wait()
+	b.w.w.mu.Unlock()
+}
+
+type g2N2 struct{ w *g2N }
+
+func (n *g2N2) Wait() { n.w.Wait() }
+
+func g2NestTwin(n *g2N2) {
+	n.w.w.mu.Lock()
+	n.Wait()
+	n.w.w.mu.Unlock()
 }

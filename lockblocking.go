@@ -211,9 +211,9 @@ func (pc *lockOrderContext) instanceSummary(callee *ssa.Function, obj *types.Fun
 	return paths
 }
 
-// resolveParamCalls looks each call up on its type argument. A method that does not wait
-// itself has its own parameter calls resolved in turn while depth < 2. A call's releases join
-// released only under carry: every call that led here acted on its caller's receiver.
+// resolveParamCalls looks each call up on its type argument, resolving a method that does not
+// wait itself in turn while depth < 2. The method's own releases join only on a receiver chain,
+// and its total only when it has no parameter calls of its own.
 func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.Type, recs []paramCall, released, lead []string, depth int, carry bool, cs *summaryFact) []witnessPath {
 	var paths []witnessPath
 	for _, rec := range recs {
@@ -243,9 +243,9 @@ func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.T
 		var ms summaryFact
 		pc.pass.ImportObjectFact(m.Origin(), &ms)
 		if ms.Blocking && (ms.BlockingNamed || pc.blockingInScope(m)) {
-			own := carry && rec.OnReceiver && len(ms.ParamCalls) == 0
+			own := carry && rec.OnReceiver
 			total := rel
-			if own {
+			if own && len(ms.ParamCalls) == 0 {
 				total = unionClasses(rel, ms.BlockingReleased)
 			}
 			cs.addBlocking(total, ms.BlockingNamed)
