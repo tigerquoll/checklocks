@@ -691,7 +691,8 @@ func (pc *passContext) freshArgument(wc *walkContext, site callSite, fg function
 }
 
 // checkFreshArgs checks, at a call site, that what is passed to a parameter declared to
-// arrive unpublished is an object nothing else can reach yet.
+// arrive unpublished is an object nothing else can reach yet. suppress withholds the
+// report, as force or ignore does.
 func (pc *passContext) checkFreshArgs(wc *walkContext, call ssa.CallInstruction, suppress bool) {
 	common := call.Common()
 	callee := common.StaticCallee()
