@@ -396,12 +396,19 @@ func (pc *passContext) recordObservation(inst almostInst, from ssa.Value, access
 	if _, ok := pc.counted[key]; ok {
 		return
 	}
-	if pc.counted == nil {
-		pc.counted = make(map[observationKey]struct{})
+	counted, observations := &pc.counted, &pc.observations
+	if buf := pc.fnHints; buf != nil {
+		if _, ok := buf.counted[key]; ok {
+			return
+		}
+		counted, observations = &buf.counted, &buf.observations
 	}
-	pc.counted[key] = struct{}{}
+	if *counted == nil {
+		*counted = make(map[observationKey]struct{})
+	}
+	(*counted)[key] = struct{}{}
 
-	oo := pc.observationsFor(accessObj)
+	oo := pc.observationsFor(observations, accessObj)
 	oo.total++
 	held := make(map[types.Object]struct{})
 	for k, info := range ls.lockedMutexes {

@@ -77,6 +77,12 @@ type objectObservations struct {
 	total  int
 }
 
+// hintBuffer is one top-level function's observations, kept apart from the package's.
+type hintBuffer struct {
+	observations map[types.Object]*objectObservations
+	counted      map[observationKey]struct{}
+}
+
 // passContext is a pass with additional expected failures.
 //
 // The embedded expectations carry the self-check annotations, and are shared
@@ -105,8 +111,9 @@ type passContext struct {
 	records []*blockRecord
 	current *blockRecord
 
-	// panicked is set when contained recovered a panic; observations are then partial.
-	panicked bool
+	// fnHints holds the observations of the top-level function being checked until
+	// it finishes; a function that panics leaves nothing behind. See contained.
+	fnHints *hintBuffer
 
 	// decisions is what the tagged build keeps about check decisions; see decide.
 	decisions decisionState
@@ -169,8 +176,13 @@ type decisionAt struct {
 // A panic in it fails that function alone, with the walk state reset; with recoverPanics
 // off the panic propagates.
 func (pc *passContext) contained(fn *ssa.Function, check func()) {
+	pc.fnHints = &hintBuffer{
+		observations: make(map[types.Object]*objectObservations),
+		counted:      make(map[observationKey]struct{}),
+	}
 	if !recoverPanics {
 		check()
+		pc.mergeHints()
 		return
 	}
 	done := false
@@ -179,7 +191,7 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 		if done {
 			return
 		}
-		pc.panicked = true
+		pc.fnHints = nil
 		pc.current, pc.emit, pc.records = nil, emitDirect, nil
 		// Loop B must not analyze the closures of a failed function out of context.
 		for work := []*ssa.Function{fn}; len(work) > 0; {
@@ -194,7 +206,27 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 		})
 	}()
 	check()
+	pc.mergeHints()
 	done = true
+}
+
+// mergeHints adds the finished function's observations to the package's.
+func (pc *passContext) mergeHints() {
+	buf := pc.fnHints
+	pc.fnHints = nil
+	for obj, src := range buf.observations {
+		dst := pc.observationsFor(&pc.observations, obj)
+		dst.total += src.total
+		for lock, n := range src.counts {
+			dst.counts[lock] += n
+		}
+	}
+	if pc.counted == nil {
+		pc.counted = make(map[observationKey]struct{})
+	}
+	for key := range buf.counted {
+		pc.counted[key] = struct{}{}
+	}
 }
 
 // pendingReport is a report held back by the collector.
@@ -232,18 +264,18 @@ func (pc *passContext) flushReports() {
 	}
 }
 
-// observationsFor retrieves observations for the given object.
-func (pc *passContext) observationsFor(obj types.Object) *objectObservations {
+// observationsFor retrieves the given object's entry in observations, creating it.
+func (pc *passContext) observationsFor(observations *map[types.Object]*objectObservations, obj types.Object) *objectObservations {
 	obj = originObject(obj)
-	if pc.observations == nil {
-		pc.observations = make(map[types.Object]*objectObservations)
+	if *observations == nil {
+		*observations = make(map[types.Object]*objectObservations)
 	}
-	oo, ok := pc.observations[obj]
+	oo, ok := (*observations)[obj]
 	if !ok {
 		oo = &objectObservations{
 			counts: make(map[types.Object]int),
 		}
-		pc.observations[obj] = oo
+		(*observations)[obj] = oo
 	}
 	return oo
 }
@@ -443,8 +475,7 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	// Check for inferred checklocks annotations.
-	// A failed function's partial observations would skew the hints for other functions' fields.
-	if enableInferred && !pc.panicked {
+	if enableInferred {
 		pc.checkInferred()
 	}
 
