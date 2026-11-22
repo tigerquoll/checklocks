@@ -187,6 +187,27 @@ func diamonds(a, b *Mutex, c bool) {
 }
 `
 
+// statesSource reassigns n escaped locals on one arm of each of m stages, so every join sees many distinct states.
+func statesSource(n, m int) string {
+	var b strings.Builder
+	b.WriteString("package p\n\ntype Mutex struct{}\n\nfunc needsLock(m *Mutex) {}\n\nfunc sinkSlot(**Mutex) {}\n\nfunc touch() {}\n\nfunc states(a, b *Mutex, c bool) {\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "\tp%d := a\n\tsinkSlot(&p%d)\n", i, i)
+	}
+	for j := 0; j < m; j++ {
+		b.WriteString("\tif c {\n")
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, "\t\tif c {\n\t\t\tp%d = b\n\t\t}\n", i)
+		}
+		b.WriteString("\t} else {\n\t\ttouch()\n\t}\n")
+	}
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "\tneedsLock(p%d)\n", i)
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
 func TestWalkBudget(t *testing.T) {
 	if maxFunctionWalks != 40000 {
 		t.Errorf("maxFunctionWalks = %d, want 40000", maxFunctionWalks)
@@ -212,7 +233,7 @@ func TestWalkBudget(t *testing.T) {
 		collect:      true,
 		functions:    make(map[*ssa.Function]struct{}),
 	}
-	check := func(name string) []string {
+	checkIn := func(pkg *ssa.Package, name string) []string {
 		pc.pending = nil
 		pc.checkFunction(callSite{kind: siteEntry}, nil, pkg.Func(name), &lockFunctionFacts{}, nil, false)
 		var got []string
@@ -221,6 +242,7 @@ func TestWalkBudget(t *testing.T) {
 		}
 		return got
 	}
+	check := func(name string) []string { return checkIn(pkg, name) }
 
 	got := check("many")
 	if want := fmt.Sprintf("checklocks gave up on this function: more than %d block walks", maxFunctionWalks); len(got) != 1 || got[0] != want {
@@ -247,4 +269,13 @@ func TestWalkBudget(t *testing.T) {
 		t.Errorf("16 diamonds walked %d blocks, want at most 400", pc.walks)
 	}
 	t.Logf("diamonds walks: %d", pc.walks)
+
+	got = checkIn(buildTestPackage(t, "states", statesSource(5, 4)), "states")
+	if slices.ContainsFunc(got, func(m string) bool { return strings.Contains(m, "gave up") }) {
+		t.Errorf("5 reassigned locals over 4 stages reported %q, want no give-up", got)
+	}
+	if pc.walks > 1900 {
+		t.Errorf("5 reassigned locals over 4 stages walked %d blocks, want at most 1900", pc.walks)
+	}
+	t.Logf("states walks: %d", pc.walks)
 }

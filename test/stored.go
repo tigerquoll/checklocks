@@ -35,6 +35,13 @@ type stAliased struct {
 	g int
 }
 
+type stGuarded struct {
+	mu sync.Mutex
+
+	// +checklocks:mu
+	g int
+}
+
 var stCur, stOther *stT
 
 func stCond() bool { return stOther == nil }
@@ -80,6 +87,18 @@ func storedAliasBase(a, b *stAliased, c bool) {
 	a.g = 1
 	a.mu.Unlock()
 	stSink(p.in)
+}
+
+// storedGuardedSlot: a slot of a type without alias annotations, reassigned on one arm, then a guarded access through it.
+func storedGuardedSlot(a, b *stGuarded, c bool) {
+	a.mu.Lock()
+	p := b
+	if c {
+		p = a
+	}
+	stSink(&p)
+	p.g = 1 // +checklocksfail=invalid field access, mu (&({param:b}.mu)) must be locked when accessing g
+	a.mu.Unlock()
 }
 
 // storedReturn: a slot reassigned on one arm, then returned under a return guard.
