@@ -663,7 +663,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		p, ok := ls.unlockField(g.rv, g.fg.Exclusive)
 		pc.decide(at, release, ok, g.fieldName)
 		if !ok {
-			if lff.Ignore {
+			if lff.Ignore || ls.silencesRelease(p) {
 				pc.suppressed()
 			} else if _, forced := pc.forced[pc.positionKey(site.Pos())]; forced {
 				pc.suppressed()
@@ -818,7 +818,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.unlockField(rv, exclusive)
 			pc.decide(at, lockOpUnlock, ok)
 			if !ok {
-				if !forced && !lff.Ignore {
+				if !forced && !lff.Ignore && !ls.silencesRelease(p) {
 					// Unlocking something that is already unlocked.
 					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
 				} else {
@@ -829,7 +829,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.downgradeField(rv)
 			pc.decide(at, lockOpDowngrade, ok)
 			if !ok {
-				if !forced && !lff.Ignore {
+				if !forced && !lff.Ignore && !ls.silencesRelease(p) {
 					// Downgrading something that may not be downgraded.
 					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
 				} else {
@@ -980,6 +980,12 @@ type walkContext struct {
 
 	// context names the walk in the decision log; see inlineContext.
 	context string
+
+	// heads holds the frame of each loop head the walk is inside.
+	heads map[*ssa.BasicBlock]*loopHead
+
+	// gaveUp is set when a loop head overflowed; the walk then stops.
+	gaveUp bool
 }
 
 // checkInstruction checks the legality the single instruction based on the
@@ -1183,13 +1189,67 @@ func (pc *passContext) replay() {
 	pc.current, pc.emit, pc.records = nil, outerEmit, nil
 }
 
+// maxHeadStates bounds the distinct states a loop head is entered with in one frame.
+const maxHeadStates = 16
+
+// loopHead is the frame of a loop head being walked: the states it was entered with and
+// the back-edge states waiting to be walked.
+type loopHead struct {
+	entries []*lockState
+	queue   []*lockState
+}
+
+// admit adds s to the entry set unless it is there already. over is true when s is new
+// and the set is full.
+func (h *loopHead) admit(s *lockState) (added, over bool) {
+	s.joinMarker(h.entries)
+	if slices.ContainsFunc(h.entries, s.sameEntry) {
+		return false, false
+	}
+	if len(h.entries) >= maxHeadStates {
+		return false, true
+	}
+	h.entries = append(h.entries, s)
+	return true, false
+}
+
+// isLoopHead reports whether b dominates one of its predecessors.
+func isLoopHead(b *ssa.BasicBlock) bool {
+	return slices.ContainsFunc(b.Preds, b.Dominates)
+}
+
+// loopBody returns the natural loop of the back edge from latch to head.
+func loopBody(head, latch *ssa.BasicBlock) map[*ssa.BasicBlock]bool {
+	body := map[*ssa.BasicBlock]bool{head: true}
+	for work := []*ssa.BasicBlock{latch}; len(work) > 0; {
+		b := work[len(work)-1]
+		work = work[:len(work)-1]
+		if body[b] {
+			continue
+		}
+		body[b] = true
+		work = append(work, b.Preds...)
+	}
+	return body
+}
+
+// queueBackEdge queues the state the back edge from latch to head carries into the next
+// iteration, which has lost the locks taken through values the loop defines.
+func (wc *walkContext) queueBackEdge(latch, head *ssa.BasicBlock, ls *lockState) {
+	s := ls.fork()
+	body := loopBody(head, latch)
+	s.dropDead(func(p lockPath) bool { return pathDies(p, body) })
+	h := wc.heads[head]
+	h.queue = append(h.queue, s)
+}
+
 // checkBasicBlock traverses the control flow graph starting at a set of given
 // block and checks each instruction for allowed operations.
 func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
 	// Check for cached results from entering this block from a *different*
 	// execution path. Note that this is not the same path, which is
 	// checked with the recursion guard below.
-	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) {
+	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) && oldLS.marker == parent.marker {
 		return nil
 	}
 
@@ -1204,6 +1264,41 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 	rg[block] = struct{}{}
 	defer func() { delete(rg, block) }()
 
+	var head *loopHead
+	if isLoopHead(block) {
+		head = &loopHead{entries: []*lockState{parent}}
+		if wc.heads == nil {
+			wc.heads = make(map[*ssa.BasicBlock]*loopHead)
+		}
+		wc.heads[block] = head
+		defer delete(wc.heads, block)
+	}
+
+	rls := pc.walkBlock(wc, block, parent, seen, rg)
+
+	// The head is walked again, on its own frame, with each state the loop ends an iteration in.
+	for head != nil && len(head.queue) > 0 && !wc.gaveUp {
+		s := head.queue[0]
+		head.queue = head.queue[1:]
+		added, over := head.admit(s)
+		if over {
+			wc.gaveUp = true
+			break
+		}
+		if !added {
+			continue
+		}
+		if pls := pc.walkBlock(wc, block, s, seen, rg); pls != nil {
+			text, summary := pls.acquiredString(wc.entryLocks)
+			wc.returnStates[summary] = text
+			rls = pls
+		}
+	}
+	return rls
+}
+
+// walkBlock runs block on parent and then walks its successors.
+func (pc *passContext) walkBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState, seen map[*ssa.BasicBlock]*lockState, rg map[*ssa.BasicBlock]struct{}) *lockState {
 	// If the lock state is not compatible, then we need to do the
 	// recursive analysis to ensure that it is still sane. For example, the
 	// following is guaranteed to generate incompatible locking states:
@@ -1228,6 +1323,15 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 
 	// Analyze all successors.
 	for _, succ := range block.Succs {
+		if wc.gaveUp {
+			return rls
+		}
+		if _, onStack := rg[succ]; onStack {
+			if succ.Dominates(block) {
+				wc.queueBackEdge(block, succ, ls)
+			}
+			continue
+		}
 		// Collect possible return values, and make sure that the lock
 		// state aligns with any return value that we may have found
 		// above. Note that checkBasicBlock will recursively analyze
@@ -1345,10 +1449,14 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if fn.Recover != nil {
 		roots = append(roots, fn.Recover)
 	}
+	recordsAt, pendingAt := len(pc.records), len(pc.pending)
 	for _, root := range roots {
 		// A state the body returns in is no alternative to one the recover block returns in.
 		wc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(wc, root, ls, seen, nil)
+		if wc.gaveUp {
+			break
+		}
 		// Two states that cannot both hold are one finding about the function,
 		// however many paths reach them. Sorting by text first keeps the order the messages had.
 		compatible := len(wc.returnStates) <= 1
@@ -1362,6 +1470,22 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 			} else {
 				pc.suppressed()
 			}
+		}
+	}
+
+	if wc.gaveUp {
+		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
+		pc.decide(decisionAt{fn: fn, label: "overflow", pos: fn.Pos(), context: context}, loopOverflow, false)
+		if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
+			pc.maybeFail(fn.Pos(), "checklocks gave up on this function: more than %d lock states reach one loop", maxHeadStates)
+		} else {
+			pc.suppressed()
+		}
+		// Loop B must not analyze the closures of a function that was given up on.
+		for work := []*ssa.Function{fn}; len(work) > 0; {
+			f := work[len(work)-1]
+			work = append(work[:len(work)-1], f.AnonFuncs...)
+			pc.functions[f] = struct{}{}
 		}
 	}
 

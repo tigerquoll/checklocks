@@ -151,6 +151,7 @@ const (
 	entryResolve       decisionKind = "entryResolve"
 	entryDuplicate     decisionKind = "entryDuplicate"
 	incompatibleReturn decisionKind = "incompatibleReturn"
+	loopOverflow       decisionKind = "loopOverflow"
 )
 
 // decisionAt says where a check was made: the instruction checked or, for a check of a

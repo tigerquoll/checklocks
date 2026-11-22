@@ -74,6 +74,10 @@ type lockState struct {
 	// defers are the stack of defers that have been pushed.
 	defers []*ssa.Defer
 
+	// marker is set once a lock was dropped at a loop's back edge: a later release of a
+	// path that is not held may have meant it.
+	marker bool
+
 	// refs indicates the number of references on this structure. If it's
 	// greater than one, we will do copy-on-write.
 	refs *int32
@@ -110,6 +114,7 @@ func (l *lockState) fork() *lockState {
 		substitutions: l.substitutions,
 		consts:        l.consts,
 		defers:        l.defers,
+		marker:        l.marker,
 		refs:          l.refs,
 	}
 }
@@ -610,8 +615,11 @@ func (l *lockState) acquiredString(entry map[pathKey]bool) (string, string) {
 	return (&lockState{lockedMutexes: held}).String(), l.identitySummary(keep)
 }
 
-// pushDefer pushes a defer onto the stack.
+// pushDefer pushes a defer onto the stack. A site already on it is a loop's second pass.
 func (l *lockState) pushDefer(d *ssa.Defer) {
+	if slices.Contains(l.defers, d) {
+		return
+	}
 	l.modify()
 	l.defers = append(l.defers, d)
 }
@@ -626,4 +634,65 @@ func (l *lockState) popDefer() *ssa.Defer {
 	d := l.defers[count-1]
 	l.defers = l.defers[:count-1]
 	return d
+}
+
+// pathHasValue reports whether p's root, or the root of an index it passes through, is a
+// value defined in a block that in accepts.
+func pathHasValue(p lockPath, in func(*ssa.BasicBlock) bool) bool {
+	if inst, ok := p.root.value.(ssa.Instruction); ok && p.root.kind == pathRootValue && inst.Block() != nil && in(inst.Block()) {
+		return true
+	}
+	return slices.ContainsFunc(p.steps, func(s lockStep) bool { return pathHasValue(s.index, in) })
+}
+
+// pathDies reports whether p names a value defined in body, which the next iteration redefines.
+func pathDies(p lockPath, body map[*ssa.BasicBlock]bool) bool {
+	return pathHasValue(p, func(b *ssa.BasicBlock) bool { return body[b] })
+}
+
+// dropDead removes the held locks whose paths die. Dropping one that was acquired sets the marker.
+func (l *lockState) dropDead(dies func(lockPath) bool) {
+	var dead []pathKey
+	for k, info := range l.lockedMutexes {
+		if dies(info.path) {
+			dead = append(dead, k)
+		}
+	}
+	if len(dead) == 0 {
+		return
+	}
+	l.modify()
+	for _, k := range dead {
+		if !l.lockedMutexes[k].assumed {
+			l.marker = true
+		}
+		delete(l.lockedMutexes, k)
+	}
+}
+
+// sameEntry reports whether two states enter a loop head alike: the same locks, marker and defers.
+func (l *lockState) sameEntry(o *lockState) bool {
+	return l.isCompatible(o) && l.marker == o.marker && slices.Equal(l.defers, o.defers)
+}
+
+// joinMarker sets the marker when an entry with the same locks and defers has it.
+func (l *lockState) joinMarker(entries []*lockState) {
+	for _, e := range entries {
+		if e.marker && e.isCompatible(l) && slices.Equal(e.defers, l.defers) {
+			l.marker = true
+			return
+		}
+	}
+}
+
+// silencesRelease reports whether a release of p that is not held goes unreported: the
+// marker is set and p is a path a loop's back edge can drop.
+func (l *lockState) silencesRelease(p lockPath) bool {
+	if !l.marker {
+		return false
+	}
+	if _, held := l.lockedMutexes[p.Key()]; held {
+		return false
+	}
+	return pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
 }

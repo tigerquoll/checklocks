@@ -138,13 +138,13 @@ func callUpgrades(r *relocker) {
 
 // One loop iteration gives the lock up and takes it back.
 
-func (r *relocker) relocksInLoop() {
+func (r *relocker) relocksInLoop() { // +checklocksfail=incompatible return states
 	for i := 0; i < 3; i++ {
 		r.mu.Unlock() // +checklocksfail=already unlocked +lockgapfail=taken again
 		work()
 		r.mu.Lock()
 	}
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callRelocksInLoop(r *relocker) {
 	r.mu.Lock()
