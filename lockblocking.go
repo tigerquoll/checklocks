@@ -206,15 +206,15 @@ func (pc *lockOrderContext) instanceSummary(callee *ssa.Function, obj *types.Fun
 	if args == nil {
 		args = callee.TypeArgs()
 	}
-	paths := pc.resolveParamCalls(obj.Pkg(), args, cs.ParamCalls, nil, nil, 0, cs)
+	paths := pc.resolveParamCalls(obj.Pkg(), args, cs.ParamCalls, nil, nil, 0, true, cs)
 	cs.Witnesses = append(slices.Clone(cs.Witnesses), paths...)
 	return paths
 }
 
 // resolveParamCalls looks each call up on its type argument. A method that does not wait
-// itself may call on its own type parameters in turn, followed two levels deep, with released
-// and lead carrying what the outer calls had released and the hops that led here.
-func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.Type, recs []paramCall, released, lead []string, depth int, cs *summaryFact) []witnessPath {
+// itself has its own parameter calls resolved in turn while depth < 2. A call's releases join
+// released only under carry: every call that led here acted on its caller's receiver.
+func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.Type, recs []paramCall, released, lead []string, depth int, carry bool, cs *summaryFact) []witnessPath {
 	var paths []witnessPath
 	for _, rec := range recs {
 		if rec.Index >= len(args) || parameterized(args[rec.Index]) {
@@ -229,7 +229,10 @@ func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.T
 		if recv := m.Origin().Signature().Recv(); recv != nil {
 			name = "(" + shortType(recv.Type()) + ")." + name
 		}
-		rel := unionClasses(released, rec.Released)
+		rel := released
+		if carry {
+			rel = unionClasses(released, rec.Released)
+		}
 		hops := append(slices.Clone(lead), "calling "+name+" at "+rec.At)
 
 		if isBlockingFunc(m) || pc.annotatedBlocking(m.Origin()) {
@@ -250,7 +253,7 @@ func (pc *lockOrderContext) resolveParamCalls(pkg *types.Package, args []types.T
 			continue
 		}
 		if len(ms.ParamCalls) > 0 && depth < 2 {
-			paths = append(paths, pc.resolveParamCalls(m.Pkg(), namedArgs(m.Signature().Recv().Type()), ms.ParamCalls, rel, hops, depth+1, cs)...)
+			paths = append(paths, pc.resolveParamCalls(m.Pkg(), namedArgs(m.Signature().Recv().Type()), ms.ParamCalls, rel, hops, depth+1, carry && rec.OnReceiver, cs)...)
 		}
 	}
 	return paths
@@ -272,8 +275,16 @@ func namedArgs(t types.Type) []types.Type {
 	return args
 }
 
-// parameterized reports whether a type is, or is instantiated by, a type parameter.
+// parameterized reports whether a type is, or is instantiated by, a type parameter, looking
+// through pointers.
 func parameterized(t types.Type) bool {
+	for {
+		p, ok := types.Unalias(t).(*types.Pointer)
+		if !ok {
+			break
+		}
+		t = p.Elem()
+	}
 	switch t := types.Unalias(t).(type) {
 	case *types.TypeParam:
 		return true

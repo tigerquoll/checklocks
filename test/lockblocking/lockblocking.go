@@ -948,3 +948,48 @@ func g1WaitsTwice(a *App, b *g1Both[*sync.WaitGroup]) {
 	b.Wait() // +lockblockingfail=calling (*g1Both[W]).Wait, which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:943)
 	a.Unlock()
 }
+
+func g1GapCaller(a *App, g *g1Gap[*sync.WaitGroup]) {
+	a.Lock()
+	g1f(g) // +lockblockingfail=calling g1f, which may block (calling (*g1Gap[W]).Wait at lockblocking/lockblocking.go:912 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:864)
+	a.Unlock()
+}
+
+func g1NestedGap(a *App, o *g1B[*g1Gap[*sync.WaitGroup]]) {
+	a.Lock()
+	g1f(o) // +lockblockingfail=calling g1f, which may block (calling (*g1B[W]).Wait at lockblocking/lockblocking.go:912 -> calling (*g1Gap[W]).Wait at lockblocking/lockblocking.go:799 -> calling (*WaitGroup).Wait at lockblocking/lockblocking.go:864)
+	a.Unlock()
+}
+
+func g1NestedGapDirect(a *App, o *g1B[*g1Gap[*sync.WaitGroup]]) {
+	a.Lock()
+	o.Wait()
+	a.Unlock()
+}
+
+func g1BothCaller(b *g1Both[*sync.WaitGroup]) { b.Wait() }
+
+func g1BothCallersCaller(a *App, b *g1Both[*sync.WaitGroup]) {
+	a.Lock()
+	g1BothCaller(b) // +lockblockingfail=calling g1BothCaller, which may block (calling (*g1Both[W]).Wait at lockblocking/lockblocking.go:970 -> calling Sleep at lockblocking/lockblocking.go:942)
+	a.Unlock()
+}
+
+func g1DepBothCaller(b *dep.Both[*sync.WaitGroup]) { b.Wait() }
+
+func g1DepBothCallersCaller(a *App, b *dep.Both[*sync.WaitGroup]) {
+	a.Lock()
+	g1DepBothCaller(b) // +lockblockingfail=calling g1DepBothCaller, which may block (calling (*Both[W]).Wait at lockblocking/lockblocking.go:978 -> calling Sleep at dep/dep.go:94)
+	a.Unlock()
+}
+
+// A pointer to an instance of the body's own type parameter lifts nothing: a known miss.
+type g1Lift[W g1Waiter] struct{}
+
+func (f *g1Lift[W]) Wait() { (&g1B[*g1Both[W]]{}).Wait() }
+
+func g1LiftCaller(a *App, f *g1Lift[*sync.WaitGroup]) {
+	a.Lock()
+	f.Wait()
+	a.Unlock()
+}

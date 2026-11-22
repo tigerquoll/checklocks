@@ -86,3 +86,11 @@ func (b *Waiter[W]) Wait() { b.w.Wait() }
 type Sleepy struct{}
 
 func (*Sleepy) Wait() { time.Sleep(time.Millisecond) }
+
+// Both waits itself and through its type parameter.
+type Both[W interface{ Wait() }] struct{ w W }
+
+func (b *Both[W]) Wait() {
+	time.Sleep(time.Millisecond)
+	b.w.Wait()
+}

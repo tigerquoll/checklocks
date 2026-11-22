@@ -288,19 +288,21 @@ func TestBlockingBitSurvivesMerge(t *testing.T) {
 
 func TestAddParamCallKeepsSortedUniqueFirst(t *testing.T) {
 	f := &summaryFact{}
-	f.addParamCall(1, "Wait", nil, "p/a.go:9")
-	f.addParamCall(0, "Wait", []string{"Task"}, "p/a.go:5")
-	f.addParamCall(0, "Wait", nil, "p/a.go:4")
-	if f.addParamCall(0, "Wait", nil, "p/a.go:7") {
+	f.addParamCall(1, "Wait", false, nil, "p/a.go:9")
+	f.addParamCall(0, "Wait", true, nil, "p/a.go:6")
+	f.addParamCall(0, "Wait", false, []string{"Task"}, "p/a.go:5")
+	f.addParamCall(0, "Wait", false, nil, "p/a.go:4")
+	if f.addParamCall(0, "Wait", false, nil, "p/a.go:7") {
 		t.Error("a duplicate must report no change")
 	}
 	want := []paramCall{
 		{Index: 0, Method: "Wait", At: "p/a.go:4"},
 		{Index: 0, Method: "Wait", Released: []string{"Task"}, At: "p/a.go:5"},
+		{Index: 0, Method: "Wait", OnReceiver: true, At: "p/a.go:6"},
 		{Index: 1, Method: "Wait", At: "p/a.go:9"},
 	}
 	if !slices.EqualFunc(f.ParamCalls, want, func(a, b paramCall) bool {
-		return a.Index == b.Index && a.Method == b.Method && a.At == b.At && equalClasses(a.Released, b.Released)
+		return a.Index == b.Index && a.Method == b.Method && a.OnReceiver == b.OnReceiver && a.At == b.At && equalClasses(a.Released, b.Released)
 	}) {
 		t.Errorf("ParamCalls = %v, want %v", f.ParamCalls, want)
 	}
@@ -311,7 +313,7 @@ func TestEqualSeesParamCalls(t *testing.T) {
 	if !a.equal(b) {
 		t.Fatal("empty summaries are equal")
 	}
-	b.addParamCall(0, "Wait", nil, "p/a.go:4")
+	b.addParamCall(0, "Wait", false, nil, "p/a.go:4")
 	if a.equal(b) {
 		t.Error("a ParamCalls difference must be seen")
 	}

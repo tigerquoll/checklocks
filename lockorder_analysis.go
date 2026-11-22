@@ -253,7 +253,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 				for i := range fn.TypeParams().Len() {
 					if fn.TypeParams().At(i) == tp {
 						at := strings.TrimPrefix(pc.witnessHop("", call.Pos()), " at ")
-						summary.addParamCall(i, common.Method.Name(), cur.releasedClasses(), at)
+						summary.addParamCall(i, common.Method.Name(), isReceiver(fn, common.Value), cur.releasedClasses(), at)
 					}
 				}
 			}
@@ -286,8 +286,9 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		onReceiver = isReceiver(fn, recv)
 	}
 	released := cur.releasedClasses()
+	ownBlocking, ownWitnesses := cs.Blocking, cs.Witnesses
 	var resolved []witnessPath
-	if !isSink && len(cs.ParamCalls) > 0 {
+	if len(cs.ParamCalls) > 0 {
 		resolved = pc.instanceSummary(callee, obj, &cs)
 	}
 	// A sink on the list has been reported already; its own summary is very likely to say
@@ -309,9 +310,15 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 		namedOnly := !pc.blockingInScope(obj)
 		if obj.Pkg() == pc.pass.Pkg {
 			pc.recordWitnessEdge(fn, call, callee, obj, released, onReceiver)
-			pc.recordWitnessPaths(fn, call, callee, resolved, released, onReceiver, namedOnly)
+			if !ownBlocking {
+				pc.recordWitnessPaths(fn, call, callee, resolved, released, onReceiver, namedOnly)
+			}
 		} else {
-			pc.recordWitnessPaths(fn, call, callee, cs.Witnesses, released, onReceiver, namedOnly)
+			paths := resolved
+			if ownBlocking {
+				paths = ownWitnesses
+			}
+			pc.recordWitnessPaths(fn, call, callee, paths, released, onReceiver, namedOnly)
 		}
 		reported := subtractClasses(cur.held(), cs.BlockingReleased)
 		var witness []string

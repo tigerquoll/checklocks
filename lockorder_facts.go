@@ -132,7 +132,7 @@ type summaryFact struct {
 
 	// ParamCalls are the methods the function calls on a value of one of its type
 	// parameters, for a call site to resolve against its type arguments. Sorted by
-	// Index, Method and Released.
+	// Index, Method, OnReceiver and Released.
 	ParamCalls []paramCall
 }
 
@@ -141,6 +141,9 @@ type paramCall struct {
 	// Index is the position of the type parameter in the function's own list.
 	Index  int
 	Method string
+
+	// OnReceiver is whether the value called on is the function's own receiver.
+	OnReceiver bool
 
 	// Released is what the function had released at the call, in the sense of
 	// acquisition.ReleasedBefore.
@@ -278,11 +281,18 @@ func (f *summaryFact) addBlocking(releasedBefore []string, named bool) bool {
 }
 
 // addParamCall records a call on a type parameter, keeping the slice sorted and unique by
-// index, method and released set. The first position seen stays.
-func (f *summaryFact) addParamCall(index int, method string, released []string, at string) bool {
-	rec := paramCall{Index: index, Method: method, Released: slices.Clone(released), At: at}
+// index, method, receiver bit and released set. The first position seen stays.
+func (f *summaryFact) addParamCall(index int, method string, onReceiver bool, released []string, at string) bool {
+	rec := paramCall{Index: index, Method: method, OnReceiver: onReceiver, Released: slices.Clone(released), At: at}
 	i, found := slices.BinarySearchFunc(f.ParamCalls, rec, func(a, b paramCall) int {
-		return cmp.Or(cmp.Compare(a.Index, b.Index), cmp.Compare(a.Method, b.Method), slices.Compare(a.Released, b.Released))
+		byReceiver := 0
+		if a.OnReceiver != b.OnReceiver {
+			byReceiver = 1
+			if b.OnReceiver {
+				byReceiver = -1
+			}
+		}
+		return cmp.Or(cmp.Compare(a.Index, b.Index), cmp.Compare(a.Method, b.Method), byReceiver, slices.Compare(a.Released, b.Released))
 	})
 	if found {
 		return false
@@ -304,7 +314,7 @@ func (f *summaryFact) equal(other *summaryFact) bool {
 		return false
 	}
 	if !slices.EqualFunc(f.ParamCalls, other.ParamCalls, func(a, b paramCall) bool {
-		return a.Index == b.Index && a.Method == b.Method && a.At == b.At && equalClasses(a.Released, b.Released)
+		return a.Index == b.Index && a.Method == b.Method && a.OnReceiver == b.OnReceiver && a.At == b.At && equalClasses(a.Released, b.Released)
 	}) {
 		return false
 	}
