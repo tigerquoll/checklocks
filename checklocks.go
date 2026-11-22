@@ -94,6 +94,9 @@ type passContext struct {
 	functions    map[*ssa.Function]struct{}
 	observations map[types.Object]*objectObservations
 
+	// relevantDefers memoises deferRelevant per defer site.
+	relevantDefers map[*ssa.Defer]bool
+
 	// collect holds the reports back until flushReports emits them, and pending is
 	// what has been held. Only checklocks' own run collects; see maybeFail.
 	collect bool

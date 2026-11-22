@@ -16,8 +16,13 @@ package checklocks
 
 import (
 	"fmt"
+	"go/token"
+	"go/types"
+	"maps"
+	"reflect"
 	"testing"
 
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -129,5 +134,200 @@ func TestIdentityAliasScope(t *testing.T) {
 	text, summary := ls.acquiredString(entry)
 	if want := fmt.Sprintf("%q %t", string(aPath.Key()), true); summary != want || text != "{param:t} exclusively" {
 		t.Errorf("acquiredString is %q, %q; want only A's lock", text, summary)
+	}
+}
+
+const deferSource = `package p
+
+type Mutex struct{}
+
+func (*Mutex) Lock()   {}
+func (*Mutex) Unlock() {}
+
+type Plain struct{}
+
+func (*Plain) Do() {}
+
+type Aliased struct{ n int }
+
+func needsLock(m *Mutex)  {}
+func useAliased(a *Aliased) {}
+func makeFresh(p *Plain)  {}
+func noop()               {}
+
+func relevant(m *Mutex, p *Plain, a *Aliased) {
+	defer m.Unlock()
+	defer needsLock(m)
+	defer useAliased(a)
+	defer makeFresh(p)
+	defer func() {}()
+}
+
+func irrelevant(m *Mutex, p *Plain, fn func(), ch chan int, i interface{ M() }) {
+	defer p.Do()
+	defer fn()
+	defer close(ch)
+	defer i.M()
+	defer noop()
+}
+
+func ordered(m, n *Mutex) {
+	defer noop()
+	defer m.Unlock()
+	defer n.Unlock()
+}
+`
+
+// noFactsPC is a passContext whose pass has no facts.
+func noFactsPC() *passContext {
+	return deferPC(token.NewFileSet())
+}
+
+func deferPC(fset *token.FileSet) *passContext {
+	pass := &analysis.Pass{
+		Fset: fset,
+		ImportObjectFact: func(o types.Object, fact analysis.Fact) bool {
+			switch f := fact.(type) {
+			case *lockFunctionFacts:
+				if o.Name() == "needsLock" {
+					f.HeldOnEntry = map[string]functionGuardInfo{"m": {}}
+					return true
+				}
+			case *lockTypeFacts:
+				if o.Name() == "Aliased" {
+					f.Aliases = []typeAlias{{}}
+					return true
+				}
+			case *freshFacts:
+				if o.Name() == "makeFresh" {
+					f.FreshParams = []int{0}
+					return true
+				}
+			}
+			return false
+		},
+	}
+	return &passContext{pass: pass, collect: true, expectations: newExpectations(pass, checkLocksAnnotations, true)}
+}
+
+// deferSites returns the defer instructions of fn in source order.
+func deferSites(fn *ssa.Function) []*ssa.Defer {
+	var ds []*ssa.Defer
+	for _, b := range fn.Blocks {
+		for _, inst := range b.Instrs {
+			if d, ok := inst.(*ssa.Defer); ok {
+				ds = append(ds, d)
+			}
+		}
+	}
+	return ds
+}
+
+func TestDeferRelevant(t *testing.T) {
+	pkg := buildTestPackage(t, "defers", deferSource)
+	pc := deferPC(pkg.Prog.Fset)
+	for fn, want := range map[string]bool{"relevant": true, "irrelevant": false} {
+		sites := deferSites(pkg.Func(fn))
+		if len(sites) != 5 {
+			t.Fatalf("%s has %d defers, want 5", fn, len(sites))
+		}
+		for i, d := range sites {
+			if got := pc.deferRelevant(d); got != want {
+				t.Errorf("%s defer %d: relevant = %t, want %t", fn, i, got, want)
+			}
+		}
+	}
+}
+
+func TestSameElement(t *testing.T) {
+	fx := newLoopFixture(t)
+	a, b := fx.param, fx.global
+	pc := noFactsPC()
+	base := func() *lockState { return held(false, a) }
+	if !pc.sameElement(base(), base()) {
+		t.Error("equal states differ")
+	}
+	for _, tc := range []struct {
+		name        string
+		left, right *lockState
+	}{
+		{"held", base(), held(false, b)},
+		{"assumed", base(), held(true, a)},
+		{"marker", base(), marked(base(), fx.inside)},
+		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
+	} {
+		if pc.sameElement(tc.left, tc.right) || pc.sameElement(tc.right, tc.left) {
+			t.Errorf("states differing in %s are the same element", tc.name)
+		}
+	}
+
+	pkg := buildTestPackage(t, "defers", deferSource)
+	pc = deferPC(pkg.Prog.Fset)
+	sites := deferSites(pkg.Func("ordered"))
+	noop, first, second := sites[0], sites[1], sites[2]
+	withDefers := func(ds ...*ssa.Defer) *lockState {
+		ls := marked(base(), fx.inside)
+		ls.defers = ds
+		return ls
+	}
+
+	plain, extra := withDefers(first), withDefers(noop, first)
+	if !pc.sameElement(plain, extra) {
+		t.Error("states differing in a no-op defer are not the same element")
+	}
+	h := &loopHead{entries: []*lockState{plain}}
+	if added, over := h.admit(pc, extra); added || over {
+		t.Errorf("admitting a state that differs in a no-op defer: added %t, over %t, want neither", added, over)
+	}
+
+	if pc.sameElement(withDefers(first), withDefers(first, second)) {
+		t.Error("states differing in a relevant defer are the same element")
+	}
+	h = &loopHead{entries: []*lockState{withDefers(first)}}
+	if added, over := h.admit(pc, withDefers(first, second)); !added || over {
+		t.Errorf("admitting a state that differs in a relevant defer: added %t, over %t, want added", added, over)
+	}
+
+	ab, ba := withDefers(first, second), withDefers(second, first)
+	ba.marker = dropped(fx.before)
+	if pc.sameElement(ab, ba) {
+		t.Error("states with the relevant defers in another order are the same element")
+	}
+	ba.joinMarker(pc, []*lockState{ab})
+	if !maps.Equal(ba.marker, dropped(fx.before)) {
+		t.Errorf("joining entries with the defers in another order changed the marker to %v", ba.marker)
+	}
+}
+
+func TestNoOpDeferInvariant(t *testing.T) {
+	pkg := buildTestPackage(t, "defers", deferSource)
+	fn := pkg.Func("irrelevant")
+	for _, mode := range []string{"walk", "direct"} {
+		pc := deferPC(pkg.Prog.Fset)
+		if mode == "walk" {
+			pc.emit, pc.current = emitWalk, &blockRecord{}
+		} else {
+			pc.emit = emitDirect
+		}
+		wc := &walkContext{fn: fn, lff: &lockFunctionFacts{}}
+		for i, d := range deferSites(fn) {
+			if pc.deferRelevant(d) {
+				t.Errorf("irrelevant defer %d rated relevant", i)
+				continue
+			}
+			ls := newLockState()
+			ls.lockField(makeResolvedValue(fn.Params[0], nil), true)
+			locked, marker, aliases := maps.Clone(ls.lockedMutexes), maps.Clone(ls.marker), maps.Clone(ls.aliases)
+			pc.checkCall(newCallSite(d), wc, ls)
+			if !reflect.DeepEqual(ls.lockedMutexes, locked) || !reflect.DeepEqual(ls.marker, marker) || !reflect.DeepEqual(ls.aliases, aliases) {
+				t.Errorf("%s: no-op defer %d changed the state", mode, i)
+			}
+			if mode == "walk" && !reflect.DeepEqual(pc.current.parity, blockParity{}) {
+				t.Errorf("%s: no-op defer %d left a decision, finding or observation", mode, i)
+			}
+			if len(pc.pending) != 0 {
+				t.Errorf("%s: no-op defer %d reported %d findings", mode, i, len(pc.pending))
+			}
+		}
 	}
 }

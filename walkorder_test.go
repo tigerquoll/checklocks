@@ -48,14 +48,6 @@ var knownOrderDiffs = map[orderDiff][]string{
 	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\tfalse", "+"}: {"1", "reverse"},
 	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\ttrue", "-"}:  {"1", "reverse"},
 	{testPkg, "loops.go:211:1\tloopIrreducible\tb3.i0\treturnCount\t\tloopIrreducible\tfalse", "+"}:         {"1", "reverse"},
-	// memoDefersFirstBad: the defer list of the branch walked first decides the join.
-	{orderPkg, "order.go:50:3\tmemoDefersFirstBad\tb3.i1\tlockOpUnlock\t\tmemoDefersFirstBad\ttrue", "+"}: {"2", "reverse"},
-	{orderPkg, "order.go:53:2\tmemoDefersFirstBad\tb2.i3\treturnCount\t\tmemoDefersFirstBad\tfalse", "-"}: {"2", "reverse"},
-	{orderPkg, "order.go:53:2\tmemoDefersFirstBad\tb2.i3\treturnCount\t\tmemoDefersFirstBad\ttrue", "+"}:  {"2", "reverse"},
-	// memoDefersFirstGood: the defer list of the branch walked first decides the join.
-	{orderPkg, "order.go:38:3\tmemoDefersFirstGood\tb1.i1\tlockOpUnlock\t\tmemoDefersFirstGood\ttrue", "-"}: {"2", "reverse"},
-	{orderPkg, "order.go:41:2\tmemoDefersFirstGood\tb2.i3\treturnCount\t\tmemoDefersFirstGood\tfalse", "+"}: {"2", "reverse"},
-	{orderPkg, "order.go:41:2\tmemoDefersFirstGood\tb2.i3\treturnCount\t\tmemoDefersFirstGood\ttrue", "-"}:  {"2", "reverse"},
 	// memoStoredFirstBad: the path stored in p is the one from the branch walked first.
 	{orderPkg, "order.go:78:4\tmemoStoredFirstBad\tb2.i4\tguardHeld\tmu order.T.g\tmemoStoredFirstBad\tfalse", "-"}: {"2", "reverse"},
 	{orderPkg, "order.go:78:4\tmemoStoredFirstBad\tb2.i4\tguardHeld\tmu order.T.g\tmemoStoredFirstBad\ttrue", "+"}:  {"2", "reverse"},

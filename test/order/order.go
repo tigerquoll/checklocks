@@ -32,17 +32,17 @@ func nop()       {}
 func cond() bool { return len(os.Args) > 2 }
 
 // memoDefersFirstGood: unlock deferred on one branch only, so it returns locked when !c.
-func memoDefersFirstGood(t *T, c bool) {
+func memoDefersFirstGood(t *T, c bool) { // +checklocksfail=incompatible return states
 	t.mu.Lock()
 	if c {
 		defer t.mu.Unlock()
 	}
 	t.g = 1
-	return
+	return // +checklocksfail=return with unexpected locks held
 }
 
 // memoDefersFirstBad: the same, with the deferring branch walked second.
-func memoDefersFirstBad(t *T, c bool) {
+func memoDefersFirstBad(t *T, c bool) { // +checklocksfail=incompatible return states
 	t.mu.Lock()
 	if c {
 		nop()

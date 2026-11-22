@@ -676,15 +676,10 @@ func (l *lockState) dropDead(dies func(lockPath) bool) {
 	}
 }
 
-// sameEntry reports whether two states enter a loop head alike: the same locks, marker and defers.
-func (l *lockState) sameEntry(o *lockState) bool {
-	return l.isCompatible(o) && maps.Equal(l.marker, o.marker) && slices.Equal(l.defers, o.defers)
-}
-
-// joinMarker adds to the marker every lock dropped by any entry with the same locks and defers.
-func (l *lockState) joinMarker(entries []*lockState) {
+// joinMarker adds to the marker every lock dropped by any entry with the same locks and relevant defers.
+func (l *lockState) joinMarker(pc *passContext, entries []*lockState) {
 	for _, e := range entries {
-		if !e.isCompatible(l) || !slices.Equal(e.defers, l.defers) {
+		if !e.isCompatible(l) || !pc.sameRelevantDefers(e, l) {
 			continue
 		}
 		for k := range e.marker {

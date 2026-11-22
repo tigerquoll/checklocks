@@ -1208,9 +1208,9 @@ type loopHead struct {
 
 // admit adds s to the entry set unless it is there already. over is true when s is new
 // and the set is full.
-func (h *loopHead) admit(s *lockState) (added, over bool) {
-	s.joinMarker(h.entries)
-	if slices.ContainsFunc(h.entries, s.sameEntry) {
+func (h *loopHead) admit(pc *passContext, s *lockState) (added, over bool) {
+	s.joinMarker(pc, h.entries)
+	if slices.ContainsFunc(h.entries, func(e *lockState) bool { return pc.sameElement(s, e) }) {
 		return false, false
 	}
 	if len(h.entries) >= maxHeadStates {
@@ -1256,7 +1256,7 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 	// Check for cached results from entering this block from a *different*
 	// execution path. Note that this is not the same path, which is
 	// checked with the recursion guard below.
-	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) && maps.Equal(oldLS.marker, parent.marker) {
+	if oldLS, ok := seen[block]; ok && pc.sameElement(oldLS, parent) {
 		return nil
 	}
 
@@ -1287,7 +1287,7 @@ func (pc *passContext) checkBasicBlock(wc *walkContext, block *ssa.BasicBlock, p
 	for head != nil && len(head.queue) > 0 && !wc.gaveUp {
 		s := head.queue[0]
 		head.queue = head.queue[1:]
-		added, over := head.admit(s)
+		added, over := head.admit(pc, s)
 		if over {
 			wc.gaveUp = true
 			break

@@ -206,6 +206,7 @@ func TestDropDead(t *testing.T) {
 func TestJoinMarker(t *testing.T) {
 	fx := newLoopFixture(t)
 	a, b := fx.param, fx.global
+	pc := noFactsPC()
 	withDefer := func(ls *lockState) *lockState { ls.defers = []*ssa.Defer{fx.defers[0]}; return ls }
 	for _, tc := range []struct {
 		name    string
@@ -215,12 +216,12 @@ func TestJoinMarker(t *testing.T) {
 		{"entry with a marker, same locks", []*lockState{marked(held(false, a), fx.inside)}, dropped(fx.inside)},
 		{"entry without a marker", []*lockState{held(false, a)}, dropped()},
 		{"entry with a marker, other locks", []*lockState{marked(held(false, b), fx.inside)}, dropped()},
-		{"entry with a marker, other defers", []*lockState{withDefer(marked(held(false, a), fx.inside))}, dropped()},
+		{"entry with a marker, a no-op defer more", []*lockState{withDefer(marked(held(false, a), fx.inside))}, dropped(fx.inside)},
 		{"union of two entries", []*lockState{marked(held(false, a), fx.inside), marked(held(false, a), fx.before)}, dropped(fx.inside, fx.before)},
 		{"no entries", nil, dropped()},
 	} {
 		s := held(false, a)
-		s.joinMarker(tc.entries)
+		s.joinMarker(pc, tc.entries)
 		if !maps.Equal(s.marker, tc.want) {
 			t.Errorf("%s: marker %v, want %v", tc.name, s.marker, tc.want)
 		}
@@ -228,7 +229,7 @@ func TestJoinMarker(t *testing.T) {
 
 	orig := marked(held(false, a), fx.inside)
 	fork := orig.fork()
-	fork.joinMarker([]*lockState{marked(held(false, a), fx.before)})
+	fork.joinMarker(pc, []*lockState{marked(held(false, a), fx.before)})
 	if !maps.Equal(fork.marker, dropped(fx.inside, fx.before)) {
 		t.Errorf("joining into a fork: marker %v, want both keys", fork.marker)
 	}
@@ -248,31 +249,6 @@ func TestPushDeferTwice(t *testing.T) {
 	ls.pushDefer(fx.defers[1])
 	if len(ls.defers) != 2 {
 		t.Errorf("a second site leaves %d on the stack, want 2", len(ls.defers))
-	}
-}
-
-func TestSameEntry(t *testing.T) {
-	fx := newLoopFixture(t)
-	a, b := fx.param, fx.global
-	base := func() *lockState { return held(false, a) }
-	if !base().sameEntry(base()) {
-		t.Error("equal states differ")
-	}
-	withDefer := base()
-	withDefer.defers = []*ssa.Defer{fx.defers[0]}
-	for _, tc := range []struct {
-		name        string
-		left, right *lockState
-	}{
-		{"held", base(), held(false, b)},
-		{"assumed", base(), held(true, a)},
-		{"marker", base(), marked(base(), fx.inside)},
-		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
-		{"defers", base(), withDefer},
-	} {
-		if tc.left.sameEntry(tc.right) || tc.right.sameEntry(tc.left) {
-			t.Errorf("states differing in %s are the same entry", tc.name)
-		}
 	}
 }
 
@@ -309,16 +285,17 @@ func TestLoopHeadBound(t *testing.T) {
 	distinct := func(i int) *lockState {
 		return held(false, newLockPath(pathRootValue, nil, nil, fmt.Sprint(i)))
 	}
+	pc := noFactsPC()
 	h := &loopHead{entries: []*lockState{distinct(0)}}
 	for i := 1; i < maxHeadStates; i++ {
-		if added, over := h.admit(distinct(i)); !added || over {
+		if added, over := h.admit(pc, distinct(i)); !added || over {
 			t.Fatalf("state %d of %d: added %t, over %t, want it accepted", i+1, maxHeadStates, added, over)
 		}
 	}
-	if added, over := h.admit(distinct(1)); added || over {
+	if added, over := h.admit(pc, distinct(1)); added || over {
 		t.Errorf("a state already in a full set: added %t, over %t, want neither", added, over)
 	}
-	if added, over := h.admit(distinct(maxHeadStates)); added || !over {
+	if added, over := h.admit(pc, distinct(maxHeadStates)); added || !over {
 		t.Errorf("state %d: added %t, over %t, want over", maxHeadStates+1, added, over)
 	}
 }
