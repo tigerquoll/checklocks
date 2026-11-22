@@ -41,7 +41,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		// Its waits count for no caller: only a declared wait is left of its blocking part.
 		defer func() {
 			summary.Blocking, summary.BlockingReleased, summary.BlockingNamed = false, nil, false
-			summary.Witnesses, summary.ParamCalls = nil, nil
+			summary.ParamCalls = nil
 			if pc.witness != nil {
 				pc.witness.paths[fn] = slices.DeleteFunc(pc.witness.paths[fn], func(c witnessCandidate) bool { return !c.annotated })
 				delete(pc.witness.edges, fn)

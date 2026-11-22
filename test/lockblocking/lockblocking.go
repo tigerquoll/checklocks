@@ -1198,7 +1198,7 @@ func g3W4() { g3F4() }
 
 func g3T4(a *App) {
 	a.Lock()
-	g3F4() // +lockblockingfail=calling g3F4, which may block
+	g3F4() // +lockblockingfail=calling g3F4, which may block (g3F4 is declared blocking at lockblocking/lockblocking.go:1195)
 	a.Unlock()
 }
 
@@ -1275,5 +1275,14 @@ func g3W9() { dep.BlockingIgnoredSleeps() }
 func g3T9(a *App) {
 	a.Lock()
 	g3W9()
+	a.Unlock()
+}
+
+func g3W10() { dep.DeclaredIgnored() }
+
+func g3T10(a *App) {
+	a.Lock()
+	dep.DeclaredIgnored() // +lockblockingfail=calling DeclaredIgnored, which may block (DeclaredIgnored is declared blocking at dep/dep.go:106)
+	g3W10()               // +lockblockingfail=calling g3W10, which may block (calling DeclaredIgnored at lockblocking/lockblocking.go:1281 -> DeclaredIgnored is declared blocking at dep/dep.go:106)
 	a.Unlock()
 }

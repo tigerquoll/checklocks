@@ -511,6 +511,9 @@ In general, both annotations should be highly discouraged. It should be possible
 to avoid their use by factoring functions in such a way that annotations can be
 applied consistently and without the need for ignoring and forcing.
 
+For `lockorder`, `+lockorderignore` on a function drops its acquisitions and its
+ordering reports; it does not hide the function's waits from `lockblocking`.
+
 ### More than one annotation on a comment
 
 A comment may carry several annotations, separated by a space:
@@ -1007,7 +1010,10 @@ so including them would report all nesting and say nothing; that nesting is
     analysis cannot see: behind an indirect call, or inside a dependency.
 *   `+lockblockingignore`: on a function, drops every diagnostic in its body,
     and its waits count for no caller at any depth, except a wait declared with
-    `+blocking`; on a line, drops the diagnostics on that line.
+    `+blocking`; on a line, drops the diagnostics on that line. Call sites of a
+    function that also has `+blocking` are still reported, and silencing one
+    needs a line-level `+lockblockingignore` there. Function literals inside an
+    ignored function are not covered: they are analysed as functions of their own.
 *   `+lockblockingfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
 

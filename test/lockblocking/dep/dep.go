@@ -100,3 +100,7 @@ func OrderIgnoredSleeps() { time.Sleep(time.Millisecond) }
 
 // +lockblockingignore
 func BlockingIgnoredSleeps() { time.Sleep(time.Millisecond) }
+
+// +blocking
+// +lockblockingignore
+func DeclaredIgnored() { time.Sleep(time.Millisecond) }
