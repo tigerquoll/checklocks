@@ -197,7 +197,7 @@ func shadowOwner(p lockPath) (owner *types.Named, field string, final types.Type
 		return t
 	}
 	t := p.root.value.Type()
-	for _, s := range p.steps {
+	for i, s := range p.steps {
 		switch s.kind {
 		case stepDeref:
 			t = deref(t)
@@ -246,6 +246,10 @@ func shadowOwner(p lockPath) (owner *types.Named, field string, final types.Type
 				return nil, "", nil
 			}
 			t = m.Elem()
+			// A comma-ok lookup is followed by an extract of its (element, ok) tuple.
+			if i+1 < len(p.steps) && p.steps[i+1].kind == stepConstIndex {
+				t = types.NewTuple(types.NewVar(token.NoPos, nil, "", t), types.NewVar(token.NoPos, nil, "", types.Typ[types.Bool]))
+			}
 		}
 	}
 	return owner, field, t

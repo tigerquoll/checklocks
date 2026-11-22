@@ -59,3 +59,13 @@ func inLiteral(x *guarded) {
 func entryOnly(x *guarded) {
 	other()
 }
+
+func commaOK(m map[string]*guarded, k string) {
+	v, ok := m[k]
+	if !ok {
+		return
+	}
+	v.g.Lock()
+	other()
+	v.g.Unlock()
+}

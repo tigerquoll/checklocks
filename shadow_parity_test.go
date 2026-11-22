@@ -119,7 +119,7 @@ func linesIn(log []string, first, last int) []string {
 }
 
 func TestShadowAgree(t *testing.T) {
-	for _, fn := range []string{"straight", "twoStates", "inLiteral"} {
+	for _, fn := range []string{"straight", "twoStates", "inLiteral", "commaOK"} {
 		log, first, last := shadowCorpus(t, fn)
 		if got := linesIn(log, first, last); len(got) > 0 {
 			t.Errorf("%s: want no difference at its calls, got %q", fn, got)
