@@ -1213,7 +1213,7 @@ func (h *loopHead) admit(s *lockState) (added, over bool) {
 	return true, false
 }
 
-// isLoopHead reports whether b dominates one of its predecessors.
+// isLoopHead reports whether b can be the target of a back edge.
 func isLoopHead(b *ssa.BasicBlock) bool {
 	return slices.ContainsFunc(b.Preds, b.Dominates)
 }
