@@ -86,7 +86,7 @@ func (r *relocker) dropsAndRetakes() {
 	r.mu.Unlock() // +checklocksfail=already unlocked +lockgapfail=taken again
 	work()
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callDropsAndRetakes(r *relocker) {
 	r.mu.Lock()
@@ -101,7 +101,7 @@ func (r *relocker) dropsAndRetakesWithClosure() {
 	r.mu.Unlock() // +checklocksfail=already unlocked +lockgapfail=taken again
 	work()
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callDropsAndRetakesWithClosure(r *relocker) {
 	r.mu.Lock()
@@ -115,7 +115,7 @@ func (r *relocker) dropsAroundCall() {
 	r.mu.Unlock() // +checklocksfail=already unlocked +lockgapfail=taken again
 	r.locksMu()
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callDropsAroundCall(r *relocker) {
 	r.mu.Lock()
@@ -128,7 +128,7 @@ func callDropsAroundCall(r *relocker) {
 func (r *relocker) upgrades() {
 	r.rw.RUnlock() // +checklocksfail=already unlocked +lockgapfail=stale
 	r.rw.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callUpgrades(r *relocker) {
 	r.rw.RLock()
@@ -189,7 +189,7 @@ func (r *relocker) condRelocks(c bool) {
 		r.mu.Unlock() // +checklocksfail=already unlocked
 	}
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callCondRelocks(r *relocker) {
 	r.mu.Lock()
@@ -203,7 +203,7 @@ func (r *relocker) retakesTwice() {
 	r.mu.Unlock() // +checklocksfail=already unlocked +lockgapfail=taken again
 	r.mu.Lock()
 	r.mu.Lock() // +checklocksfail=already locked
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callRetakesTwice(r *relocker) {
 	r.mu.Lock()
@@ -216,7 +216,7 @@ func callRetakesTwice(r *relocker) {
 func (r *relocker) dropsPeerLock() {
 	r.peer.mu.Unlock() // +checklocksfail=already unlocked
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callDropsPeerLock(r *relocker) {
 	r.mu.Lock()
@@ -306,7 +306,7 @@ func (r *relocker) relocksTwice() {
 	r.mu.Lock()
 	r.mu.Unlock() // +lockgapfail=taken again
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callRelocksTwice(r *relocker) {
 	r.mu.Lock()
@@ -320,7 +320,7 @@ func (r *relocker) dropsAroundUnrelatedClosure(x *int) {
 	r.mu.Unlock() // +checklocksfail=already unlocked +lockgapfail=taken again
 	func() { *x++ }()
 	r.mu.Lock()
-}
+} // +checklocksfail=return with unexpected locks held
 
 func callDropsAroundUnrelatedClosure(r *relocker, x *int) {
 	r.mu.Lock()

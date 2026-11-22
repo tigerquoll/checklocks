@@ -113,7 +113,7 @@ func standaloneFunctionWithGuard(a *testMethodsWithParameters) {
 	a.guardedField = 1
 	a.mu.Unlock()      // +lockgapfail=does not take it back
 	a.guardedField = 1 // +checklocksfail
-}
+} // +checklocksfail=not held
 
 type testMethodsWithEmbedded struct {
 	mu sync.Mutex

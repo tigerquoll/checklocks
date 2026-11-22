@@ -59,7 +59,7 @@ func table() {
 			t.mu.Lock() // +checklocksfail=already locked
 			t.value = 4
 			t.mu.Unlock()
-		},
+		}, // +checklocksfail=not held
 	})
 }
 

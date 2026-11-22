@@ -242,7 +242,8 @@ func alClosure(run func(func(*alO))) {
 	// +checklocks:o.in.mu
 	f := func(o *alO) { // +checklocksfail=acquired multiple times or differently
 		o.x = 1
-	}
+		// A literal's alias duplicate guards are not merged, so one exit lock counts as two.
+	} // +checklocksfail=return with unexpected locks held
 	run(f)
 }
 

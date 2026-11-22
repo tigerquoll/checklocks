@@ -92,10 +92,12 @@ Each analyzer's own flags are namespaced under its name:
     `-checklocks.inferred=false` plus deliberate annotation.
 *   `-checklocks.atomic` (default true): enable the atomic access checks.
 *   `-checklocks.wrappers` (default true): report diagnostics that have no
-    source position. These arise from synthetic wrapper functions and cannot be
-    annotated or suppressed in source, so `-checklocks.wrappers=false` is
-    usually wanted when the output must be clean. gVisor excludes them by
-    configuration for the same reason.
+    source position. These arise from generated functions with no source, such
+    as bound-method wrappers, and cannot be annotated or suppressed in source,
+    so `-checklocks.wrappers=false` is usually wanted when the output must be
+    clean. gVisor excludes them by configuration for the same reason. A
+    function's implicit return is reported at its closing brace, so an
+    annotation on that line applies to it.
 *   `-lockstringer.methods` (default empty): comma separated additional method
     names to treat as lazily evaluated, for a project specific interface.
 *   `-lockorder.hierarchy` (default **false**): also check the direction of

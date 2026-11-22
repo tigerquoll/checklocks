@@ -17,6 +17,7 @@ package checklocks
 import (
 	"cmp"
 	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
 	"maps"
@@ -1085,6 +1086,27 @@ type blockRecord struct {
 	parity blockParity
 }
 
+// returnPos is where a report at ret is printed. A fall-off-the-end return has no
+// position of its own, so it takes the closing brace; the recover path stays unpositioned.
+func returnPos(ret *ssa.Return) token.Pos {
+	if ret.Pos().IsValid() {
+		return ret.Pos()
+	}
+	fn := ret.Parent()
+	if ret.Block() == fn.Recover {
+		return token.NoPos
+	}
+	switch n := fn.Syntax().(type) {
+	case *ast.FuncDecl:
+		return n.Body.Rbrace
+	case *ast.FuncLit:
+		return n.Body.Rbrace
+	case *ast.RangeStmt:
+		return n.Body.Rbrace
+	}
+	return token.NoPos
+}
+
 // transferBlock runs the instructions of a block on a fork of parent. It returns
 // the resulting state and, when the block returns, that state again.
 func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState) (ls, rls *lockState) {
@@ -1094,7 +1116,8 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 		rv, rls = pc.checkInstruction(inst, wc, ls)
 		if rls != nil {
 			failed := false
-			at := decisionAt{inst: rv, pos: rv.Pos(), context: wc.context}
+			pos := returnPos(rv)
+			at := decisionAt{inst: rv, pos: pos, context: wc.context}
 			// Validate held locks.
 			resolve := func(fg functionGuardInfo) resolvedValue {
 				return fg.Resolver.resolveStatic(pc, ls, wc.fn, rv)
@@ -1107,7 +1130,7 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 				pc.decide(at, returnResolve, resolved, g.fieldName)
 				if !resolved {
 					// This cannot be forced, since we have no reference.
-					pc.maybeFail(rv.Pos(), "lock %s cannot be resolved", g.fieldName)
+					pc.maybeFail(pos, "lock %s cannot be resolved", g.fieldName)
 					continue
 				}
 				p, held := rls.isHeld(g.rv, g.fg.Exclusive)
@@ -1118,8 +1141,8 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 					rls.setAssumed(p, false)
 					continue
 				}
-				if _, ok := pc.forced[pc.positionKey(rv.Pos())]; !ok && !wc.lff.Ignore {
-					pc.maybeFail(rv.Pos(), "lock %s (%s) not held %s (locks: %s)", g.fieldName, p.String(), exclusiveStr(g.fg.Exclusive), rls.String())
+				if _, ok := pc.forced[pc.positionKey(pos)]; !ok && !wc.lff.Ignore {
+					pc.maybeFail(pos, "lock %s (%s) not held %s (locks: %s)", g.fieldName, p.String(), exclusiveStr(g.fg.Exclusive), rls.String())
 					failed = true
 					continue
 				}
@@ -1134,7 +1157,7 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 				counted := rls.countOnReturn(wc.entryLocks) == len(wc.lff.HeldOnExit)
 				pc.decide(at, returnCount, counted)
 				if !counted && !wc.lff.Ignore {
-					pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
+					pc.maybeFail(pos, "return with unexpected locks held (locks: %s)", rls.String())
 				} else if !counted {
 					pc.suppressed()
 				}

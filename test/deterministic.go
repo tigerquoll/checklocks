@@ -53,7 +53,7 @@ func testDetLiftedIndexDouble(t *detIndexed) {
 	i := 1
 	t.mus[i].Lock()
 	t.mus[i].Lock() // +checklocksfail
-}
+} // +checklocksfail=return with unexpected locks held
 
 // A map key is a constant like any other.
 func testDetLiftedKey(t *detIndexed) {
@@ -64,7 +64,7 @@ func testDetLiftedKey(t *detIndexed) {
 
 // Each call passes its own literal, so the two calls lock two different indexes.
 func testDetTwoCallsOfOneClosure(t *detIndexed) {
-	lk := func(t *detIndexed, i int) { t.mus[i].Lock() }
+	lk := func(t *detIndexed, i int) { t.mus[i].Lock() } // +checklocksfail=testDetTwoCallsOfOneClosure:k0|testDetTwoCallsOfOneClosure:k1
 	lk(t, 0)
 	lk(t, 1)
 	t.mus[0].Unlock() // +checklocksfail
@@ -77,26 +77,28 @@ func testDetClosureSharesAnIndex(t *detIndexed) {
 	lk := func() { t.mus[i].Lock() } // +checklocksfail
 	t.mus[i].Lock()
 	lk()
-}
+} // +checklocksfail=return with unexpected locks held
 
 // Two sites of one literal index are two constants, as they are today.
 func testDetLiteralIndex(t *detIndexed) {
 	t.mus[0].Lock()
 	t.mus[0].Unlock() // +checklocksfail
-}
+	// Each constant is its own lock, so the unlock above misses this one.
+} // +checklocksfail=return with unexpected locks held
 
 // A map whose entry is replaced between the lock and the unlock.
 func testDetReplacedEntry(t *detIndexed, other *sync.Mutex) {
 	t.m["a"].Lock()
 	t.m["a"] = other
 	t.m["a"].Unlock() // +checklocksfail
-}
+} // +checklocksfail=return with unexpected locks held
 
 // A nil root is a constant too, and names a lock as it does today.
 func testDetNilRoot() {
 	(*detStruct)(nil).mu.Lock()
 	(*detStruct)(nil).mu.Unlock() // +checklocksfail
-}
+	// Each constant is its own lock, so the unlock above misses this one.
+} // +checklocksfail=return with unexpected locks held
 
 // The mode is no part of a lock's key, so taking one shared and then exclusively is reported.
 func testDetUpgradeInPlace(t *detStruct) {

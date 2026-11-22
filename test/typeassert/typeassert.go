@@ -87,7 +87,7 @@ func table() {
 			app.mu.Lock() // +checklocksfail=already locked
 			app.state = "entered"
 			app.mu.Unlock()
-		},
+		}, // +checklocksfail=not held
 		// A method declared not to be called with the lock held is
 		// reported when the guard says it is.
 		// +checklocks:event.Args[0].(*Application).mu
@@ -110,14 +110,16 @@ func table() {
 		"other-type": func(event *Event) {
 			other := event.Args[0].(*Other)
 			other.value = 1 // +checklocksfail=must be locked
-		},
+			// A guard that matches no assertion still counts as an expected exit lock.
+		}, // +checklocksfail=return with unexpected locks held
 		// A different element of the same parameter is a different
 		// path, and is not covered either.
 		// +checklocks:event.Args[0].(*Application).mu
 		"other-index": func(event *Event) {
 			app := event.Args[1].(*Application)
 			app.state = "entered" // +checklocksfail=must be locked
-		},
+			// A guard that matches no assertion still counts as an expected exit lock.
+		}, // +checklocksfail=return with unexpected locks held
 	})
 }
 

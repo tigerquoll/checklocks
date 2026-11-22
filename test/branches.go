@@ -22,7 +22,7 @@ func testInconsistentReturn(tc *oneGuardStruct) { // +checklocksfail
 	if x := rand.Intn(10); x%2 == 1 {
 		tc.mu.Lock()
 	}
-}
+} // +checklocksfail=return with unexpected locks held
 
 func testConsistentBranching(tc *oneGuardStruct) {
 	x := rand.Intn(10)
@@ -53,7 +53,7 @@ func testInconsistentBranching(tc *oneGuardStruct) { // +checklocksfail=incompat
 	if x%2 == 1 {
 		tc.mu.Unlock() // +checklocksforce
 	}
-}
+} // +checklocksfail=return with unexpected locks held
 
 func testUnboundedLocks(tc []*oneGuardStruct) {
 	for _, l := range tc {
