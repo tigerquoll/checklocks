@@ -1108,7 +1108,7 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		// assume no lock facts or have any existing lock state. Only
 		// trivial closures are acceptable in this case.
 		clfn := x.Fn.(*ssa.Function)
-		if pc.isBareLockWrapper(clfn) {
+		if pc.isBareLockWrapper(clfn) && !startedAsGoroutine(x, nil) {
 			return nil, nil
 		}
 		nlff := lockFunctionFacts{
@@ -1131,6 +1131,49 @@ func (pc *passContext) isBareLockWrapper(fn *ssa.Function) bool {
 	var lff lockFunctionFacts
 	pc.importLockFunctionFacts(obj, &lff)
 	return len(lff.HeldOnEntry) == 0
+}
+
+// startedAsGoroutine reports whether v, or a value derived from it, is started with go
+// or captured by a closure. checkGoCall skips such values, so the wrapper walk is the only check.
+func startedAsGoroutine(v ssa.Value, seen map[ssa.Value]bool) bool {
+	if seen == nil {
+		seen = make(map[ssa.Value]bool)
+	}
+	if seen[v] {
+		return false
+	}
+	seen[v] = true
+	refs := v.Referrers()
+	if refs == nil {
+		return false
+	}
+	for _, ref := range *refs {
+		switch r := ref.(type) {
+		case *ssa.Go, *ssa.MakeClosure:
+			return true
+		case *ssa.Store:
+			// A captured variable is a heap cell bound into the closure.
+			if a, ok := r.Addr.(*ssa.Alloc); ok && r.Val == v && boundByClosure(a) {
+				return true
+			}
+		case *ssa.Phi, *ssa.MakeInterface, *ssa.ChangeType, *ssa.Convert:
+			if startedAsGoroutine(ref.(ssa.Value), seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func boundByClosure(a *ssa.Alloc) bool {
+	if refs := a.Referrers(); refs != nil {
+		for _, ref := range *refs {
+			if _, ok := ref.(*ssa.MakeClosure); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // blockRecord is the input a walk entered a block with, kept for the replay.

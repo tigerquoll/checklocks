@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package positionless holds the code that used to report with no source position: a
-// function's recover block and the bound wrapper of a lock method value.
+// Package positionless holds code checklocks must not report without a source position:
+// a function's recover block and the escaping bound wrapper of a lock method value.
 package positionless
 
 import "sync"

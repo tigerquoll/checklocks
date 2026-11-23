@@ -15,6 +15,7 @@
 package checklocks
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,13 +36,24 @@ func (p *P) Lock() {}
 func escape(p *P) func() { return p.Lock }
 `
 
-// A lock-op method value whose method has a precondition is still walked, and
-// its positionless report stays.
-func TestPreconditionWrapperStillReports(t *testing.T) {
+const goPinPrelude = `package pin
+
+import "sync"
+
+type T struct {
+	mu sync.Mutex
+	rw sync.RWMutex
+}
+
+`
+
+// vetPositionless vets one scratch package and returns its non-header output lines.
+func vetPositionless(t *testing.T, src string) []string {
+	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"go.mod": "module pin\n\ngo 1.22\n",
-		"pin.go": preconditionPin,
+		"pin.go": src,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -53,8 +65,49 @@ func TestPreconditionWrapperStillReports(t *testing.T) {
 	}
 	cmd := exec.Command("go", "vet", "-vettool="+bin, "-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.inferred=false", "./...")
 	cmd.Dir = dir
-	out, _ := cmd.CombinedOutput()
-	if !strings.Contains(string(out), "-: must hold p.gate exclusively") || !strings.Contains(string(out), "to call Lock") {
-		t.Errorf("want a positionless precondition report for Lock, got:\n%s", out)
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("want vet to exit with code 1, got %v\n%s", err, out)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "-:") {
+			t.Fatalf("want only positionless lines, got %q in:\n%s", line, out)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// A lock-op method value whose method has a precondition is walked and reports at -.
+func TestPreconditionWrapperStillReports(t *testing.T) {
+	n := 0
+	for _, line := range vetPositionless(t, preconditionPin) {
+		if strings.HasPrefix(line, "-: must hold p.gate exclusively") && strings.Contains(line, "to call Lock") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("want one positionless precondition report for Lock, got %d", n)
+	}
+}
+
+// A lock method value started with go is walked and reports at -.
+func TestGoStartedWrapperStillReports(t *testing.T) {
+	for name, fn := range map[string]string{
+		"direct":  "func g(t *T) { f := t.mu.Unlock; go f() }\n",
+		"phi":     "func g(t *T, c bool) { f := t.mu.Unlock; if c { f = t.rw.Unlock }; go f() }\n",
+		"capture": "func g(t *T) { f := t.mu.Unlock; go func() { f() }() }\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			lines := vetPositionless(t, goPinPrelude+fn)
+			if len(lines) != 1 || !strings.HasPrefix(lines[0], "-: {freevar:recv} already unlocked or locked differently") {
+				t.Errorf("want one positionless already-unlocked report, got %q", lines)
+			}
+		})
 	}
 }

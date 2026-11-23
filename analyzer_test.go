@@ -103,9 +103,9 @@ var analyzerCases = []struct {
 	{
 		name: "checklocks",
 		// -checklocks.wrappers=false suppresses diagnostics that have
-		// no source position: those about the call inside a bound-method
-		// wrapper, such as a method value called locally. gVisor's own nogo
-		// configuration excludes them too. The flag disables no analysis.
+		// no source position, such as those about the call inside a bound-method
+		// wrapper. gVisor's own nogo configuration excludes them too. The flag
+		// disables no analysis.
 		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg", "./test/order"},
 	},
 	{
