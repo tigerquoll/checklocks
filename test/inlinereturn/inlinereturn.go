@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package inlinereturn is the one corpus run with the wrappers on; the inline
-// literal's implicit return must not report.
+// Package inlinereturn is run with the wrappers on; the inline literal's
+// implicit return must not report.
 package inlinereturn
 
 import "sync"

@@ -108,17 +108,11 @@ func TestDecisionLog(t *testing.T) {
 		}
 	}
 
-	coords := make(map[string]bool)
-	for _, pos := range []string{fmt.Sprintf("decisionlog.go:%d:1", lineOf("func needsLock(")+3), "-:0:0"} {
+	for pos, wantAny := range map[string]bool{fmt.Sprintf("decisionlog.go:%d:1", lineOf("func needsLock(")+3): true, "-:0:0": false} {
 		got := find(func(f []string) bool { return f[0] == pos && f[1] == "needsLock" && f[3] == "returnHeld" })
-		if len(got) == 0 {
-			t.Errorf("want a returnHeld decision of needsLock at %s, got none", pos)
-			continue
+		if wantAny != (len(got) > 0) {
+			t.Errorf("returnHeld decisions of needsLock at %s: want any=%v, got %q", pos, wantAny, got)
 		}
-		coords[got[0][2]] = true
-	}
-	if len(coords) < 2 {
-		t.Errorf("want the implicit returns of needsLock at its closing brace and at -:0:0 on two coordinates, got %v", coords)
 	}
 
 	line := lineOf("\tval.val = 4")

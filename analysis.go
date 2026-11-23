@@ -1108,6 +1108,9 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		// assume no lock facts or have any existing lock state. Only
 		// trivial closures are acceptable in this case.
 		clfn := x.Fn.(*ssa.Function)
+		if pc.isBareLockWrapper(clfn) {
+			return nil, nil
+		}
 		nlff := lockFunctionFacts{
 			Ignore: wc.lff.Ignore || pc.literalIgnored(clfn),
 		}
@@ -1116,6 +1119,18 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		return x, ls // Valid return state.
 	}
 	return nil, nil
+}
+
+// isBareLockWrapper reports whether fn is the generated wrapper of a lock method value
+// whose method asks for nothing held on entry. Walked alone it has no state to check.
+func (pc *passContext) isBareLockWrapper(fn *ssa.Function) bool {
+	obj, ok := fn.Object().(*types.Func)
+	if fn.Synthetic == "" || !ok || lockCall(pc.pass, obj) == opNone {
+		return false
+	}
+	var lff lockFunctionFacts
+	pc.importLockFunctionFacts(obj, &lff)
+	return len(lff.HeldOnEntry) == 0
 }
 
 // blockRecord is the input a walk entered a block with, kept for the replay.
@@ -1127,16 +1142,12 @@ type blockRecord struct {
 }
 
 // returnPos is where a report at ret is printed. A fall-off-the-end return has no
-// position of its own, so it takes the closing brace; the recover path stays unpositioned.
+// position of its own, so it takes the closing brace.
 func returnPos(ret *ssa.Return) token.Pos {
 	if ret.Pos().IsValid() {
 		return ret.Pos()
 	}
-	fn := ret.Parent()
-	if ret.Block() == fn.Recover {
-		return token.NoPos
-	}
-	switch n := fn.Syntax().(type) {
+	switch n := ret.Parent().Syntax().(type) {
 	case *ast.FuncDecl:
 		return n.Body.Rbrace
 	case *ast.FuncLit:
@@ -1506,16 +1517,14 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 			}
 		}
 	}
-	roots := make([]*ssa.BasicBlock, 0, 2)
+	// fn.Recover is not a root: it starts from the entry state, where an acquire or
+	// release contract always fails. lockorder skips it too.
+	roots := make([]*ssa.BasicBlock, 0, 1)
 	if len(fn.Blocks) > 0 {
 		roots = append(roots, fn.Blocks[0])
 	}
-	if fn.Recover != nil {
-		roots = append(roots, fn.Recover)
-	}
 	recordsAt, pendingAt, decisionsAt := len(pc.records), len(pc.pending), pc.decisionMark()
 	for _, root := range roots {
-		// A state the body returns in is no alternative to one the recover block returns in.
 		wc.returnStates = make(map[string]string)
 		pc.checkBasicBlock(wc, root, ls, seen, nil)
 		if wc.gaveUp || pc.overBudget {
