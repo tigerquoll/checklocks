@@ -30,56 +30,100 @@ func (pc *lockOrderContext) engineView() *engineView {
 	return res.engine
 }
 
-// drive replaces the classes held at inst with the engine's, where it recorded the site.
-//
-// The engine's count of a class excludes assumed locks. The locks only this analyzer recognises
-// are added back from cs.own, since the engine has no record of them.
-func (pc *lockOrderContext) drive(fn *ssa.Function, inst ssa.Instruction, cs *classSet) {
+// engineEntry returns the engine's entry locks of fn whose guard this analysis classes, and the
+// class it entered each under.
+func (pc *lockOrderContext) engineEntry(fn *ssa.Function) map[pathKey]string {
+	if own, ok := pc.entries[fn]; ok {
+		return own
+	}
+	own := make(map[pathKey]string)
+	if pc.entries == nil {
+		pc.entries = make(map[*ssa.Function]map[pathKey]string)
+	}
+	pc.entries[fn] = own
+	obj := funcObject(fn)
+	if obj == nil || fn.Parent() != nil {
+		return own
+	}
+	held, ok := pc.engineView().entryOf(fn)
+	if !ok {
+		return own
+	}
+	for _, l := range held {
+		for _, g := range l.guards {
+			if class := pc.classOfGuard(obj, g); class != "" {
+				own[l.path.Key()] = class
+				break
+			}
+		}
+	}
+	return own
+}
+
+// engineKeyClass returns the class of an engine lock: the class lockorder entered it under, else
+// the projection of its path.
+func (pc *lockOrderContext) engineKeyClass(fn *ssa.Function, key pathKey, path lockPath) string {
+	if class := pc.engineEntry(fn)[key]; class != "" {
+		return class
+	}
+	class, _ := pc.engineClass(path)
+	return class
+}
+
+// applyEffect adds the locks the annotations of a call this analysis did not treat as a lock
+// operation acquired, and takes back its own earlier additions the call released. It never
+// lowers a count below this analysis's own.
+func (pc *lockOrderContext) applyEffect(fn *ssa.Function, call ssa.CallInstruction, cs *classSet) {
 	view := pc.engineView()
 	if view == nil || fn.Parent() != nil {
 		return
 	}
-	held, ok := view.heldAt(inst)
-	if !ok {
-		return
-	}
-	counts := make(map[string]int, len(held)+len(cs.own))
-	for _, l := range held {
-		if l.assumed {
+	gains := view.gainsOf(call)
+	for k := range view.releasesOf(call) {
+		if _, gained := gains[k]; gained {
 			continue
 		}
-		if class, _ := pc.engineClass(l.path); class != "" {
-			counts[class]++
+		if class, counted := cs.eng[k]; counted {
+			cs.undo(class)
+			delete(cs.eng, k)
 		}
 	}
-	for class, n := range cs.own {
-		if n > 0 {
-			counts[class] += n
+	for k, p := range gains {
+		if class := pc.engineKeyClass(fn, k, p); class != "" {
+			cs.gain(class)
+			cs.eng[k] = class
 		}
 	}
-	cs.counts = counts
 }
 
-// engineEntryClasses returns the classes of the locks the engine entered fn with.
-func (pc *lockOrderContext) engineEntryClasses(fn *ssa.Function) []string {
+// entryOverlay sets cs.site to the classes of the entry locks only the engine has, as it still
+// held them at inst.
+func (pc *lockOrderContext) entryOverlay(fn *ssa.Function, inst ssa.Instruction, cs *classSet) {
 	view := pc.engineView()
-	if view == nil {
-		return nil
+	if view == nil || fn.Parent() != nil {
+		return
 	}
-	held, ok := view.entryOf(fn)
+	held, ok := view.heldSet(inst)
 	if !ok {
-		return nil
+		cs.site = nil
+		return
 	}
-	var out []string
-	for _, l := range held {
-		if l.assumed {
+	var site map[string]int
+	for k, l := range held {
+		if l.assumed || !l.entry {
 			continue
 		}
-		if class, _ := pc.engineClass(l.path); class != "" {
-			out = append(out, class)
+		if _, counted := cs.eng[k]; counted {
+			continue
+		}
+		if class := pc.engineKeyClass(fn, k, l.path); class != "" {
+			if site == nil {
+				site = make(map[string]int)
+			}
+			site[class]++
 		}
 	}
-	return out
+	cs.site = site
 }
 
 // pathOwner walks the types along a lock path to the struct that owns its last field step,

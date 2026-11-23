@@ -39,9 +39,16 @@ type classSet struct {
 	// summary exports it so a call site can subtract it from its own held set.
 	released map[string]bool
 
-	// own counts the held locks the engine has no record of: operations whose lock is not a
-	// standard lock.
-	own map[string]int
+	// site is the classes of the entry locks only the engine has, as it held them at the last
+	// recorded site; it is replaced at every recorded site and never counted down.
+	site map[string]int
+
+	// eng is the engine's locks that counts includes, and the class each is counted under: the
+	// entry locks this analysis entered with itself, and the locks a callee acquired.
+	eng map[pathKey]string
+
+	// lo is this analysis's own count of each class, without the engine's gains. Counts never fall below it.
+	lo map[string]int
 }
 
 func newClassSet() *classSet {
@@ -49,7 +56,8 @@ func newClassSet() *classSet {
 		counts:   make(map[string]int),
 		entry:    make(map[string]int),
 		released: make(map[string]bool),
-		own:      make(map[string]int),
+		eng:      make(map[pathKey]string),
+		lo:       make(map[string]int),
 	}
 }
 
@@ -59,10 +67,15 @@ func (cs *classSet) fork() *classSet {
 		counts:   make(map[string]int, len(cs.counts)),
 		entry:    cs.entry,
 		released: make(map[string]bool, len(cs.released)),
-		own:      make(map[string]int, len(cs.own)),
+		site:     cs.site,
+		eng:      make(map[pathKey]string, len(cs.eng)),
 	}
-	for k, v := range cs.own {
-		out.own[k] = v
+	for k, v := range cs.eng {
+		out.eng[k] = v
+	}
+	out.lo = make(map[string]int, len(cs.lo))
+	for k, v := range cs.lo {
+		out.lo[k] = v
 	}
 	for k, v := range cs.counts {
 		out.counts[k] = v
@@ -82,10 +95,21 @@ func (cs *classSet) enter(class string) {
 	cs.acquire(class)
 }
 
-// raiseEntry adds a class to the entry baseline without counting it as held.
-func (cs *classSet) raiseEntry(class string) {
-	if class != "" && cs.entry[class] == 0 {
-		cs.entry[class] = 1
+// gain counts a lock the engine saw a callee take; lo does not include it.
+func (cs *classSet) gain(class string) {
+	if class == "" {
+		return
+	}
+	cs.raise(class)
+}
+
+// undo takes back one gain of class, never below this analysis's own count.
+func (cs *classSet) undo(class string) {
+	if cs.counts[class] > cs.lo[class] {
+		cs.counts[class]--
+		if cs.counts[class] == 0 {
+			delete(cs.counts, class)
+		}
 	}
 }
 
@@ -94,6 +118,12 @@ func (cs *classSet) acquire(class string) {
 	if class == "" {
 		return
 	}
+	cs.lo[class]++
+	cs.raise(class)
+}
+
+// raise counts one more of class held.
+func (cs *classSet) raise(class string) {
 	cs.counts[class]++
 	// Taking the caller's lock back closes the gap: from here on it is held again.
 	if cs.counts[class] >= cs.entry[class] {
@@ -122,6 +152,9 @@ func (cs *classSet) release(class string, receiverOwned bool) {
 		}
 		return
 	}
+	if cs.lo[class] > 0 {
+		cs.lo[class]--
+	}
 	cs.counts[class]--
 	if cs.counts[class] == 0 {
 		delete(cs.counts, class)
@@ -146,16 +179,21 @@ func (cs *classSet) releasedClasses() []string {
 
 // held returns the classes currently held, sorted so diagnostics are deterministic.
 func (cs *classSet) held() []string {
-	out := make([]string, 0, len(cs.counts))
+	out := make([]string, 0, len(cs.counts)+len(cs.site))
 	for k := range cs.counts {
 		out = append(out, k)
+	}
+	for k, n := range cs.site {
+		if n > 0 && cs.counts[k] == 0 {
+			out = append(out, k)
+		}
 	}
 	sort.Strings(out)
 	return out
 }
 
 // empty reports whether nothing is held.
-func (cs *classSet) empty() bool { return len(cs.counts) == 0 }
+func (cs *classSet) empty() bool { return len(cs.held()) == 0 }
 
 // String renders the set for a diagnostic.
 func (cs *classSet) String() string {
@@ -178,10 +216,30 @@ func (cs *classSet) String() string {
 // the path that still holds the lock.
 func (cs *classSet) merge(other *classSet) bool {
 	changed := false
-	for k, v := range other.own {
-		if cs.own[k] < v {
-			cs.own[k] = v
+	for k, v := range other.lo {
+		if cs.lo[k] < v {
+			cs.lo[k] = v
+			changed = true
 		}
+	}
+	for k, v := range other.eng {
+		if _, ok := cs.eng[k]; !ok {
+			cs.eng[k] = v
+			changed = true
+		}
+	}
+	if len(other.site) > 0 {
+		site := make(map[string]int, len(cs.site)+len(other.site))
+		for k, v := range cs.site {
+			site[k] = v
+		}
+		for k, v := range other.site {
+			if site[k] < v {
+				site[k] = v
+				changed = true
+			}
+		}
+		cs.site = site
 	}
 	for k, v := range other.counts {
 		if cs.counts[k] < v {

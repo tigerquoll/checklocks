@@ -24,6 +24,7 @@
 // +lockorder:App < Node
 // +lockorder:App < Manager
 // +lockorder:Manager < Tracker
+// +lockorder:Partition < SeamInner
 // +lockhierarchical:Queue
 package lockorder
 
@@ -526,10 +527,11 @@ func seamAcquireThenInvert(a *App, p *Partition) {
 	a.mu.Unlock()
 }
 
+// A callee's release is not applied, so the re-acquire reads as nested.
 func seamReleaseThenReacquire(a *App) {
 	a.mu.Lock()
 	seamUnlockApp(a)
-	a.mu.Lock()
+	a.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
 	a.mu.Unlock()
 }
 
@@ -606,4 +608,223 @@ func seamAssumedOnOnePath(a *App, p *Partition, cond bool) {
 	}
 	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 	p.Unlock()
+}
+
+// --- the engine only adds locks this walk cannot see; it never lowers this walk's own count -----
+
+// +lockclass:SeamW
+type seamW struct {
+	mu sync.Mutex
+}
+
+// +checklocksacquire:w.mu
+func (w *seamW) Lock() { w.mu.Lock() }
+
+// +checklocksrelease:w.mu
+func (w *seamW) Unlock() { w.mu.Unlock() }
+
+// The wrapper's annotation is not counted a second time, so the standard unlock leaves nothing held.
+func seamConsumedWrapperStandardUnlock(w *seamW) {
+	w.Lock()
+	w.mu.Unlock()
+	w.Lock()
+	w.Unlock()
+}
+
+// +checklocksrelease:a.mu
+// +checklocksacquire:b.mu
+func seamHandoff(a, b *App) {
+	a.mu.Unlock()
+	b.mu.Lock()
+}
+
+// One call that releases and takes back the same lock changes nothing.
+func seamHandoffSameLock(a *App, p *Partition) {
+	a.mu.Lock()
+	seamHandoff(a, a) // +lockorderfail=acquiring App (via seamHandoff) while holding App
+	a.mu.Unlock()
+	p.Lock()
+	p.Unlock()
+}
+
+// The entry lock is dropped through a wrapper the engine does not follow, so it stays entered with.
+//
+// +checklocks:a.mu
+func (a *App) seamWrapperDropsEntry(p *Partition) {
+	a.Unlock()
+	p.Lock()
+	p.Unlock()
+	a.Lock()
+}
+
+var seamGApp App
+
+// +checklocksrelease:seamGApp.mu
+func seamReleaseG() { seamGApp.mu.Unlock() }
+
+// +checklocksacquire:seamGApp.mu
+func seamAcquireG() { seamGApp.mu.Lock() }
+
+// Each release takes back the acquire before it: nothing is left held.
+//
+// +checklocks:seamGApp.mu
+func seamHelperPairs(p *Partition) {
+	seamReleaseG()
+	seamAcquireG()
+	seamReleaseG()
+	p.Lock()
+	p.Unlock()
+	seamAcquireG()
+}
+
+// +checklocksignore
+func seamAssumedThenAcquired(a *App, p *Partition) {
+	seamNeedsApp(a)
+	seamLockApp(a)
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+	a.mu.Unlock()
+}
+
+// +checklocksrelease:b.mu
+func seamUnlockB(b *App) { b.mu.Unlock() }
+
+// +checklocks:a.mu
+func (a *App) seamDropBoth(b *App, p *Partition) {
+	b.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
+	seamUnlockB(b)
+	a.mu.Unlock() // +lockgapfail=the caller's critical section is split
+	p.Lock()      // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+	a.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
+}
+
+// c stays held across the callee, whatever the callee releases.
+func seamTwoHolds(a, c, b *App, p *Partition) {
+	c.mu.Lock()
+	a.mu.Lock()          // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
+	a.seamDropBoth(b, p) // +lockorderfail=acquiring App (via (*App).seamDropBoth)|acquiring Partition (via (*App).seamDropBoth) while holding App
+	a.mu.Unlock()
+	c.mu.Unlock()
+}
+
+// The gain is undone by the release, but never below what this walk holds itself.
+//
+// +checklocks:seamGApp.mu
+func seamUndoFloor(a, b *App, p *Partition) {
+	seamLockApp(a)       // +lockorderfail=acquiring App (via seamLockApp) while holding App
+	seamGApp.mu.Unlock() // +lockgapfail=the mu lock is released here and taken again
+	b.mu.Lock()
+	seamUnlockApp(a)
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+	b.mu.Unlock()
+	seamGApp.mu.Lock()
+}
+
+// The own lock and the callee's gain meet at a join, in either order; the release must not take the own count.
+//
+// +checklocksignore
+func seamJoinOwnFirst(a, b *App, p *Partition, c bool) {
+	if c {
+		b.mu.Lock()
+	} else {
+		seamLockApp(a)
+	}
+	seamUnlockApp(a)
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+}
+
+// +checklocksignore
+func seamJoinGainFirst(a, b *App, p *Partition, c bool) {
+	if c {
+		seamLockApp(a)
+	} else {
+		b.mu.Lock()
+	}
+	seamUnlockApp(a)
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+}
+
+// A real unlock, then a gain of the same lock.
+func seamUnlockThenGain(a *App, p *Partition) {
+	seamLockApp(a)
+	a.mu.Unlock()
+	seamLockApp(a)
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+	a.mu.Unlock()
+}
+
+// +lockclass:SeamInner
+type seamInner struct {
+	mu *sync.Mutex
+}
+
+// +checklocksalias:inner.mu=mu
+type seamOuter struct {
+	mu    sync.Mutex
+	inner seamInner
+}
+
+func seamAliasBody(o *seamOuter, p *Partition) {
+	o.inner.mu.Lock()
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding SeamInner
+	p.Unlock()
+	o.inner.mu.Unlock()
+}
+
+// +checklocks:o.inner.mu
+func seamAliasEntry(o *seamOuter, p *Partition) {
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding SeamInner
+	p.Unlock()
+}
+
+// A recursive read lock with one read unlock still holds the lock.
+//
+// +checklocksignore
+func seamRecursiveRead(a *App, p *Partition) {
+	a.mu.RLock()
+	a.mu.RLock() // +lockorderfail=acquiring App (via (*RWMutex).RLock) while holding App
+	a.mu.RUnlock()
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+	a.mu.RUnlock()
+}
+
+type seamQInfo struct {
+	g SeamGuard
+}
+
+type seamE struct {
+	info seamQInfo
+}
+
+// +checklocksrelease:e.info.g
+func seamReleaseInfoG(e *seamE) { e.info.g.Unlock() }
+
+// +checklocksacquire:e.info.g
+func seamAcquireInfoG(e *seamE) { e.info.g.Lock() }
+
+// The entry lock is two fields deep, so only the engine classes it.
+//
+// +checklocks:e.info.g
+func (e *seamE) seamEntryReleasedOwnHeld(f *seamE) {
+	f.info.g.Lock() // +lockorderfail=acquiring SeamGuard (via (*SeamGuard).Lock) while holding SeamGuard
+	seamReleaseInfoG(e)
+	f.info.g.Unlock()
+	seamAcquireInfoG(e)
+}
+
+type seamTwoGuards struct {
+	a SeamGuard
+	b SeamGuard // +checklocksfail=may require checklocks annotation for a, used with lock held 100% of the time
+}
+
+// +checklocks:s.a
+func (s *seamTwoGuards) seamOwnSameClass() {
+	s.b.Lock() // +lockorderfail=acquiring SeamGuard (via (*SeamGuard).Lock) while holding SeamGuard
+	s.b.Unlock()
 }

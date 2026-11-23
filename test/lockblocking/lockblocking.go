@@ -1297,3 +1297,23 @@ func seamSendUnderCalleeAcquire(a *App, c chan int) {
 	c <- 1 // +lockblockingfail=a channel send while holding App
 	a.mu.Unlock()
 }
+
+// +lockclass:SeamQ
+type seamQ struct {
+	mu sync.Mutex
+}
+
+// +checklocksacquire:q.mu
+func seamLockQ(q *seamQ) { q.mu.Lock() }
+
+// +checklocksrelease:q.mu
+func seamUnlockQ(q *seamQ) { q.mu.Unlock() }
+
+// The class a callee acquires widens the held set this walk already has.
+func seamSendHoldsTwo(a *App, q *seamQ, c chan int) {
+	a.mu.Lock()
+	seamLockQ(q)
+	c <- 1 // +lockblockingfail=a channel send while holding App, SeamQ
+	seamUnlockQ(q)
+	a.mu.Unlock()
+}

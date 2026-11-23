@@ -50,8 +50,8 @@ type shadowLine struct {
 }
 
 // lockOrderShadow is what lockorder records per pass: the classes held at each call of the report walk,
-// and the comparison with the engine. The classes are lockorder's state as driven up to the previous
-// site, since the comparison runs before the drive at each site.
+// and the comparison with the engine. The classes are lockorder's state before the engine's additions
+// at the site.
 type lockOrderShadow struct {
 	held  map[ssa.Instruction]map[string]struct{}
 	lines []shadowLine
@@ -103,6 +103,9 @@ func (pc *lockOrderContext) shadowCompare() {
 		if !ok {
 			s.noengine++
 			if len(lo) > 0 {
+				if _, walked := view.entryOf(fn); walked {
+					s.unrecorded++
+				}
 				s.lines = append(s.lines, shadowLine{inst.Pos(), fmt.Sprintf("X\t%s\t%s\t%s\tL=%s\t%s", pkg, pos, relFuncName(fn), strings.Join(slices.Sorted(maps.Keys(lo)), ","), view.whyNone(fn))})
 			}
 			continue

@@ -121,6 +121,7 @@ func hintsFixture(t *testing.T) (*passContext, *ssa.Function) {
 		expectations: newExpectations(pass, checkLocksAnnotations, true),
 		pass:         pass,
 		functions:    make(map[*ssa.Function]struct{}),
+		engine:       &engineView{},
 	}, pkg.Func("f")
 }
 
@@ -201,7 +202,10 @@ func engineFixture(t *testing.T) (*passContext, *ssa.Function, ssa.Instruction) 
 	lock := types.NewVar(token.NoPos, types.NewPackage("p", "p"), "mu", types.Typ[types.Int])
 	ls, _ := heldBy(lock)
 	pc.engine.add(inst, ls.lockedMutexes, nil)
-	pc.engine.setEntry(fn, ls.lockedMutexes)
+	pc.engine.setEntry(fn, ls.lockedMutexes, nil)
+	path := newLockPath(pathRootValue, nil, nil, "mu")
+	pc.engine.addGain(inst, path)
+	pc.engine.addRelease(inst, path)
 	return pc, fn, inst
 }
 
@@ -215,6 +219,9 @@ func TestContainedEngineRecords(t *testing.T) {
 	if _, ok := pc.engine.entryOf(fn); !ok {
 		t.Error("completed function: no entry record")
 	}
+	if len(pc.engine.gainsOf(inst)) != 1 || len(pc.engine.releasesOf(inst)) != 1 {
+		t.Error("completed function: no gain or release record")
+	}
 
 	pc, fn, inst = engineFixture(t)
 	pc.contained(fn, func() { panic("boom") })
@@ -223,5 +230,8 @@ func TestContainedEngineRecords(t *testing.T) {
 	}
 	if _, ok := pc.engine.entryOf(fn); ok {
 		t.Error("panicked function: entry record")
+	}
+	if len(pc.engine.gainsOf(inst)) != 0 || len(pc.engine.releasesOf(inst)) != 0 {
+		t.Error("panicked function: gain or release record")
 	}
 }

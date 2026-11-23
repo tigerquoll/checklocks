@@ -656,6 +656,8 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		return fg.Resolver.resolveCall(pc, ls, site.Common().Args, site.Result())
 	}
 
+	// lost is the real locks the release annotations dropped, for the engine view.
+	var lost []lockPath
 	// Release all locks not still held.
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, lff.HeldOnExit, resolve) {
 		if g.rv.unavailable {
@@ -668,8 +670,13 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			pc.maybeFail(site.Pos(), "field %s cannot be resolved", g.fieldName)
 			continue
 		}
+		pre, _ := g.rv.valueAndObject(ls)
+		preInfo, preHeld := ls.lockedMutexes[ls.aliasPath(pre).Key()]
 		p, ok := ls.unlockField(g.rv, g.fg.Exclusive)
 		pc.decide(at, release, ok, g.fieldName)
+		if ok && preHeld && !preInfo.assumed {
+			lost = append(lost, p)
+		}
 		if !ok {
 			if lff.Ignore || ls.silencesRelease(p, site.kind == siteDefer) {
 				pc.suppressed()
@@ -693,8 +700,18 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			continue
 		}
 		// Acquire the lock per the annotation.
+		pre, _ := g.rv.valueAndObject(ls)
+		preInfo, preHeld := ls.lockedMutexes[ls.aliasPath(pre).Key()]
 		p, ok := ls.lockField(g.rv, g.exclusive)
 		pc.decide(at, acquire, ok, g.fieldName)
+		if ok || (preHeld && preInfo.assumed) {
+			if i := slices.IndexFunc(lost, func(l lockPath) bool { return l.Key() == p.Key() }); i >= 0 {
+				// Released and taken back by the one call: no change.
+				lost = slices.Delete(lost, i, i+1)
+			} else {
+				pc.recordGain(site.instr, p)
+			}
+		}
 		if !ok {
 			// The lock is really taken here, whatever assumed it earlier.
 			ls.setAssumed(p, false)
@@ -704,6 +721,9 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 				pc.suppressed()
 			}
 		}
+	}
+	for _, p := range lost {
+		pc.recordRelease(site.instr, p)
 	}
 }
 
@@ -1390,6 +1410,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	defer func() { pc.emit = outerEmit }()
 	if outer == nil {
 		pc.walks, pc.overBudget = 0, false
+		pc.entryGuards = nil
 	}
 	defer pc.walkChain(fn)()
 	pc.decisions.enter()
@@ -1447,6 +1468,12 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		}
 		p, ok := ls.lockField(g.rv, g.exclusive)
 		pc.decide(entry, entryDuplicate, ok, g.fieldName)
+		if outer == nil {
+			if pc.entryGuards == nil {
+				pc.entryGuards = make(map[pathKey][]string)
+			}
+			pc.entryGuards[p.Key()] = append(pc.entryGuards[p.Key()], g.fieldName)
+		}
 		if !ok {
 			if !lff.Ignore {
 				// This can only happen if the same value is declared

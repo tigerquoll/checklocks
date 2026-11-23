@@ -134,7 +134,10 @@ type passContext struct {
 	decisions decisionState
 
 	// engine is what lockorder and lockblocking read of the held locks; see engineview.go.
-	engine engineView
+	engine *engineView
+
+	// entryGuards names the guards each entry lock of the function being walked came from.
+	entryGuards map[pathKey][]string
 }
 
 // emitMode says what maybeFail and recordObservation do with what they are given.
@@ -349,6 +352,7 @@ func run(pass *analysis.Pass) (any, error) {
 		pass:         pass,
 		functions:    make(map[*ssa.Function]struct{}),
 		collect:      true,
+		engine:       &engineView{},
 	}
 
 	// Find all line failure annotations.
@@ -506,6 +510,6 @@ func run(pass *analysis.Pass) (any, error) {
 	pc.checkFailures()
 
 	res := snapshotOf(pass)
-	res.engine = &pc.engine
+	res.engine = pc.engine
 	return res, nil
 }

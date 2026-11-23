@@ -25,6 +25,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/ssa"
 )
 
 const shadowPkg = "github.com/tigerquoll/checklocks/test/shadow"
@@ -170,5 +173,34 @@ func TestShadowView(t *testing.T) {
 	slices.Sort(decision)
 	if !slices.Equal(names, decision) {
 		t.Errorf("shadow logs %q, decision logs %q", names, decision)
+	}
+}
+
+// TestShadowUnrecorded pins that a site with a class held and no engine record, in a function the engine walked, is counted.
+func TestShadowUnrecorded(t *testing.T) {
+	old := shadowLogDir
+	shadowLogDir = t.TempDir()
+	t.Cleanup(func() { shadowLogDir = old })
+
+	pkg := buildTestPackage(t, "unrec", "package unrec\n\nfunc f() {}\n")
+	fn := pkg.Func("f")
+	inst := fn.Blocks[0].Instrs[0]
+	pass := &analysis.Pass{Fset: pkg.Prog.Fset, Pkg: pkg.Pkg, ResultOf: map[*analysis.Analyzer]any{}}
+	count := func(withEntry bool) int {
+		view := &engineView{}
+		if withEntry {
+			view.setEntry(fn, nil, nil)
+		}
+		pass.ResultOf[Analyzer] = &ownerResult{engine: view}
+		pc := &lockOrderContext{pass: pass, check: checkOrder}
+		pc.shadow.held = map[ssa.Instruction]map[string]struct{}{inst: {"A": {}}}
+		pc.shadowCompare()
+		return pc.shadow.unrecorded
+	}
+	if got := count(true); got != 1 {
+		t.Errorf("walked function: unrecorded = %d, want 1", got)
+	}
+	if got := count(false); got != 0 {
+		t.Errorf("function with no entry record: unrecorded = %d, want 0", got)
 	}
 }

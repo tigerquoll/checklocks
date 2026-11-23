@@ -49,6 +49,7 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
+	"golang.org/x/tools/go/ssa"
 )
 
 // Analyzer is the entrypoint.
@@ -116,6 +117,9 @@ type lockOrderContext struct {
 
 	// shadow is what the tagged build records and compares against the engine; see shadow_parity.go.
 	shadow lockOrderShadow
+
+	// entries caches what the engine entered each function with; see engineEntry.
+	entries map[*ssa.Function]map[pathKey]string
 }
 
 // run is the main entrypoint.
