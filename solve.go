@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"container/heap"
+	"maps"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -36,6 +37,48 @@ type cfgFacts struct {
 
 	// loops holds the natural loop of each dominance back edge met.
 	loops map[edge]map[*ssa.BasicBlock]bool
+
+	// region names the loop each cyclic block belongs to.
+	region map[*ssa.BasicBlock]region
+}
+
+// region is the innermost natural loop holding a cyclic block, named by its header, or a
+// cyclic block that lies in no natural loop, alone.
+type region struct {
+	block *ssa.BasicBlock
+	loop  bool
+}
+
+// regionSet is a set of regions, never written once shared.
+type regionSet map[region]struct{}
+
+// with returns the set and r.
+func (s regionSet) with(r region) regionSet {
+	return s.union(regionSet{r: {}})
+}
+
+// union returns the set and o, sharing a set that already holds the other.
+func (s regionSet) union(o regionSet) regionSet {
+	switch {
+	case len(o) == 0:
+		return s
+	case len(s) == 0:
+		return o
+	}
+	missing := false
+	for r := range o {
+		if _, ok := s[r]; !ok {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return s
+	}
+	u := make(regionSet, len(s)+len(o))
+	maps.Copy(u, s)
+	maps.Copy(u, o)
+	return u
 }
 
 // cfgOf returns the block graph facts of fn, built once per pass.
@@ -77,7 +120,37 @@ func newCFGFacts(fn *ssa.Function) *cfgFacts {
 	for b := range cyclicBlocks(post, func(from, to *ssa.BasicBlock) bool { return !to.Dominates(from) }) {
 		g.redefined[b] = map[*ssa.BasicBlock]bool{b: true}
 	}
+	g.region = cyclicRegions(g.cyclic)
 	return g
+}
+
+// cyclicRegions assigns each cyclic block its region. The header of a natural loop owns the
+// union of the loops of all back edges into it.
+func cyclicRegions(cyclic map[*ssa.BasicBlock]bool) map[*ssa.BasicBlock]region {
+	bodies := make(map[*ssa.BasicBlock]map[*ssa.BasicBlock]bool)
+	for b := range cyclic {
+		for _, s := range b.Succs {
+			if s.Dominates(b) {
+				if bodies[s] == nil {
+					bodies[s] = make(map[*ssa.BasicBlock]bool)
+				}
+				maps.Copy(bodies[s], loopBody(s, b))
+			}
+		}
+	}
+	regions := make(map[*ssa.BasicBlock]region, len(cyclic))
+	for b := range cyclic {
+		r := region{block: b}
+		// A header dominates its loop, so the nearest one holding b is the innermost loop.
+		for h := b; h != nil; h = h.Idom() {
+			if bodies[h][b] {
+				r = region{block: h, loop: true}
+				break
+			}
+		}
+		regions[b] = r
+	}
+	return regions
 }
 
 // cyclicBlocks returns the blocks that lie on a cycle of the graph over the edges keep admits.
@@ -248,8 +321,11 @@ func (sv *solver) carry(block, succ *ssa.BasicBlock, ls *lockState) *lockState {
 		return ls
 	}
 	s := ls.fork()
-	if n := s.dropDead(func(p lockPath) bool { return pathDies(p, dies) }); n > 0 {
+	if n := s.dropDead(func(p lockPath) bool { return pathDies(p, dies) }, sv.pc.regionsOf); n > 0 {
 		sv.pc.statWidened(sv.wc, succ, n)
+	}
+	if s.markerTop {
+		sv.pc.statTopRegions(len(s.topRegions))
 	}
 	return s
 }

@@ -494,10 +494,10 @@ func loopNestedGiveUp(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c, c1, c
 			}
 		}
 		loopSink = func() {
-			loopNeedsMu(t) // +checklocksfail=must hold t.mu
+			loopNeedsMu(t) // +checklocksfail=must hold t.mu exclusively
 		}
 	}()
-} // +checklocksfail=unexpected locks held
+} // +checklocksfail=return with unexpected locks held
 
 // A closure run inline inside a literal that gives up is not analysed again without the locks it ran under.
 func loopGiveUpInline(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
@@ -674,10 +674,10 @@ func loopGiveUpTwoEntries(c bool, t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mut
 			}
 		}
 		loopBreakSink = func() {
-			loopNeedsMu(t) // +checklocksfail=must hold t.mu
+			loopNeedsMu(t) // +checklocksfail=must hold t.mu exclusively
 		}
 	}()
-} // +checklocksfail=unexpected locks held
+} // +checklocksfail=return with unexpected locks held
 
 // Sites a loop's dropped locks may have released; these pin that the loop is analysed.
 func loopFiveKeysRelease(n, c int) {
@@ -921,3 +921,115 @@ func loopTopBeforeLoop(n, c int, f *sevenLocks) { // +checklocksfail=incompatibl
 		h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
 	}
 } // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
+
+// The inner loop drops two keys; h belongs to the outer loop, so releasing it is still reported.
+func loopRegionNested(n, m int) {
+	for i := 0; i < n; i++ {
+		h := loopGet()
+		h.mu.Lock()
+		for j := 0; j < m; j++ {
+			x := loopGet()
+			x.mu.Lock()
+			y := loopGet()
+			y.mu.Lock()
+			h.mu.Unlock() // +checklocksfail=locked differently
+		}
+	}
+}
+
+// A later loop's value is not one the first loop dropped.
+func loopRegionSibling(n, m int, g *loopT) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		x := loopGet()
+		x.mu.Lock()
+		y := loopGet()
+		y.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+	for j := 0; j < m; j++ {
+		h := loopGet()
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopRegionIndexedOuter(n, m int, ts []loopT) {
+	for i := 0; i < n; i++ {
+		ts[i].mu.Lock()
+		for j := 0; j < m; j++ {
+			x := loopGet()
+			x.mu.Lock()
+			y := loopGet()
+			y.mu.Lock()
+			ts[i].mu.Unlock() // +checklocksfail=locked differently
+		}
+	}
+}
+
+// The index is a value of the dropping loop, so one report is silenced.
+func loopRegionIndexedSame(n int, ts []loopT, g *loopT) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		ts[i].mu.Unlock() // +checklocksfail=locked differently
+		x := loopGet()
+		x.mu.Lock()
+		y := loopGet()
+		y.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopRegionIndexedSibling(n, m int, ts []loopT, g *loopT) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		x := loopGet()
+		x.mu.Lock()
+		y := loopGet()
+		y.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+	for j := 0; j < m; j++ {
+		ts[j].mu.Unlock() // +checklocksfail=locked differently|locked differently
+	}
+} // +checklocksfail=return with unexpected locks held
+
+// The inner keys are dropped at the outer back edge; h belongs to the outer loop.
+func loopRegionOuterDrop(n, m int, c func() bool, g *loopT) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		h := loopGet()
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently
+		for j := 0; j < m; j++ {
+			x := loopGet()
+			x.mu.Lock()
+			y := loopGet()
+			y.mu.Lock()
+			if c() {
+				g.mu.Lock() // +checklocksfail=already locked
+				break
+			}
+			x.mu.Unlock()
+			y.mu.Unlock()
+		}
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopRegionDroppedRelease(n int, c func() bool, g *loopT) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		x, y := loopGet(), loopGet()
+		if c() {
+			x.mu.Unlock() // +checklocksfail=locked differently
+			y.mu.Unlock() // +checklocksfail=locked differently
+		}
+		x.mu.Lock()
+		y.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopRegionExitRelease(n int, ts []loopT, g *loopT) { // +checklocksfail=incompatible return states
+	var i int
+	for i = 0; i < n; i++ {
+		ts[i].mu.Lock()
+		x := loopGet()
+		x.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+	ts[i].mu.Unlock() // +checklocksfail=locked differently
+} // +checklocksfail=return with unexpected locks held

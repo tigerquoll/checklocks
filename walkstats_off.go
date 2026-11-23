@@ -33,6 +33,7 @@ func (*passContext) walkChain(*ssa.Function) func()                     { return
 func (*passContext) cutCheck(*ssa.Function, *lockState, *lockState)     {}
 func (*passContext) statWalk(*walkContext, *ssa.BasicBlock, *lockState) {}
 func (*passContext) statWidened(*walkContext, *ssa.BasicBlock, int)     {}
+func (*passContext) statTopRegions(int)                                 {}
 func (*passContext) statTopSilenced(token.Pos, lockPath)                {}
 func (*passContext) statOverflow()                                      {}
 func (*passContext) writeWalkStats()                                    {}

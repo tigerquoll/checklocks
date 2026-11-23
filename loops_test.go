@@ -54,6 +54,21 @@ func D() {
 	defer get(1)
 	defer get(2)
 }
+
+func N(n, m int) {
+	for i := 0; i < n; i++ {
+		o := get(1)
+		_ = o
+		for j := 0; j < m; j++ {
+			in := get(2)
+			_ = in
+		}
+	}
+	for k := 0; k < n; k++ {
+		s := get(3)
+		_ = s
+	}
+}
 `
 
 // loopFixture is the SSA of loopSource with the pieces the tests build paths from.
@@ -165,11 +180,11 @@ func TestPathDies(t *testing.T) {
 	}
 }
 
-// dropped makes a marker holding the keys of the paths.
-func dropped(paths ...lockPath) map[pathKey]struct{} {
-	m := make(map[pathKey]struct{})
+// dropped makes a marker holding the keys of the paths, with no regions.
+func dropped(paths ...lockPath) map[pathKey]regionSet {
+	m := make(map[pathKey]regionSet)
 	for _, p := range paths {
-		m[p.Key()] = struct{}{}
+		m[p.Key()] = nil
 	}
 	return m
 }
@@ -180,86 +195,185 @@ func marked(ls *lockState, paths ...lockPath) *lockState {
 	return ls
 }
 
+// markedIn adds the path to the marker of ls with the regions.
+func markedIn(ls *lockState, p lockPath, rs ...region) *lockState {
+	if ls.marker == nil {
+		ls.marker = make(map[pathKey]regionSet)
+	}
+	ls.marker[p.Key()] = regions(rs...)
+	return ls
+}
+
 // topped sets the marker of ls to top.
 func topped(ls *lockState) *lockState {
 	ls.markerTop = true
 	return ls
 }
 
+// toppedIn sets the marker of ls to top over the regions.
+func toppedIn(ls *lockState, rs ...region) *lockState {
+	ls.markerTop, ls.topRegions = true, regions(rs...)
+	return ls
+}
+
+func regions(rs ...region) regionSet {
+	var set regionSet
+	for _, r := range rs {
+		set = set.with(r)
+	}
+	return set
+}
+
+// nestFixture holds a value of each loop of N: an outer loop, one inside it, and a sibling after both.
+type nestFixture struct {
+	fn                    *ssa.Function
+	outer, inner, sibling lockPath
+	rOuter, rInner, rSib  region
+}
+
+func newNestFixture(t *testing.T, pc *passContext) nestFixture {
+	t.Helper()
+	pkg := buildTestPackage(t, "loops", loopSource)
+	fx := nestFixture{fn: pkg.Func("N")}
+	for _, b := range fx.fn.Blocks {
+		for _, inst := range b.Instrs {
+			c, ok := inst.(*ssa.Call)
+			if !ok {
+				continue
+			}
+			k, ok := c.Call.Args[0].(*ssa.Const)
+			if !ok {
+				continue
+			}
+			p := newLockPath(pathRootValue, c, nil, c.Name())
+			r := pc.cfgOf(fx.fn).region[b]
+			switch k.Int64() {
+			case 1:
+				fx.outer, fx.rOuter = p, r
+			case 2:
+				fx.inner, fx.rInner = p, r
+			case 3:
+				fx.sibling, fx.rSib = p, r
+			}
+		}
+	}
+	if !fx.rOuter.loop || !fx.rInner.loop || !fx.rSib.loop || fx.rOuter == fx.rInner || fx.rInner == fx.rSib || fx.rOuter == fx.rSib {
+		t.Fatalf("N's loops have regions %v %v %v, want three loops", fx.rOuter, fx.rInner, fx.rSib)
+	}
+	return fx
+}
+
+func TestCyclicRegions(t *testing.T) {
+	cyclicOf := func(src string) (*cfgFacts, int) {
+		fn := buildTestPackage(t, "regions", src).Func("f")
+		g := newCFGFacts(fn)
+		return g, len(g.cyclic)
+	}
+	g, n := cyclicOf(lockSource("natural", 2))
+	headers := map[*ssa.BasicBlock]bool{}
+	for b := range g.cyclic {
+		if !g.region[b].loop {
+			t.Errorf("block %d of a natural loop is its own region", b.Index)
+		}
+		headers[g.region[b].block] = true
+	}
+	if n == 0 || len(headers) != 1 {
+		t.Errorf("a loop with %d cyclic blocks has %d regions, want 1", n, len(headers))
+	}
+	g, n = cyclicOf(lockSource("goto", 2))
+	for b := range g.cyclic {
+		if g.region[b] != (region{block: b}) {
+			t.Errorf("block %d of a goto cycle has region %v, want itself alone", b.Index, g.region[b])
+		}
+	}
+	if n == 0 {
+		t.Error("the goto shape has no cyclic block")
+	}
+	pc := &passContext{}
+	nf := newNestFixture(t, pc)
+	if !nf.rOuter.block.Dominates(nf.rInner.block) || nf.rSib.block == nf.rOuter.block {
+		t.Error("the inner loop is not nested in the outer one")
+	}
+}
+
 func TestMarkerBound(t *testing.T) {
+	if !markerBoundOn {
+		t.Skip("the marker bound is off")
+	}
 	fx := newLoopFixture(t)
+	nf := newNestFixture(t, &passContext{})
 	a, b, c := fx.inside.Key(), fx.before.Key(), fx.phi.Key()
-	apply := func(l *lockState, keys ...pathKey) *lockState {
+	r1, r2, r3 := nf.rOuter, nf.rInner, nf.rSib
+	da, db, dc := droppedKey{a, regions(r1)}, droppedKey{b, regions(r2)}, droppedKey{c, regions(r3)}
+	mark := func(keys ...droppedKey) *lockState {
+		l := newLockState()
 		l.markDropped(keys)
 		return l
 	}
 	for _, tc := range []struct {
-		name string
-		from *lockState
-		keys []pathKey
-		want []pathKey
-		top  bool
-		size int
+		name  string
+		from  *lockState
+		keys  []droppedKey
+		want  map[pathKey]regionSet
+		top   regionSet
+		isTop bool
+		size  int
 	}{
-		{"nothing", newLockState(), nil, nil, false, 0},
-		{"one key", newLockState(), []pathKey{a}, []pathKey{a}, false, 0},
-		{"same key again", apply(newLockState(), a), []pathKey{a}, []pathKey{a}, false, 0},
-		{"second key", apply(newLockState(), a), []pathKey{b}, nil, true, 2},
-		{"two keys at once", newLockState(), []pathKey{a, b}, nil, true, 2},
-		{"top absorbs a key", topped(newLockState()), []pathKey{c}, nil, true, 0},
-		{"top absorbs nothing", topped(newLockState()), nil, nil, true, 0},
+		{"nothing", newLockState(), nil, nil, nil, false, 0},
+		{"one key", newLockState(), []droppedKey{da}, map[pathKey]regionSet{a: regions(r1)}, nil, false, 0},
+		{"same key again", mark(da), []droppedKey{da}, map[pathKey]regionSet{a: regions(r1)}, nil, false, 0},
+		{"second key", mark(da), []droppedKey{db}, nil, regions(r1, r2), true, 2},
+		{"two keys at once", newLockState(), []droppedKey{da, db}, nil, regions(r1, r2), true, 2},
+		{"two keys of one region", newLockState(), []droppedKey{da, {b, regions(r1)}}, nil, regions(r1), true, 2},
+		{"top takes the regions of a key", mark(da, db), []droppedKey{dc}, nil, regions(r1, r2, r3), true, 0},
+		{"top takes nothing new", mark(da, db), []droppedKey{da}, nil, regions(r1, r2), true, 0},
+		{"top absorbs nothing", mark(da, db), nil, nil, regions(r1, r2), true, 0},
 	} {
 		size := tc.from.markDropped(tc.keys)
-		if size != tc.size || tc.from.markerTop != tc.top || !maps.Equal(tc.from.marker, keySet(tc.want)) {
-			t.Errorf("%s: size %d, top %t, marker %v; want size %d, top %t, marker %v", tc.name, size, tc.from.markerTop, tc.from.marker, tc.size, tc.top, tc.want)
+		if size != tc.size || tc.from.markerTop != tc.isTop || !maps.Equal(tc.from.topRegions, tc.top) || !maps.EqualFunc(tc.from.marker, tc.want, func(x, y regionSet) bool { return maps.Equal(x, y) }) {
+			t.Errorf("%s: size %d, top %t over %v, marker %v; want size %d, top %t over %v, marker %v", tc.name, size, tc.from.markerTop, tc.from.topRegions, tc.from.marker, tc.size, tc.isTop, tc.top, tc.want)
 		}
 	}
 
 	// Bounding after each step is the same as bounding the union.
-	sets := [][]pathKey{nil, {a}, {b}, {a, b}, {b, c}, {a, b, c}}
+	sets := [][]droppedKey{nil, {da}, {db}, {da, db}, {db, dc}, {da, db, dc}}
 	for _, first := range sets {
 		for _, second := range sets {
 			once, twice := newLockState(), newLockState()
 			once.markDropped(append(slices.Clone(first), second...))
 			twice.markDropped(first)
 			twice.markDropped(second)
-			if once.markerTop != twice.markerTop || !maps.Equal(once.marker, twice.marker) {
-				t.Errorf("%v then %v: at once top %t marker %v, in two steps top %t marker %v", first, second, once.markerTop, once.marker, twice.markerTop, twice.marker)
+			if once.markerTop != twice.markerTop || !maps.Equal(once.topRegions, twice.topRegions) || !maps.EqualFunc(once.marker, twice.marker, func(x, y regionSet) bool { return maps.Equal(x, y) }) {
+				t.Errorf("%v then %v: at once top %t over %v marker %v, in two steps top %t over %v marker %v", first, second, once.markerTop, once.topRegions, once.marker, twice.markerTop, twice.topRegions, twice.marker)
 			}
 		}
 	}
 }
 
-func keySet(keys []pathKey) map[pathKey]struct{} {
-	m := make(map[pathKey]struct{})
-	for _, k := range keys {
-		m[k] = struct{}{}
-	}
-	return m
-}
-
 func TestDropDead(t *testing.T) {
 	fx := newLoopFixture(t)
+	pc := &passContext{}
 	dies := func(p lockPath) bool { return pathDies(p, fx.body) }
 
 	ls := held(false, fx.param, fx.inside)
-	ls.dropDead(dies)
-	if ls.count() != 1 || !maps.Equal(ls.marker, dropped(fx.inside)) {
-		t.Errorf("a dead acquired lock: %d held, marker %v, want 1 held and the dropped key in the marker", ls.count(), ls.marker)
+	ls.dropDead(dies, pc.regionsOf)
+	want := pc.regionsOf(fx.inside)
+	if ls.count() != 1 || len(ls.marker) != 1 || len(want) != 1 || !maps.Equal(ls.marker[fx.inside.Key()], want) {
+		t.Errorf("a dead acquired lock: %d held, marker %v, want 1 held and the dropped key in the marker with the region %v", ls.count(), ls.marker, want)
 	}
 	if _, ok := ls.lockedMutexes[fx.param.Key()]; !ok {
 		t.Error("the parameter lock was dropped")
 	}
 
 	ls = held(true, fx.inside)
-	ls.dropDead(dies)
+	ls.dropDead(dies, pc.regionsOf)
 	if ls.count() != 0 || len(ls.marker) != 0 {
 		t.Errorf("a dead assumed lock: %d held, marker %v, want none held and the marker empty", ls.count(), ls.marker)
 	}
 
 	shared := held(false, fx.inside)
 	fork := shared.fork()
-	fork.dropDead(dies)
+	fork.dropDead(dies, pc.regionsOf)
 	if shared.count() != 1 || len(shared.marker) != 0 {
 		t.Error("dropping from a fork changed the state it was forked from")
 	}
@@ -281,37 +395,51 @@ func TestPushDeferTwice(t *testing.T) {
 
 func TestSilencesRelease(t *testing.T) {
 	fx := newLoopFixture(t)
+	pc := &passContext{}
+	nf := newNestFixture(t, pc)
 	for _, tc := range []struct {
 		name     string
 		set      []lockPath
 		top      bool
+		topIn    []lockPath
 		held     []lockPath
 		path     lockPath
 		deferred bool
 		want     bool
 	}{
-		{"marker empty", nil, false, nil, fx.inside, false, false},
-		{"dropped key", []lockPath{fx.inside}, false, nil, fx.inside, false, true},
-		{"dropped key but held", []lockPath{fx.inside}, false, []lockPath{fx.inside}, fx.inside, false, false},
-		{"value defined before the loop", []lockPath{fx.inside}, false, nil, fx.before, false, false},
-		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, false, nil, fx.phi, false, false},
-		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, false, nil, index(fx.param, fx.phi), false, true},
-		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, false, nil, index(fx.param, index(fx.param, fx.inside)), false, true},
-		{"deferred, value defined before the loop", []lockPath{fx.inside}, false, nil, fx.before, true, true},
-		{"deferred, marker empty", nil, false, nil, fx.before, true, false},
-		{"deferred, same key held", []lockPath{fx.inside}, false, []lockPath{fx.before}, fx.before, true, false},
-		{"deferred, parameter root", []lockPath{fx.inside}, false, nil, fx.param, true, false},
-		{"top, value defined in the loop", nil, true, nil, fx.inside, false, true},
-		{"top, loop-defined index of a parameter", nil, true, nil, index(fx.param, fx.phi), false, true},
-		{"top, value defined before the loop", nil, true, nil, fx.before, false, false},
-		{"top, parameter root", nil, true, nil, fx.param, false, false},
-		{"top, but held", nil, true, []lockPath{fx.inside}, fx.inside, false, false},
-		{"top, deferred, value defined before the loop", nil, true, nil, fx.before, true, true},
-		{"top, deferred, parameter root", nil, true, nil, fx.param, true, false},
+		{"marker empty", nil, false, nil, nil, fx.inside, false, false},
+		{"dropped key", []lockPath{fx.inside}, false, nil, nil, fx.inside, false, true},
+		{"dropped key but held", []lockPath{fx.inside}, false, nil, []lockPath{fx.inside}, fx.inside, false, false},
+		{"value defined before the loop", []lockPath{fx.inside}, false, nil, nil, fx.before, false, false},
+		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, false, nil, nil, fx.phi, false, false},
+		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, false, nil, nil, index(fx.param, fx.phi), false, true},
+		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, false, nil, nil, index(fx.param, index(fx.param, fx.inside)), false, true},
+		{"deferred, value defined before the loop", []lockPath{fx.inside}, false, nil, nil, fx.before, true, true},
+		{"deferred, marker empty", nil, false, nil, nil, fx.before, true, false},
+		{"deferred, same key held", []lockPath{fx.inside}, false, nil, []lockPath{fx.before}, fx.before, true, false},
+		{"deferred, parameter root", []lockPath{fx.inside}, false, nil, nil, fx.param, true, false},
+		{"top, value defined in the loop", nil, true, []lockPath{fx.inside}, nil, fx.inside, false, true},
+		{"top, loop-defined index of a parameter", nil, true, []lockPath{fx.inside}, nil, index(fx.param, fx.phi), false, true},
+		{"top, value defined before the loop", nil, true, []lockPath{fx.inside}, nil, fx.before, false, false},
+		{"top, parameter root", nil, true, []lockPath{fx.inside}, nil, fx.param, false, false},
+		{"top, but held", nil, true, []lockPath{fx.inside}, []lockPath{fx.inside}, fx.inside, false, false},
+		{"top, deferred, value defined before the loop", nil, true, []lockPath{fx.inside}, nil, fx.before, true, true},
+		{"top, deferred, parameter root", nil, true, []lockPath{fx.inside}, nil, fx.param, true, false},
+		{"top of a loop, value of that loop", nil, true, []lockPath{nf.inner}, nil, nf.inner, false, true},
+		{"top of a loop, value of the loop around it", nil, true, []lockPath{nf.inner}, nil, nf.outer, false, false},
+		{"top of a loop, value of a sibling loop", nil, true, []lockPath{nf.inner}, nil, nf.sibling, false, false},
+		{"top of a loop, index defined in a sibling loop", nil, true, []lockPath{nf.inner}, nil, index(fx.param, nf.sibling), false, false},
+		{"top of the outer loop, value of the loop inside it", nil, true, []lockPath{nf.outer}, nil, nf.inner, false, false},
+		{"top of two loops, value of the second", nil, true, []lockPath{nf.outer, nf.sibling}, nil, nf.sibling, false, true},
+		{"top of no loop, value of a loop", nil, true, nil, nil, nf.inner, false, false},
+		{"top of no loop, deferred", nil, true, nil, nil, nf.inner, true, true},
 	} {
 		ls := marked(held(false, tc.held...), tc.set...)
 		ls.markerTop = tc.top
-		if got := (&passContext{}).silencesRelease(ls, tc.path, tc.deferred, token.NoPos); got != tc.want {
+		for _, p := range tc.topIn {
+			ls.topRegions = ls.topRegions.union(pc.regionsOf(p))
+		}
+		if got := pc.silencesRelease(ls, tc.path, tc.deferred, token.NoPos); got != tc.want {
 			t.Errorf("%s: silencesRelease = %t, want %t", tc.name, got, tc.want)
 		}
 	}
@@ -371,6 +499,9 @@ func armSource(n, n2 int) string {
 }
 
 func TestCycleStateCap(t *testing.T) {
+	if !markerBoundOn {
+		t.Skip("the marker bound is off")
+	}
 	capText := fmt.Sprintf("checklocks gave up on this function: more than %d lock states reach one block in a loop", maxCycleStates)
 	budgetText := fmt.Sprintf("checklocks gave up on this function: more than %d block walks", maxFunctionWalks)
 	giveUp := func(src string) string {

@@ -74,12 +74,15 @@ type lockState struct {
 	// defers are the stack of defers that have been pushed.
 	defers []*ssa.Defer
 
-	// marker holds the lock dropped at a loop's back edge: a later release of it that is
-	// not held may have meant it. It is copied on write like the held map.
-	marker map[pathKey]struct{}
+	// marker holds the lock dropped at a loop's back edge, with the regions of its path's
+	// values: a later release of it that is not held may have meant it. It is copied on write
+	// like the held map.
+	marker map[pathKey]regionSet
 
-	// markerTop means more than markerBound locks were dropped and marker names none.
-	markerTop bool
+	// markerTop means more than markerBound locks were dropped and marker names none;
+	// topRegions are the regions their paths' values were defined in.
+	markerTop  bool
+	topRegions regionSet
 
 	// oracle is the parity build's check of the walk's stored reads.
 	oracle oracleRef
@@ -122,6 +125,7 @@ func (l *lockState) fork() *lockState {
 		defers:        l.defers,
 		marker:        l.marker,
 		markerTop:     l.markerTop,
+		topRegions:    l.topRegions,
 		oracle:        l.oracle,
 		refs:          l.refs,
 	}
@@ -667,9 +671,28 @@ func pathDies(p lockPath, body map[*ssa.BasicBlock]bool) bool {
 // markerBound is the number of dropped locks a marker names before it becomes top.
 const markerBound = 1
 
+// droppedKey is a dropped lock's key and the regions of its path's values.
+type droppedKey struct {
+	key     pathKey
+	regions regionSet
+}
+
+// regionsOf returns the regions of the values p is built from that are defined on a cycle of their function.
+func (pc *passContext) regionsOf(p lockPath) regionSet {
+	var rs regionSet
+	// The predicate never accepts, so pathHasValue visits every value.
+	pathHasValue(p, func(b *ssa.BasicBlock) bool {
+		if r, ok := pc.cfgOf(b.Parent()).region[b]; ok {
+			rs = rs.with(r)
+		}
+		return false
+	})
+	return rs
+}
+
 // dropDead removes the held locks whose paths die. Dropping one that was acquired adds it to the
 // marker. It returns the size of the marker that went to top, or 0 if it did not.
-func (l *lockState) dropDead(dies func(lockPath) bool) int {
+func (l *lockState) dropDead(dies func(lockPath) bool, regionsOf func(lockPath) regionSet) int {
 	var dead []pathKey
 	for k, info := range l.lockedMutexes {
 		if dies(info.path) {
@@ -680,30 +703,38 @@ func (l *lockState) dropDead(dies func(lockPath) bool) int {
 		return 0
 	}
 	l.modify()
-	var dropped []pathKey
+	var dropped []droppedKey
 	for _, k := range dead {
-		if !l.lockedMutexes[k].assumed {
-			dropped = append(dropped, k)
+		if info := l.lockedMutexes[k]; !info.assumed {
+			dropped = append(dropped, droppedKey{k, regionsOf(info.path)})
 		}
 		delete(l.lockedMutexes, k)
 	}
 	return l.markDropped(dropped)
 }
 
-// markDropped adds keys to the marker, which becomes top past markerBound keys and stays top.
-// It returns the size that tipped it, or 0. The caller has made the state writable.
-func (l *lockState) markDropped(keys []pathKey) int {
+// markDropped adds keys to the marker, which becomes top past markerBound keys. Top absorbs
+// further keys but takes their regions. It returns the size that tipped it, or 0. The caller
+// has made the state writable.
+func (l *lockState) markDropped(keys []droppedKey) int {
 	if l.markerTop {
+		for _, d := range keys {
+			l.topRegions = l.topRegions.union(d.regions)
+		}
 		return 0
 	}
 	if l.marker == nil && len(keys) > 0 {
-		l.marker = make(map[pathKey]struct{})
+		l.marker = make(map[pathKey]regionSet)
 	}
-	for _, k := range keys {
-		l.marker[k] = struct{}{}
+	for _, d := range keys {
+		l.marker[d.key] = l.marker[d.key].union(d.regions)
 	}
 	if n := len(l.marker); markerBoundOn && n > markerBound {
-		l.marker, l.markerTop = nil, true
+		var top regionSet
+		for _, rs := range l.marker {
+			top = top.union(rs)
+		}
+		l.marker, l.markerTop, l.topRegions = nil, true, top
 		return n
 	}
 	return 0
@@ -715,22 +746,28 @@ func (l *lockState) markerSet() bool {
 }
 
 // silencesRelease reports whether a release of p that is not held goes unreported: a back edge
-// dropped it, or the marker is top and p has a value defined on a cycle of its own function. A
+// dropped it, or the marker is top and p has a value defined in a loop that dropped a lock. A
 // deferred release counts any value-rooted path once something was dropped.
 func (pc *passContext) silencesRelease(l *lockState, p lockPath, deferred bool, at token.Pos) bool {
 	if _, held := l.lockedMutexes[p.Key()]; held {
 		return false
 	}
+	var silenced bool
 	switch {
 	case deferred:
-		return l.markerSet() && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
+		silenced = l.markerSet() && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
 	case l.markerTop:
-		silenced := pathHasValue(p, func(b *ssa.BasicBlock) bool { return pc.cfgOf(b.Parent()).cyclic[b] })
-		if silenced {
-			pc.statTopSilenced(at, p)
-		}
+		silenced = pathHasValue(p, func(b *ssa.BasicBlock) bool {
+			r, ok := pc.cfgOf(b.Parent()).region[b]
+			_, in := l.topRegions[r]
+			return ok && in
+		})
+	default:
+		_, silenced = l.marker[p.Key()]
 		return silenced
 	}
-	_, dropped := l.marker[p.Key()]
-	return dropped
+	if silenced && l.markerTop {
+		pc.statTopSilenced(at, p)
+	}
+	return silenced
 }

@@ -1435,7 +1435,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
 		pc.withdrawDecisions(decisionsAt)
 		if outer != nil {
-			// Take back what this walk marked done; givenUp marks it once the top-level walk ends.
+			// Take back what this walk marked done; fn and its closures are marked again through givenUp.
 			for _, f := range pc.marked[markedAt:] {
 				delete(pc.functions, f)
 			}

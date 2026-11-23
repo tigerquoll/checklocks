@@ -54,6 +54,9 @@ type walkStats struct {
 	// widened lists the marker widenings; silenced the releases a top marker silenced.
 	widened  map[string]bool
 	silenced map[string]bool
+
+	// maxTopRegions is the most regions a top marker held.
+	maxTopRegions int
 }
 
 // oracleRef gives a lockState the pass whose walk reads it.
@@ -153,10 +156,15 @@ func (pc *passContext) statWidened(wc *walkContext, block *ssa.BasicBlock, size 
 	pc.stats.widened[fmt.Sprintf("markerWidened %d %s b%d", size, wc.context, block.Index)] = true
 }
 
-// statTopSilenced notes the release of p at a site that a top marker silenced, in the walk and not its replays.
+// statTopRegions notes a top marker holding n regions.
+func (pc *passContext) statTopRegions(n int) {
+	pc.stats.maxTopRegions = max(pc.stats.maxTopRegions, n)
+}
+
+// statTopSilenced notes the release of p at a site that a top marker silenced, not in a replay.
 func (pc *passContext) statTopSilenced(at token.Pos, p lockPath) {
 	st := &pc.stats
-	if walkStatsDir == "" || pc.emit != emitWalk || len(st.chain) == 0 {
+	if walkStatsDir == "" || pc.emit == emitReplay || len(st.chain) == 0 {
 		return
 	}
 	if st.silenced == nil {
@@ -226,7 +234,7 @@ func (pc *passContext) writeWalkStats() {
 	for _, line := range slices.Sorted(slices.Values(big)) {
 		out.WriteString(line + "\n")
 	}
-	fmt.Fprintf(&out, "maxClasses %d\nmaxCyclicClasses %d\ncyclic blocks over 64 elements: %d\n", maxClasses, maxCyclic, cyclicOver64)
+	fmt.Fprintf(&out, "maxClasses %d\nmaxCyclicClasses %d\ncyclic blocks over 64 elements: %d\nmaxTopRegions %d\n", maxClasses, maxCyclic, cyclicOver64, st.maxTopRegions)
 	for _, line := range slices.Sorted(maps.Keys(st.widened)) {
 		out.WriteString(line + "\n")
 	}

@@ -269,15 +269,16 @@ func sameKey(t *testing.T, pc *passContext, fn *ssa.Function, name string, a, b 
 	return same
 }
 
-func TestEmptyElementKey(t *testing.T) {
+func TestEmptyClassKey(t *testing.T) {
 	pc := noFactsPC()
-	if got := pc.buildElementKey(nil, newLockState()); got != emptyElementKey {
-		t.Errorf("the key built for an empty state is %q, want %q", got, emptyElementKey)
+	if got := pc.buildClassKey(nil, newLockState()); got != emptyClassKey {
+		t.Errorf("the key built for an empty state is %q, want %q", got, emptyClassKey)
 	}
 }
 
 func TestSameElement(t *testing.T) {
 	fx := newLoopFixture(t)
+	nf := newNestFixture(t, &passContext{})
 	a, b := fx.param, fx.global
 	pc := noFactsPC()
 	base := func() *lockState { return held(false, a) }
@@ -294,6 +295,12 @@ func TestSameElement(t *testing.T) {
 		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
 		{"top", base(), topped(base())},
 		{"top and a key", marked(base(), fx.inside), topped(base())},
+		{"regions of a key", markedIn(base(), fx.inside, nf.rOuter), markedIn(base(), fx.inside, nf.rInner)},
+		{"a key with and without regions", markedIn(base(), fx.inside, nf.rOuter), marked(base(), fx.inside)},
+		{"regions of top", toppedIn(base(), nf.rOuter), toppedIn(base(), nf.rInner)},
+		{"top with and without regions", toppedIn(base(), nf.rOuter), topped(base())},
+		{"top over more regions", toppedIn(base(), nf.rOuter), toppedIn(base(), nf.rOuter, nf.rInner)},
+		{"top beside a key", topped(marked(base(), fx.inside)), topped(base())},
 	} {
 		if sameKey(t, pc, nil, tc.name, tc.left, tc.right) || sameKey(t, pc, nil, tc.name, tc.right, tc.left) {
 			t.Errorf("states differing in %s are the same element", tc.name)
@@ -349,7 +356,11 @@ func TestEmptyStateKeys(t *testing.T) {
 	fx := newLoopFixture(t)
 	pkg := buildTestPackage(t, "defers", deferSource)
 	pc := deferPC(pkg.Prog.Fset)
-	fns := []*ssa.Function{nil, pkg.Func("ordered")}
+	slots := newSlotFixture(t).fn
+	if n := len(pc.relevantSlots(slots).slots); n == 0 {
+		t.Fatalf("%s has %d relevant slots, want some", slots, n)
+	}
+	fns := []*ssa.Function{nil, slots}
 	sites := deferSites(pkg.Func("ordered"))
 	withDefer := func(d *ssa.Defer) *lockState {
 		ls := newLockState()
