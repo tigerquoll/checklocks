@@ -220,6 +220,9 @@ type blockCapture struct {
 // blockParity holds the walk's capture of a block and that of the replay run in progress.
 type blockParity struct {
 	walk, run blockCapture
+
+	// out is the state the solve ended the block in.
+	out *lockState
 }
 
 func (pc *passContext) capture() *blockCapture {
@@ -254,10 +257,11 @@ func (pc *passContext) parityObservation(inst almostInst, accessObj types.Object
 
 func (p *blockParity) walked(ls *lockState) {
 	p.walk.state = ls.identitySummary(func(lockInfo) bool { return true })
+	p.out = ls
 }
 
 // replayed panics unless the replay run that just ended matches the walk's capture.
-func (p *blockParity) replayed(r *blockRecord, ls *lockState, grew bool) {
+func (p *blockParity) replayed(pc *passContext, r *blockRecord, ls *lockState, grew bool) {
 	where := fmt.Sprintf("%s block %d", r.wc.fn.String(), r.block.Index)
 	if grew {
 		panic(fmt.Sprintf("block replay parity: %s: replay entered a nested walk", where))
@@ -282,6 +286,9 @@ func (p *blockParity) replayed(r *blockRecord, ls *lockState, grew bool) {
 	}
 	if run.state != walk.state {
 		panic(fmt.Sprintf("block replay parity: %s: state: walk %q, replay %q", where, walk.state, run.state))
+	}
+	if !pc.sameElement(r.wc.fn, p.out, ls) {
+		panic(fmt.Sprintf("block replay parity: %s: the replay's out is not the solve's", where))
 	}
 }
 

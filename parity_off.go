@@ -32,7 +32,7 @@ const replayRuns = 1
 type blockParity struct{}
 
 func (blockParity) walked(*lockState)                                       {}
-func (blockParity) replayed(*blockRecord, *lockState, bool)                 {}
+func (blockParity) replayed(*passContext, *blockRecord, *lockState, bool)   {}
 func (*passContext) parityFinding(token.Pos, string, ...any)                {}
 func (*passContext) parityObservation(almostInst, types.Object, *lockState) {}
 

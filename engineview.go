@@ -254,7 +254,7 @@ func (pc *passContext) recordEntry() {
 
 // recordGaveUp records why the walk of fn was abandoned.
 func (pc *passContext) recordGaveUp(fn *ssa.Function) {
-	reason := fmt.Sprintf("more than %d lock states reach one loop", maxHeadStates)
+	reason := fmt.Sprintf("more than %d lock states reach one block in a loop", maxCycleStates)
 	if pc.overBudget {
 		reason = fmt.Sprintf("more than %d block walks", maxFunctionWalks)
 	}

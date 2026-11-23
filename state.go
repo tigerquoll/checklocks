@@ -254,7 +254,7 @@ func (l *lockState) downgradeField(rv resolvedValue) (lockPath, bool) {
 }
 
 // setAssumed marks a held lock as assumed or as acquired. The map is shared with the
-// block memo and with sibling branches, so the write copies it first.
+// solver's pairs and with sibling branches, so the write copies it first.
 func (l *lockState) setAssumed(path lockPath, assumed bool) {
 	key := path.Key()
 	info, ok := l.lockedMutexes[key]
@@ -680,25 +680,6 @@ func (l *lockState) dropDead(dies func(lockPath) bool) {
 			l.marker[k] = struct{}{}
 		}
 		delete(l.lockedMutexes, k)
-	}
-}
-
-// joinMarker adds to the marker every lock dropped by any entry that is the same element as l but for the marker.
-func (l *lockState) joinMarker(pc *passContext, fn *ssa.Function, entries []*lockState) {
-	for _, e := range entries {
-		if !pc.sameElementAside(fn, e, l) {
-			continue
-		}
-		for k := range e.marker {
-			if _, ok := l.marker[k]; ok {
-				continue
-			}
-			l.modify()
-			if l.marker == nil {
-				l.marker = make(map[pathKey]struct{})
-			}
-			l.marker[k] = struct{}{}
-		}
 	}
 }
 

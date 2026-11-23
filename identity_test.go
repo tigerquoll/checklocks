@@ -259,12 +259,23 @@ func TestDeferRelevant(t *testing.T) {
 	}
 }
 
+// sameKey reports whether two states are one element, and fails the test if the key of the
+// solver's membership disagrees.
+func sameKey(t *testing.T, pc *passContext, fn *ssa.Function, name string, a, b *lockState) bool {
+	t.Helper()
+	same := pc.sameElement(fn, a, b)
+	if keys := pc.elementKey(fn, a) == pc.elementKey(fn, b); keys != same {
+		t.Errorf("%s: keys equal = %t but same element = %t", name, keys, same)
+	}
+	return same
+}
+
 func TestSameElement(t *testing.T) {
 	fx := newLoopFixture(t)
 	a, b := fx.param, fx.global
 	pc := noFactsPC()
 	base := func() *lockState { return held(false, a) }
-	if !pc.sameElement(nil, base(), base()) {
+	if !sameKey(t, pc, nil, "equal", base(), base()) {
 		t.Error("equal states differ")
 	}
 	for _, tc := range []struct {
@@ -276,7 +287,7 @@ func TestSameElement(t *testing.T) {
 		{"marker", base(), marked(base(), fx.inside)},
 		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
 	} {
-		if pc.sameElement(nil, tc.left, tc.right) || pc.sameElement(nil, tc.right, tc.left) {
+		if sameKey(t, pc, nil, tc.name, tc.left, tc.right) || sameKey(t, pc, nil, tc.name, tc.right, tc.left) {
 			t.Errorf("states differing in %s are the same element", tc.name)
 		}
 	}
@@ -292,30 +303,23 @@ func TestSameElement(t *testing.T) {
 	}
 
 	plain, extra := withDefers(first), withDefers(noop, first)
-	if !pc.sameElement(nil, plain, extra) {
+	if !sameKey(t, pc, nil, "no-op defer", plain, extra) {
 		t.Error("states differing in a no-op defer are not the same element")
 	}
-	h := &loopHead{entries: []*lockState{plain}}
-	if added, over := h.admit(pc, extra); added || over {
-		t.Errorf("admitting a state that differs in a no-op defer: added %t, over %t, want neither", added, over)
-	}
-
-	if pc.sameElement(nil, withDefers(first), withDefers(first, second)) {
+	if sameKey(t, pc, nil, "relevant defer", withDefers(first), withDefers(first, second)) {
 		t.Error("states differing in a relevant defer are the same element")
 	}
-	h = &loopHead{entries: []*lockState{withDefers(first)}}
-	if added, over := h.admit(pc, withDefers(first, second)); !added || over {
-		t.Errorf("admitting a state that differs in a relevant defer: added %t, over %t, want added", added, over)
-	}
-
 	ab, ba := withDefers(first, second), withDefers(second, first)
-	if pc.sameElement(nil, ab, ba) {
+	if sameKey(t, pc, nil, "defer order", ab, ba) {
 		t.Error("states with the relevant defers in another order are the same element")
 	}
-	ba.marker = dropped(fx.before)
-	ba.joinMarker(pc, nil, []*lockState{ab})
-	if !maps.Equal(ba.marker, dropped(fx.before)) {
-		t.Errorf("joining entries with the defers in another order changed the marker to %v", ba.marker)
+	withAlias := func(to lockPath) *lockState {
+		ls := base()
+		ls.aliases[a.Key()] = to
+		return ls
+	}
+	if sameKey(t, pc, nil, "alias", base(), withAlias(b)) || sameKey(t, pc, nil, "other alias", withAlias(b), withAlias(fx.before)) || !sameKey(t, pc, nil, "same alias", withAlias(b), withAlias(b)) {
+		t.Error("states are the same element exactly when their aliases are equal")
 	}
 }
 
@@ -401,17 +405,9 @@ func TestSameElementStored(t *testing.T) {
 		{"alias, presence", aliased(lf.global), state(nil, nil), false},
 		{"substitution, presence", substituted(), state(nil, nil), true},
 	} {
-		if got := pc.sameElement(fx.fn, tc.left, tc.right); got != tc.same {
+		if got := sameKey(t, pc, fx.fn, tc.name, tc.left, tc.right); got != tc.same {
 			t.Errorf("%s: same element = %t, want %t", tc.name, got, tc.same)
 		}
-	}
-
-	h := &loopHead{fn: fx.fn, entries: []*lockState{state(fx.global, fx.val)}}
-	if added, over := h.admit(pc, state(fx.global, fx.other)); !added || over {
-		t.Errorf("admitting a state that differs in a relevant slot: added %t, over %t, want added", added, over)
-	}
-	if added, over := h.admit(pc, state(fx.global, fx.val)); added || over {
-		t.Errorf("admitting a state equal in its relevant slot: added %t, over %t, want neither", added, over)
 	}
 }
 

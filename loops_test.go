@@ -19,8 +19,11 @@ import (
 	"go/constant"
 	"go/types"
 	"maps"
+	"slices"
+	"strings"
 	"testing"
 
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -66,7 +69,7 @@ func newLoopFixture(t *testing.T) loopFixture {
 	f := pkg.Func("F")
 	var head, latch *ssa.BasicBlock
 	for _, b := range f.Blocks {
-		if isLoopHead(b) {
+		if slices.ContainsFunc(b.Preds, b.Dominates) {
 			head = b
 			for _, p := range b.Preds {
 				if b.Dominates(p) {
@@ -203,50 +206,6 @@ func TestDropDead(t *testing.T) {
 	}
 }
 
-func TestJoinMarker(t *testing.T) {
-	fx := newLoopFixture(t)
-	a, b := fx.param, fx.global
-	pkg := buildTestPackage(t, "defers", deferSource)
-	pc := deferPC(pkg.Prog.Fset)
-	withDefer := func(ls *lockState) *lockState { ls.defers = []*ssa.Defer{fx.defers[0]}; return ls }
-	slots := newSlotFixture(t)
-	withStored := func(ls *lockState, slot ssa.Value) *lockState { ls.stored[slot] = slots.val; return ls }
-	withAlias := func(ls *lockState) *lockState { ls.aliases[a.Key()] = b; return ls }
-	withRelevant := func(ls *lockState) *lockState { ls.defers = deferSites(pkg.Func("relevant"))[:1]; return ls }
-	for _, tc := range []struct {
-		name    string
-		entries []*lockState
-		want    map[pathKey]struct{}
-	}{
-		{"entry with a marker, same locks", []*lockState{marked(held(false, a), fx.inside)}, dropped(fx.inside)},
-		{"entry without a marker", []*lockState{held(false, a)}, dropped()},
-		{"entry with a marker, other locks", []*lockState{marked(held(false, b), fx.inside)}, dropped()},
-		{"entry with a marker, a no-op defer more", []*lockState{withDefer(marked(held(false, a), fx.inside))}, dropped(fx.inside)},
-		{"entry with a marker, a relevant defer more", []*lockState{withRelevant(marked(held(false, a), fx.inside))}, dropped()},
-		{"entry with a marker, a relevant slot more", []*lockState{withStored(marked(held(false, a), fx.inside), slots.global)}, dropped()},
-		{"entry with a marker, an irrelevant slot more", []*lockState{withStored(marked(held(false, a), fx.inside), slots.local)}, dropped(fx.inside)},
-		{"entry with a marker, an alias more", []*lockState{withAlias(marked(held(false, a), fx.inside))}, dropped()},
-		{"union of two entries", []*lockState{marked(held(false, a), fx.inside), marked(held(false, a), fx.before)}, dropped(fx.inside, fx.before)},
-		{"no entries", nil, dropped()},
-	} {
-		s := held(false, a)
-		s.joinMarker(pc, slots.fn, tc.entries)
-		if !maps.Equal(s.marker, tc.want) {
-			t.Errorf("%s: marker %v, want %v", tc.name, s.marker, tc.want)
-		}
-	}
-
-	orig := marked(held(false, a), fx.inside)
-	fork := orig.fork()
-	fork.joinMarker(pc, slots.fn, []*lockState{marked(held(false, a), fx.before)})
-	if !maps.Equal(fork.marker, dropped(fx.inside, fx.before)) {
-		t.Errorf("joining into a fork: marker %v, want both keys", fork.marker)
-	}
-	if !maps.Equal(orig.marker, dropped(fx.inside)) {
-		t.Errorf("joining into a fork changed the original's marker to %v", orig.marker)
-	}
-}
-
 func TestPushDeferTwice(t *testing.T) {
 	fx := newLoopFixture(t)
 	ls := newLockState()
@@ -290,21 +249,116 @@ func TestSilencesRelease(t *testing.T) {
 	}
 }
 
-func TestLoopHeadBound(t *testing.T) {
-	distinct := func(i int) *lockState {
-		return held(false, newLockPath(pathRootValue, nil, nil, fmt.Sprint(i)))
+// lockSource has n locks, taken or not by each of n branches, in a loop, a goto cycle or no cycle.
+func lockSource(shape string, n int) string {
+	var b strings.Builder
+	b.WriteString("package p\n\ntype Mutex struct{}\n\nfunc (*Mutex) Lock()   {}\nfunc (*Mutex) Unlock() {}\n\ntype Locks struct {\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "\tm%d Mutex\n", i)
 	}
-	pc := noFactsPC()
-	h := &loopHead{entries: []*lockState{distinct(0)}}
-	for i := 1; i < maxHeadStates; i++ {
-		if added, over := h.admit(pc, distinct(i)); !added || over {
-			t.Fatalf("state %d of %d: added %t, over %t, want it accepted", i+1, maxHeadStates, added, over)
+	b.WriteString("}\n\nfunc f(l *Locks, c func() bool) {\n")
+	branches := func() {
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, "\tif c() {\n\t\tl.m%d.Lock()\n\t}\n", i)
 		}
 	}
-	if added, over := h.admit(pc, distinct(1)); added || over {
-		t.Errorf("a state already in a full set: added %t, over %t, want neither", added, over)
+	switch shape {
+	case "natural":
+		b.WriteString("\tfor c() {\n")
+		branches()
+		b.WriteString("\t}\n")
+	case "goto":
+		b.WriteString("\tif c() {\n\t\tgoto second\n\t}\nfirst:\n")
+		branches()
+		b.WriteString("second:\n\tif c() {\n\t\tgoto first\n\t}\n")
+	default:
+		branches()
 	}
-	if added, over := h.admit(pc, distinct(maxHeadStates)); added || !over {
-		t.Errorf("state %d: added %t, over %t, want over", maxHeadStates+1, added, over)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func TestCycleStateCap(t *testing.T) {
+	gaveUp := func(shape string, n int) bool {
+		pkg := buildTestPackage(t, "cap", lockSource(shape, n))
+		pass := &analysis.Pass{
+			Fset:             pkg.Prog.Fset,
+			Report:           func(analysis.Diagnostic) {},
+			ImportObjectFact: func(types.Object, analysis.Fact) bool { return false },
+		}
+		pc := &passContext{
+			expectations: newExpectations(pass, checkLocksAnnotations, true),
+			pass:         pass,
+			collect:      true,
+			functions:    make(map[*ssa.Function]struct{}),
+		}
+		pc.checkFunction(callSite{kind: siteEntry}, nil, pkg.Func("f"), &lockFunctionFacts{}, nil, false)
+		want := fmt.Sprintf("checklocks gave up on this function: more than %d lock states reach one block in a loop", maxCycleStates)
+		for _, r := range pc.pending {
+			if r.msg == want {
+				return true
+			}
+			if strings.Contains(r.msg, "gave up") {
+				t.Errorf("%s with %d locks gave up with %q", shape, n, r.msg)
+			}
+		}
+		return false
+	}
+	if maxCycleStates != 64 {
+		t.Fatalf("maxCycleStates = %d, want 64", maxCycleStates)
+	}
+	for _, tc := range []struct {
+		shape string
+		n     int
+		want  bool
+	}{
+		{"natural", 6, false},
+		{"natural", 7, true},
+		{"goto", 6, false},
+		{"goto", 7, true},
+		{"acyclic", 7, false},
+		{"acyclic", 9, false},
+	} {
+		if got := gaveUp(tc.shape, tc.n); got != tc.want {
+			t.Errorf("%s with %d locks: gave up = %t, want %t", tc.shape, tc.n, got, tc.want)
+		}
+	}
+}
+
+// The entry record comes before the records of a literal walked inside the entry block.
+func TestEntryRecordFirst(t *testing.T) {
+	pkg := buildTestPackage(t, "entry", `package p
+
+func f(c func() bool) {
+	func() { _ = c() }()
+	if c() {
+		_ = c()
+	}
+}
+`)
+	pass := &analysis.Pass{
+		Fset:             pkg.Prog.Fset,
+		Report:           func(analysis.Diagnostic) {},
+		ImportObjectFact: func(types.Object, analysis.Fact) bool { return false },
+	}
+	pc := &passContext{
+		expectations: newExpectations(pass, checkLocksAnnotations, true),
+		pass:         pass,
+		collect:      true,
+		functions:    make(map[*ssa.Function]struct{}),
+		emit:         emitDirect,
+	}
+	fn := pkg.Func("f")
+	wc := &walkContext{fn: fn, lff: &lockFunctionFacts{}, fresh: pc.computeFresh(fn, nil), context: "f", returnStates: map[string]string{}}
+	entry := newLockState()
+	pc.solve(wc, fn.Blocks[0], entry)
+	if len(pc.records) == 0 {
+		t.Fatal("the solve made no records")
+	}
+	if first := pc.records[0]; first.wc != wc || first.block != fn.Blocks[0] || first.parent != entry {
+		t.Errorf("first record is block %d of %s, want the entry block on the entry state", first.block.Index, first.wc.fn)
+	}
+	if !slices.ContainsFunc(pc.records, func(r *blockRecord) bool { return r.wc.fn != fn }) {
+		t.Error("no record of the literal in the entry block")
 	}
 }

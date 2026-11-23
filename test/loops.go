@@ -26,9 +26,9 @@ type loopSet struct {
 	mu sync.Mutex
 }
 
-// fiveLocks is a type no other case uses, so its mutexes are fresh paths.
-type fiveLocks struct {
-	a, b, c, d, e sync.Mutex
+// sevenLocks is a type no other case uses, so its mutexes are fresh paths.
+type sevenLocks struct {
+	a, b, c, d, e, f, g sync.Mutex
 }
 
 func loopWork() {}
@@ -198,19 +198,114 @@ func loopDeferLiteralStored(ts []*loopT, get func() *loopT) {
 }
 
 // Neither label's block dominates the other, so the jump back is not a back edge.
-func loopIrreducible(t *loopT, c func() bool) {
+func loopIrreducible(t *loopT, c func() bool) { // +checklocksfail=incompatible return states
 	if c() {
 		goto second
 	}
 first:
-	t.mu.Lock()
+	t.mu.Lock() // +checklocksfail=already locked
 second:
+	if c() {
+		goto first
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopGet() *loopT { return nil }
+
+// A for loop inside a goto cycle: leaving it keeps p.mu.
+func loopInIrr(c func() bool) {
+	if c() {
+		goto second
+	}
+first:
+	loopWork()
+second:
+	p := loopGet()
+	p.mu.Lock()
+	for c() {
+		loopWork()
+	}
+	p.x = 1
+	p.mu.Unlock()
 	if c() {
 		goto first
 	}
 }
 
-func loopOverflowWithLiteral(f *fiveLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+// The lock is on a value the cycle redefines; coming round does not lock it twice.
+func loopIrrHeld(c func() bool) { // +checklocksfail=incompatible return states
+	if c() {
+		goto second
+	}
+first:
+	{
+		q := loopGet()
+		q.mu.Lock()
+	}
+second:
+	if c() {
+		goto first
+	}
+} // +checklocksfail=return with unexpected locks held
+
+// The break leaves the loop holding p.mu, and the lock on the next trip round is on another value.
+func loopIrrForBreak(c func() bool) { // +checklocksfail=incompatible return states
+	if c() {
+		goto second
+	}
+first:
+	loopWork()
+second:
+	for c() {
+		p := loopGet()
+		p.mu.Lock()
+		if c() {
+			break
+		}
+		p.mu.Unlock()
+	}
+	if c() {
+		goto first
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopIrrForGotoOut(c func() bool) { // +checklocksfail=incompatible return states
+	if c() {
+		goto second
+	}
+first:
+	loopWork()
+second:
+	for c() {
+		p := loopGet()
+		p.mu.Lock()
+		if c() {
+			goto first
+		}
+		p.mu.Unlock()
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopIrrForBreakParam(c func() bool, t *loopT) { // +checklocksfail=incompatible return states
+	if c() {
+		goto second
+	}
+first:
+	loopWork()
+second:
+	for c() {
+		t.mu.Lock() // +checklocksfail=already locked
+		if c() {
+			break
+		}
+		t.mu.Unlock()
+	}
+	if c() {
+		goto first
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func loopOverflowWithLiteral(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
 	func() {
 		if c() {
 			f.a.Lock()
@@ -232,10 +327,16 @@ func loopOverflowWithLiteral(f *fiveLocks, c func() bool) { // +checklocksfail=c
 		if c() {
 			f.e.Lock()
 		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
 	}
 }
 
-func loopOverflowInLiteral(f *fiveLocks, o *loopT, c func() bool) {
+func loopOverflowInLiteral(f *sevenLocks, o *loopT, c func() bool) {
 	if c() {
 		o.x = 1 // +checklocksfail=invalid field access
 	}
@@ -256,6 +357,12 @@ func loopOverflowInLiteral(f *fiveLocks, o *loopT, c func() bool) {
 			if c() {
 				f.e.Lock()
 			}
+			if c() {
+				f.f.Lock()
+			}
+			if c() {
+				f.g.Lock()
+			}
 		}
 	}()
 	if c() {
@@ -263,7 +370,7 @@ func loopOverflowInLiteral(f *fiveLocks, o *loopT, c func() bool) {
 	}
 }
 
-func loopOverflowDefer(f *fiveLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func loopOverflowDefer(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
 	defer loopWork()
 	for c() {
 		if c() {
@@ -280,6 +387,12 @@ func loopOverflowDefer(f *fiveLocks, c func() bool) { // +checklocksfail=checklo
 		}
 		if c() {
 			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
 		}
 	}
 }

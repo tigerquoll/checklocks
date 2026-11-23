@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
@@ -278,4 +279,38 @@ func TestWalkBudget(t *testing.T) {
 		t.Errorf("5 reassigned locals over 4 stages walked %d blocks, want at most 1900", pc.walks)
 	}
 	t.Logf("states walks: %d", pc.walks)
+}
+
+// A shape whose states multiply gives up by the budget in bounded time.
+func TestWalkBudgetTime(t *testing.T) {
+	pkg := buildTestPackage(t, "states", statesSource(14, 14))
+	pass := &analysis.Pass{
+		Fset:   pkg.Prog.Fset,
+		Report: func(analysis.Diagnostic) {},
+		ImportObjectFact: func(o types.Object, fact analysis.Fact) bool {
+			if f, ok := fact.(*lockFunctionFacts); ok && o.Name() == "needsLock" {
+				f.HeldOnEntry = map[string]functionGuardInfo{"m": {Resolver: &parameterGuard{Index: 0}, Exclusive: true}}
+				return true
+			}
+			return false
+		},
+	}
+	pc := &passContext{
+		expectations: newExpectations(pass, checkLocksAnnotations, true),
+		pass:         pass,
+		collect:      true,
+		functions:    make(map[*ssa.Function]struct{}),
+	}
+	start := time.Now()
+	pc.checkFunction(callSite{kind: siteEntry}, nil, pkg.Func("states"), &lockFunctionFacts{}, nil, false)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("the walk took %v, want it cut off by the budget within 10s", elapsed)
+	}
+	want := fmt.Sprintf("checklocks gave up on this function: more than %d block walks", maxFunctionWalks)
+	if len(pc.pending) != 1 || pc.pending[0].msg != want {
+		t.Errorf("reported %v, want only %q", pc.pending, want)
+	}
+	if pc.walks > maxFunctionWalks+3 {
+		t.Errorf("the walk went on to %d block walks past a budget of %d", pc.walks, maxFunctionWalks)
+	}
 }

@@ -43,12 +43,7 @@ type orderDiff struct {
 
 // knownOrderDiffs are the differences measured today, each with the orders it occurs in.
 // The keys hold source positions: a line shift in test/loops.go or test/order/order.go means re-measuring them.
-var knownOrderDiffs = map[orderDiff][]string{
-	// loopIrreducible: the on-stack cut makes the decisions depend on the edge walked first.
-	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\tfalse", "+"}: {"1", "reverse"},
-	{testPkg, "loops.go:201:6\tloopIrreducible\texit:0\tincompatibleReturn\t\tloopIrreducible\ttrue", "-"}:  {"1", "reverse"},
-	{testPkg, "loops.go:211:1\tloopIrreducible\tb3.i0\treturnCount\t\tloopIrreducible\tfalse", "+"}:         {"1", "reverse"},
-}
+var knownOrderDiffs = map[orderDiff][]string{}
 
 // walkLogsOf vets the checklocks case under one order and returns the log lines of each module package
 // and the output of vet.
