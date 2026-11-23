@@ -29,6 +29,8 @@ func parityCheckEntry(pathKey, lockInfo) {}
 
 const replayRuns = 1
 
+const markerBoundOn = true
+
 type blockParity struct{}
 
 func (blockParity) entered(*passContext, *ssa.Function, *lockState, string) {}

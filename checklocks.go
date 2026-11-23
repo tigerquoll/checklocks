@@ -105,9 +105,10 @@ type passContext struct {
 	// that gives up can take back the ones it added.
 	marked []*ssa.Function
 
-	// givenUp lists the closures of the functions a nested walk gave up on; they are marked
-	// when the top-level walk ends.
-	givenUp []*ssa.Function
+	// givenUp lists the functions nested walks gave up on, with their closures transitively;
+	// they are marked done when the top-level walk ends. givenUpSet is its membership.
+	givenUp    []*ssa.Function
+	givenUpSet map[*ssa.Function]struct{}
 
 	// slotInfos memoises relevantSlots per function.
 	slotInfos map[*ssa.Function]*slotInfo

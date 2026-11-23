@@ -678,7 +678,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			lost = append(lost, p)
 		}
 		if !ok {
-			if lff.Ignore || ls.silencesRelease(p, site.kind == siteDefer) {
+			if lff.Ignore || pc.silencesRelease(ls, p, site.kind == siteDefer, site.Pos()) {
 				pc.suppressed()
 			} else if _, forced := pc.forced[pc.positionKey(site.Pos())]; forced {
 				pc.suppressed()
@@ -846,7 +846,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.unlockField(rv, exclusive)
 			pc.decide(at, lockOpUnlock, ok)
 			if !ok {
-				if !forced && !lff.Ignore && !ls.silencesRelease(p, site.kind == siteDefer) {
+				if !forced && !lff.Ignore && !pc.silencesRelease(ls, p, site.kind == siteDefer, callPos) {
 					// Unlocking something that is already unlocked.
 					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
 				} else {
@@ -857,7 +857,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.downgradeField(rv)
 			pc.decide(at, lockOpDowngrade, ok)
 			if !ok {
-				if !forced && !lff.Ignore && !ls.silencesRelease(p, site.kind == siteDefer) {
+				if !forced && !lff.Ignore && !pc.silencesRelease(ls, p, site.kind == siteDefer, callPos) {
 					// Downgrading something that may not be downgraded.
 					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
 				} else {
@@ -1268,7 +1268,7 @@ func (pc *passContext) replay() {
 	pc.current, pc.emit, pc.records = nil, outerEmit, nil
 }
 
-// maxCycleStates bounds the lock states that reach one block in a cycle.
+// maxCycleStates bounds the lock-state classes (elements with the marker cleared) that reach one block in a cycle.
 const maxCycleStates = 64
 
 // maxFunctionWalks bounds the block walks of one top-level function, inline walks included.
@@ -1301,6 +1301,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		pc.walks, pc.overBudget = 0, false
 		pc.entryGuards = nil
 		pc.marked, pc.givenUp = pc.marked[:0], pc.givenUp[:0]
+		clear(pc.givenUpSet)
 	}
 	defer pc.walkChain(fn)()
 	pc.decisions.enter()
@@ -1434,7 +1435,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
 		pc.withdrawDecisions(decisionsAt)
 		if outer != nil {
-			// The enclosing walk goes on, so what this walk marked done was never analysed.
+			// Take back what this walk marked done; givenUp marks it once the top-level walk ends.
 			for _, f := range pc.marked[markedAt:] {
 				delete(pc.functions, f)
 			}
@@ -1457,7 +1458,11 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 			work = append(work[:len(work)-1], f.AnonFuncs...)
 			if outer == nil {
 				pc.functions[f] = struct{}{}
-			} else {
+			} else if _, ok := pc.givenUpSet[f]; !ok {
+				if pc.givenUpSet == nil {
+					pc.givenUpSet = make(map[*ssa.Function]struct{})
+				}
+				pc.givenUpSet[f] = struct{}{}
 				pc.givenUp = append(pc.givenUp, f)
 			}
 		}

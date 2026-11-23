@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"go/types"
+	"slices"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -54,5 +55,8 @@ func f(c func() bool) {
 	}
 	if first := pc.records[0]; first.wc != wc || first.block != fn.Blocks[0] || first.parent != entry {
 		t.Errorf("first record is block %d of %s, want the entry block on the entry state", first.block.Index, first.wc.fn)
+	}
+	if !slices.ContainsFunc(pc.records, func(r *blockRecord) bool { return r.wc.fn != fn }) {
+		t.Error("no record of the literal in the entry block")
 	}
 }

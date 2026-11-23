@@ -16,7 +16,11 @@
 
 package checklocks
 
-import "golang.org/x/tools/go/ssa"
+import (
+	"go/token"
+
+	"golang.org/x/tools/go/ssa"
+)
 
 type walkStats struct{}
 
@@ -28,5 +32,7 @@ func (*passContext) oracle() oracleRef                                  { return
 func (*passContext) walkChain(*ssa.Function) func()                     { return func() {} }
 func (*passContext) cutCheck(*ssa.Function, *lockState, *lockState)     {}
 func (*passContext) statWalk(*walkContext, *ssa.BasicBlock, *lockState) {}
+func (*passContext) statWidened(*walkContext, *ssa.BasicBlock, int)     {}
+func (*passContext) statTopSilenced(token.Pos, lockPath)                {}
 func (*passContext) statOverflow()                                      {}
 func (*passContext) writeWalkStats()                                    {}

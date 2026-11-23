@@ -19,6 +19,7 @@ package checklocks
 import (
 	"cmp"
 	"fmt"
+	"go/token"
 	"maps"
 	"net/url"
 	"os"
@@ -47,7 +48,12 @@ type walkStats struct {
 
 	reads, walks, nested, overflow int
 	distinct                       map[blockKey][]*lockState
+	classes                        map[blockKey]map[string]bool
 	fnWalks                        map[string]int
+
+	// widened lists the marker widenings; silenced the releases a top marker silenced.
+	widened  map[string]bool
+	silenced map[string]bool
 }
 
 // oracleRef gives a lockState the pass whose walk reads it.
@@ -120,15 +126,43 @@ func (pc *passContext) statWalk(wc *walkContext, block *ssa.BasicBlock, parent *
 	if st.fnWalks == nil {
 		st.fnWalks = map[string]int{}
 		st.distinct = map[blockKey][]*lockState{}
+		st.classes = map[blockKey]map[string]bool{}
 	}
 	st.fnWalks[root]++
 	key := blockKey{wc, block}
+	if st.classes[key] == nil {
+		st.classes[key] = map[string]bool{}
+	}
+	st.classes[key][pc.classKey(wc.fn, parent)] = true
 	for _, e := range st.distinct[key] {
 		if pc.sameElement(wc.fn, e, parent) {
 			return
 		}
 	}
 	st.distinct[key] = append(st.distinct[key], parent)
+}
+
+// statWidened notes a marker that went to top on the edge into block, from size keys.
+func (pc *passContext) statWidened(wc *walkContext, block *ssa.BasicBlock, size int) {
+	if walkStatsDir == "" {
+		return
+	}
+	if pc.stats.widened == nil {
+		pc.stats.widened = map[string]bool{}
+	}
+	pc.stats.widened[fmt.Sprintf("markerWidened %d %s b%d", size, wc.context, block.Index)] = true
+}
+
+// statTopSilenced notes the release of p at a site that a top marker silenced, in the walk and not its replays.
+func (pc *passContext) statTopSilenced(at token.Pos, p lockPath) {
+	st := &pc.stats
+	if walkStatsDir == "" || pc.emit != emitWalk || len(st.chain) == 0 {
+		return
+	}
+	if st.silenced == nil {
+		st.silenced = map[string]bool{}
+	}
+	st.silenced[fmt.Sprintf("topSilenced %s %s", pc.pass.Fset.Position(at), p.String())] = true
 }
 
 // statOverflow counts a give-up.
@@ -171,6 +205,18 @@ func (pc *passContext) writeWalkStats() {
 			maxDistinct, where = n, at
 		}
 	}
+	maxClasses, maxCyclic, cyclicOver64 := 0, 0, 0
+	for key, set := range st.classes {
+		maxClasses = max(maxClasses, len(set))
+		if pc.cfgOf(key.wc.fn).cyclic[key.block] {
+			maxCyclic = max(maxCyclic, len(set))
+		}
+	}
+	for key, states := range st.distinct {
+		if len(states) > 64 && pc.cfgOf(key.wc.fn).cyclic[key.block] {
+			cyclicOver64++
+		}
+	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "walks %d\nnested %d\nmaxDistinct %d\t%s\nover16 %d\nover64 %d\noverflow %d\noracleReads %d\noracleMisses 0\n",
 		st.walks, st.nested, maxDistinct, where, over16, over64, st.overflow, st.reads)
@@ -178,6 +224,13 @@ func (pc *passContext) writeWalkStats() {
 		fmt.Fprintf(&out, "hist<=%d %d\n", bucket, hist[bucket])
 	}
 	for _, line := range slices.Sorted(slices.Values(big)) {
+		out.WriteString(line + "\n")
+	}
+	fmt.Fprintf(&out, "maxClasses %d\nmaxCyclicClasses %d\ncyclic blocks over 64 elements: %d\n", maxClasses, maxCyclic, cyclicOver64)
+	for _, line := range slices.Sorted(maps.Keys(st.widened)) {
+		out.WriteString(line + "\n")
+	}
+	for _, line := range slices.Sorted(maps.Keys(st.silenced)) {
 		out.WriteString(line + "\n")
 	}
 	fns := slices.SortedFunc(maps.Keys(st.fnWalks), func(a, b string) int {

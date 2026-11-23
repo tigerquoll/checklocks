@@ -35,6 +35,9 @@ import (
 // decisionLogDir is where the decision log goes; empty writes none.
 var decisionLogDir = os.Getenv("CHECKLOCKS_DECISION_LOG")
 
+// markerBoundOn is false when CHECKLOCKS_MARKER_BOUND is "off": markers then keep every dropped key.
+var markerBoundOn = os.Getenv("CHECKLOCKS_MARKER_BOUND") != "off"
+
 // walkOrder picks the order the walk visits successors in: empty for SSA order, "reverse", or a decimal seed.
 var walkOrder = os.Getenv("CHECKLOCKS_WALK_ORDER")
 
@@ -242,6 +245,9 @@ type blockParity struct {
 	// out is the state the solve ended the block in.
 	out *lockState
 
+	// runs counts the replay runs that ended.
+	runs int
+
 	// insertKey is the element key of the parent when it was queued, outKey that of out.
 	insertKey, outKey string
 }
@@ -292,7 +298,8 @@ func (p *blockParity) walked(pc *passContext, fn *ssa.Function, ls *lockState) {
 
 // replayed panics unless the replay run that just ended matches the walk's capture.
 func (p *blockParity) replayed(pc *passContext, r *blockRecord, ls *lockState, grew bool) {
-	where := fmt.Sprintf("%s block %d", r.wc.fn.String(), r.block.Index)
+	where := fmt.Sprintf("%s block %d run %d", r.wc.fn.String(), r.block.Index, p.runs)
+	p.runs++
 	if now := pc.elementKey(r.wc.fn, r.parent); now != p.insertKey {
 		panic(fmt.Sprintf("block replay parity: %s: the parent changed before its replay: %q, now %q", where, p.insertKey, now))
 	}

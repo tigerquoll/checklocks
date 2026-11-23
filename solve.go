@@ -162,7 +162,7 @@ type solver struct {
 	pc   *passContext
 	wc   *walkContext
 	cfg  *cfgFacts
-	seen map[*ssa.BasicBlock]map[string]*lockState
+	seen map[*ssa.BasicBlock]map[string]map[string]*lockState
 	work workList
 	seq  int
 }
@@ -170,32 +170,37 @@ type solver struct {
 // solve transfers every pair reachable from root entered with entry, once each, in a
 // record of its own. It stops when the walk gives up or runs out of budget.
 func (pc *passContext) solve(wc *walkContext, root *ssa.BasicBlock, entry *lockState) {
-	sv := &solver{pc: pc, wc: wc, cfg: pc.cfgOf(wc.fn), seen: make(map[*ssa.BasicBlock]map[string]*lockState)}
+	sv := &solver{pc: pc, wc: wc, cfg: pc.cfgOf(wc.fn), seen: make(map[*ssa.BasicBlock]map[string]map[string]*lockState)}
 	sv.insert(root, entry)
 	for len(sv.work) > 0 && !wc.gaveUp && !pc.overBudget {
 		sv.transfer(heap.Pop(&sv.work).(workItem))
 	}
 }
 
-// insert queues the pair unless it is there already. A new pair in a cycle past the cap gives the walk up.
+// insert queues the pair unless it is there already. A new class at a cycle block past the cap gives the walk up.
 func (sv *solver) insert(block *ssa.BasicBlock, s *lockState) {
-	key := sv.pc.elementKey(sv.wc.fn, s)
-	pairs := sv.seen[block]
-	if kept, ok := pairs[key]; ok {
+	class, mark := sv.pc.classKey(sv.wc.fn, s), markerKey(s)
+	classes := sv.seen[block]
+	marks, ok := classes[class]
+	if kept, ok := marks[mark]; ok {
 		sv.pc.cutCheck(sv.wc.fn, kept, s)
 		return
 	}
-	if len(pairs) >= maxCycleStates && sv.cfg.cyclic[block] {
-		sv.wc.gaveUp = true
-		return
+	if !ok {
+		if len(classes) >= maxCycleStates && sv.cfg.cyclic[block] {
+			sv.wc.gaveUp = true
+			return
+		}
+		if classes == nil {
+			classes = make(map[string]map[string]*lockState)
+			sv.seen[block] = classes
+		}
+		marks = make(map[string]*lockState)
+		classes[class] = marks
 	}
-	if pairs == nil {
-		pairs = make(map[string]*lockState)
-		sv.seen[block] = pairs
-	}
-	pairs[key] = s
+	marks[mark] = s
 	sv.seq++
-	heap.Push(&sv.work, workItem{rank: workRank(sv.wc.fn, sv.cfg.rpo[block], sv.seq), block: block, state: s, key: key})
+	heap.Push(&sv.work, workItem{rank: workRank(sv.wc.fn, sv.cfg.rpo[block], sv.seq), block: block, state: s, key: class + mark})
 }
 
 // transfer runs block on parent and sends the result along each edge out of it.
@@ -243,6 +248,8 @@ func (sv *solver) carry(block, succ *ssa.BasicBlock, ls *lockState) *lockState {
 		return ls
 	}
 	s := ls.fork()
-	s.dropDead(func(p lockPath) bool { return pathDies(p, dies) })
+	if n := s.dropDead(func(p lockPath) bool { return pathDies(p, dies) }); n > 0 {
+		sv.pc.statWidened(sv.wc, succ, n)
+	}
 	return s
 }

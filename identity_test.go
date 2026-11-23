@@ -292,6 +292,8 @@ func TestSameElement(t *testing.T) {
 		{"assumed", base(), held(true, a)},
 		{"marker", base(), marked(base(), fx.inside)},
 		{"other marker", marked(base(), fx.inside), marked(base(), fx.before)},
+		{"top", base(), topped(base())},
+		{"top and a key", marked(base(), fx.inside), topped(base())},
 	} {
 		if sameKey(t, pc, nil, tc.name, tc.left, tc.right) || sameKey(t, pc, nil, tc.name, tc.right, tc.left) {
 			t.Errorf("states differing in %s are the same element", tc.name)
@@ -329,10 +331,25 @@ func TestSameElement(t *testing.T) {
 	}
 }
 
+func TestClassKey(t *testing.T) {
+	fx := newLoopFixture(t)
+	pc := noFactsPC()
+	a := held(false, fx.param)
+	for _, other := range []*lockState{marked(held(false, fx.param), fx.inside), marked(held(false, fx.param), fx.before), topped(held(false, fx.param))} {
+		if pc.classKey(nil, a) != pc.classKey(nil, other) {
+			t.Error("elements that differ only in the marker have different class keys")
+		}
+	}
+	if pc.classKey(nil, a) == pc.classKey(nil, held(false, fx.global)) {
+		t.Error("elements with different locks share a class key")
+	}
+}
+
 func TestEmptyStateKeys(t *testing.T) {
 	fx := newLoopFixture(t)
 	pkg := buildTestPackage(t, "defers", deferSource)
 	pc := deferPC(pkg.Prog.Fset)
+	fns := []*ssa.Function{nil, pkg.Func("ordered")}
 	sites := deferSites(pkg.Func("ordered"))
 	withDefer := func(d *ssa.Defer) *lockState {
 		ls := newLockState()
@@ -347,12 +364,15 @@ func TestEmptyStateKeys(t *testing.T) {
 		same  bool
 	}{
 		{"marker", marked(newLockState(), fx.inside), false},
+		{"top", topped(newLockState()), false},
 		{"alias", aliased, false},
 		{"relevant defer", withDefer(sites[1]), false},
 		{"no-op defer", withDefer(sites[0]), true},
 	} {
-		if got := sameKey(t, pc, nil, tc.name, newLockState(), tc.other); got != tc.same {
-			t.Errorf("empty state against %s only: same element = %t, want %t", tc.name, got, tc.same)
+		for _, fn := range fns {
+			if got := sameKey(t, pc, fn, tc.name, newLockState(), tc.other); got != tc.same {
+				t.Errorf("empty state against %s only (fn %v): same element = %t, want %t", tc.name, fn, got, tc.same)
+			}
 		}
 	}
 }

@@ -397,8 +397,8 @@ func loopOverflowDefer(f *sevenLocks, c func() bool) { // +checklocksfail=checkl
 	}
 }
 
-// Exact markers; the marker bound analyses it.
-func loopMarkerGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+// Sixty-four classes reach one loop block, exactly the cap.
+func loopMarkerAtCap(f *sevenLocks, c func() bool) { // +checklocksfail=incompatible return states
 	if c() {
 		f.a.Lock()
 	}
@@ -423,7 +423,7 @@ func loopMarkerGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklo
 			s.mu.Lock()
 		}
 	}
-}
+} // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
 
 func loopSeqThenInLoopGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
 	if c() {
@@ -494,10 +494,10 @@ func loopNestedGiveUp(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c, c1, c
 			}
 		}
 		loopSink = func() {
-			loopNeedsMu(t) // +checklocksfail=must hold t.mu exclusively
+			loopNeedsMu(t) // +checklocksfail=must hold t.mu
 		}
 	}()
-} // +checklocksfail=return with unexpected locks held
+} // +checklocksfail=unexpected locks held
 
 // A closure run inline inside a literal that gives up is not analysed again without the locks it ran under.
 func loopGiveUpInline(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
@@ -674,7 +674,250 @@ func loopGiveUpTwoEntries(c bool, t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mut
 			}
 		}
 		loopBreakSink = func() {
-			loopNeedsMu(t) // +checklocksfail=must hold t.mu exclusively
+			loopNeedsMu(t) // +checklocksfail=must hold t.mu
 		}
 	}()
-} // +checklocksfail=return with unexpected locks held
+} // +checklocksfail=unexpected locks held
+
+// Sites a loop's dropped locks may have released; these pin that the loop is analysed.
+func loopFiveKeysRelease(n, c int) {
+	for i := 0; i < n; i++ {
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+		case 2:
+			x2 := loopGet()
+			x2.mu.Lock()
+		case 3:
+			x3 := loopGet()
+			x3.mu.Lock()
+		default:
+			x4 := loopGet()
+			x4.mu.Lock()
+		}
+		h := loopGet()
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+}
+
+func loopEightKeysRelease(n, c int) {
+	for i := 0; i < n; i++ {
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+		case 2:
+			x2 := loopGet()
+			x2.mu.Lock()
+		case 3:
+			x3 := loopGet()
+			x3.mu.Lock()
+		case 4:
+			x4 := loopGet()
+			x4.mu.Lock()
+		case 5:
+			x5 := loopGet()
+			x5.mu.Lock()
+		case 6:
+			x6 := loopGet()
+			x6.mu.Lock()
+		default:
+			x7 := loopGet()
+			x7.mu.Lock()
+		}
+		h := loopGet()
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+}
+
+func loopTwelveKeysRelease(n, c int) {
+	for i := 0; i < n; i++ {
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+		case 2:
+			x2 := loopGet()
+			x2.mu.Lock()
+		case 3:
+			x3 := loopGet()
+			x3.mu.Lock()
+		case 4:
+			x4 := loopGet()
+			x4.mu.Lock()
+		case 5:
+			x5 := loopGet()
+			x5.mu.Lock()
+		case 6:
+			x6 := loopGet()
+			x6.mu.Lock()
+		case 7:
+			x7 := loopGet()
+			x7.mu.Lock()
+		case 8:
+			x8 := loopGet()
+			x8.mu.Lock()
+		case 9:
+			x9 := loopGet()
+			x9.mu.Lock()
+		case 10:
+			x10 := loopGet()
+			x10.mu.Lock()
+		default:
+			x11 := loopGet()
+			x11.mu.Lock()
+		}
+		h := loopGet()
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+}
+
+func loopFourSeqRelease(c func() bool) {
+	for c() {
+		p, q, r, s := loopGet(), loopGet(), loopGet(), loopGet()
+		if c() {
+			p.mu.Lock()
+		}
+		if c() {
+			q.mu.Lock()
+		}
+		if c() {
+			r.mu.Lock()
+		}
+		if c() {
+			s.mu.Lock()
+		}
+		h := loopGet()
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+}
+
+// Holding f.a, f.b and f.c means two other arms ran before, so the marker is top.
+func loopProgress(n, c int, f *sevenLocks, g *loopT) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+			f.a.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+			f.b.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		default:
+			x2 := loopGet()
+			x2.mu.Lock()
+			f.c.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		}
+		h := loopGet()
+		h.mu.Unlock()              // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+		g.mu.Unlock()              // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+		func() { h.mu.Unlock() }() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+} // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
+
+// A literal inherits the marker and releases a lock of the loop around it.
+func loopTopLiteralOuter(n, c int, f *sevenLocks) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		h := loopGet()
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+			f.a.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+			f.b.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		default:
+			x2 := loopGet()
+			x2.mu.Lock()
+			f.c.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		}
+		func() { h.mu.Unlock() }() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+} // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
+
+func loopTopLiteralOwn(n, c int, f *sevenLocks) {
+	func() { // +checklocksfail=incompatible return states
+		for i := 0; i < n; i++ {
+			h := loopGet()
+			switch c {
+			case 0:
+				x0 := loopGet()
+				x0.mu.Lock()
+				f.a.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+			case 1:
+				x1 := loopGet()
+				x1.mu.Lock()
+				f.b.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+			default:
+				x2 := loopGet()
+				x2.mu.Lock()
+				f.c.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+			}
+			h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+		}
+	}() // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
+}
+
+// +checklocksrelease:t.mu
+func loopReleases(t *loopT) {} // +checklocksfail=unexpected locks held
+
+func loopGetDown() *oneDowngradeGuardStruct { return nil }
+
+func loopTopKinds(n, c int, f *sevenLocks) { // +checklocksfail=incompatible return states
+	for i := 0; i < n; i++ {
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+			f.a.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+			f.b.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		default:
+			x2 := loopGet()
+			x2.mu.Lock()
+			f.c.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		}
+		r := loopGet()
+		loopReleases(r) // +checklocksfail=attempt to release|attempt to release|attempt to release|attempt to release|attempt to release|attempt to release|attempt to release|attempt to release|attempt to release|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu|must hold t.mu
+		u := loopGet()
+		u.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+		d := loopGetDown()
+		d.mu.DowngradeLock() // +checklocksfail=not exclusive|not exclusive|not exclusive|not exclusive|not exclusive|not exclusive|not exclusive|not exclusive|not exclusive
+	}
+} // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
+
+func loopTopBeforeLoop(n, c int, f *sevenLocks) { // +checklocksfail=incompatible return states
+	h := loopGet()
+	for i := 0; i < n; i++ {
+		switch c {
+		case 0:
+			x0 := loopGet()
+			x0.mu.Lock()
+			f.a.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		case 1:
+			x1 := loopGet()
+			x1.mu.Lock()
+			f.b.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		default:
+			x2 := loopGet()
+			x2.mu.Lock()
+			f.c.Lock() // +checklocksfail=already locked|already locked|already locked|already locked
+		}
+		h.mu.Unlock() // +checklocksfail=locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently|locked differently
+	}
+} // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held

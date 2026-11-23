@@ -29,7 +29,7 @@ import (
 // sameElement reports whether two states are one element of the walk of fn. A lockState component is identity or payload:
 //
 //	held locks, with mode and assumed tag    identity
-//	marker                                   identity
+//	marker, or top                           identity
 //	defers that can matter, in stack order   identity
 //	aliases                                  identity
 //	stored values of fn's relevant slots     identity
@@ -38,7 +38,7 @@ import (
 //
 // Payload is not compared; the first arrival's is kept. See relevantSlots for the slots.
 func (pc *passContext) sameElement(fn *ssa.Function, a, b *lockState) bool {
-	return a.isCompatible(b) && maps.Equal(a.marker, b.marker) && pc.sameRelevantDefers(a, b) && maps.EqualFunc(a.aliases, b.aliases, func(x, y lockPath) bool {
+	return a.isCompatible(b) && a.markerTop == b.markerTop && maps.Equal(a.marker, b.marker) && pc.sameRelevantDefers(a, b) && maps.EqualFunc(a.aliases, b.aliases, func(x, y lockPath) bool {
 		return x.Key() == y.Key()
 	}) && pc.sameRelevantStored(fn, a, b)
 }
@@ -46,17 +46,54 @@ func (pc *passContext) sameElement(fn *ssa.Function, a, b *lockState) bool {
 // emptyElementKey is the key of a state with no identity component.
 const emptyElementKey = "0;0;0;0;0;"
 
+// emptyClassKey is the class key of a state with no identity component but the marker.
+const emptyClassKey = "0;0;0;0;"
+
 // elementKey encodes the identity components of s, so two states have one key exactly when sameElement holds.
 func (pc *passContext) elementKey(fn *ssa.Function, s *lockState) string {
-	if len(s.lockedMutexes) == 0 && len(s.marker) == 0 && len(s.defers) == 0 && len(s.aliases) == 0 {
+	return pc.classKey(fn, s) + markerKey(s)
+}
+
+// classKey encodes the identity components of s but its marker: two states share it exactly
+// when they are one element once their markers are cleared.
+func (pc *passContext) classKey(fn *ssa.Function, s *lockState) string {
+	if len(s.lockedMutexes) == 0 && len(s.defers) == 0 && len(s.aliases) == 0 {
 		if si := pc.relevantSlots(fn); si == nil || len(si.slots) == 0 {
-			return emptyElementKey
+			return emptyClassKey
 		}
 	}
-	return pc.buildElementKey(fn, s)
+	return pc.buildClassKey(fn, s)
+}
+
+// markerKey encodes the marker of s; top has a part no key set has.
+func markerKey(s *lockState) string {
+	if len(s.marker) == 0 {
+		if s.markerTop {
+			return "0;T;"
+		}
+		return "0;"
+	}
+	keys := make([]string, 0, len(s.marker))
+	for k := range s.marker {
+		keys = append(keys, string(k))
+	}
+	slices.Sort(keys)
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(len(keys)))
+	b.WriteByte(';')
+	for _, k := range keys {
+		b.WriteString(strconv.Itoa(len(k)))
+		b.WriteByte(':')
+		b.WriteString(k)
+	}
+	return b.String()
 }
 
 func (pc *passContext) buildElementKey(fn *ssa.Function, s *lockState) string {
+	return pc.buildClassKey(fn, s) + markerKey(s)
+}
+
+func (pc *passContext) buildClassKey(fn *ssa.Function, s *lockState) string {
 	var b strings.Builder
 	part := func(sorted bool, parts []string) {
 		if sorted {
@@ -75,13 +112,6 @@ func (pc *passContext) buildElementKey(fn *ssa.Function, s *lockState) string {
 		locks = append(locks, fmt.Sprintf("%s\x00%t\x00%t", k, info.exclusive, info.assumed))
 	}
 	part(true, locks)
-	part(true, slices.Collect(func(yield func(string) bool) {
-		for k := range s.marker {
-			if !yield(string(k)) {
-				return
-			}
-		}
-	}))
 	var defers []string
 	for _, d := range s.defers {
 		if pc.deferRelevant(d) {

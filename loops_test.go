@@ -17,6 +17,7 @@ package checklocks
 import (
 	"fmt"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"maps"
 	"slices"
@@ -179,6 +180,64 @@ func marked(ls *lockState, paths ...lockPath) *lockState {
 	return ls
 }
 
+// topped sets the marker of ls to top.
+func topped(ls *lockState) *lockState {
+	ls.markerTop = true
+	return ls
+}
+
+func TestMarkerBound(t *testing.T) {
+	fx := newLoopFixture(t)
+	a, b, c := fx.inside.Key(), fx.before.Key(), fx.phi.Key()
+	apply := func(l *lockState, keys ...pathKey) *lockState {
+		l.markDropped(keys)
+		return l
+	}
+	for _, tc := range []struct {
+		name string
+		from *lockState
+		keys []pathKey
+		want []pathKey
+		top  bool
+		size int
+	}{
+		{"nothing", newLockState(), nil, nil, false, 0},
+		{"one key", newLockState(), []pathKey{a}, []pathKey{a}, false, 0},
+		{"same key again", apply(newLockState(), a), []pathKey{a}, []pathKey{a}, false, 0},
+		{"second key", apply(newLockState(), a), []pathKey{b}, nil, true, 2},
+		{"two keys at once", newLockState(), []pathKey{a, b}, nil, true, 2},
+		{"top absorbs a key", topped(newLockState()), []pathKey{c}, nil, true, 0},
+		{"top absorbs nothing", topped(newLockState()), nil, nil, true, 0},
+	} {
+		size := tc.from.markDropped(tc.keys)
+		if size != tc.size || tc.from.markerTop != tc.top || !maps.Equal(tc.from.marker, keySet(tc.want)) {
+			t.Errorf("%s: size %d, top %t, marker %v; want size %d, top %t, marker %v", tc.name, size, tc.from.markerTop, tc.from.marker, tc.size, tc.top, tc.want)
+		}
+	}
+
+	// Bounding after each step is the same as bounding the union.
+	sets := [][]pathKey{nil, {a}, {b}, {a, b}, {b, c}, {a, b, c}}
+	for _, first := range sets {
+		for _, second := range sets {
+			once, twice := newLockState(), newLockState()
+			once.markDropped(append(slices.Clone(first), second...))
+			twice.markDropped(first)
+			twice.markDropped(second)
+			if once.markerTop != twice.markerTop || !maps.Equal(once.marker, twice.marker) {
+				t.Errorf("%v then %v: at once top %t marker %v, in two steps top %t marker %v", first, second, once.markerTop, once.marker, twice.markerTop, twice.marker)
+			}
+		}
+	}
+}
+
+func keySet(keys []pathKey) map[pathKey]struct{} {
+	m := make(map[pathKey]struct{})
+	for _, k := range keys {
+		m[k] = struct{}{}
+	}
+	return m
+}
+
 func TestDropDead(t *testing.T) {
 	fx := newLoopFixture(t)
 	dies := func(p lockPath) bool { return pathDies(p, fx.body) }
@@ -225,25 +284,34 @@ func TestSilencesRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		set      []lockPath
+		top      bool
 		held     []lockPath
 		path     lockPath
 		deferred bool
 		want     bool
 	}{
-		{"marker empty", nil, nil, fx.inside, false, false},
-		{"dropped key", []lockPath{fx.inside}, nil, fx.inside, false, true},
-		{"dropped key but held", []lockPath{fx.inside}, []lockPath{fx.inside}, fx.inside, false, false},
-		{"value defined before the loop", []lockPath{fx.inside}, nil, fx.before, false, false},
-		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, nil, fx.phi, false, false},
-		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, nil, index(fx.param, fx.phi), false, true},
-		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, nil, index(fx.param, index(fx.param, fx.inside)), false, true},
-		{"deferred, value defined before the loop", []lockPath{fx.inside}, nil, fx.before, true, true},
-		{"deferred, marker empty", nil, nil, fx.before, true, false},
-		{"deferred, same key held", []lockPath{fx.inside}, []lockPath{fx.before}, fx.before, true, false},
-		{"deferred, parameter root", []lockPath{fx.inside}, nil, fx.param, true, false},
+		{"marker empty", nil, false, nil, fx.inside, false, false},
+		{"dropped key", []lockPath{fx.inside}, false, nil, fx.inside, false, true},
+		{"dropped key but held", []lockPath{fx.inside}, false, []lockPath{fx.inside}, fx.inside, false, false},
+		{"value defined before the loop", []lockPath{fx.inside}, false, nil, fx.before, false, false},
+		{"other value-rooted key, set non-empty", []lockPath{fx.inside}, false, nil, fx.phi, false, false},
+		{"dropped index of a value on a parameter", []lockPath{index(fx.param, fx.phi)}, false, nil, index(fx.param, fx.phi), false, true},
+		{"dropped index of an index of a value", []lockPath{index(fx.param, index(fx.param, fx.inside))}, false, nil, index(fx.param, index(fx.param, fx.inside)), false, true},
+		{"deferred, value defined before the loop", []lockPath{fx.inside}, false, nil, fx.before, true, true},
+		{"deferred, marker empty", nil, false, nil, fx.before, true, false},
+		{"deferred, same key held", []lockPath{fx.inside}, false, []lockPath{fx.before}, fx.before, true, false},
+		{"deferred, parameter root", []lockPath{fx.inside}, false, nil, fx.param, true, false},
+		{"top, value defined in the loop", nil, true, nil, fx.inside, false, true},
+		{"top, loop-defined index of a parameter", nil, true, nil, index(fx.param, fx.phi), false, true},
+		{"top, value defined before the loop", nil, true, nil, fx.before, false, false},
+		{"top, parameter root", nil, true, nil, fx.param, false, false},
+		{"top, but held", nil, true, []lockPath{fx.inside}, fx.inside, false, false},
+		{"top, deferred, value defined before the loop", nil, true, nil, fx.before, true, true},
+		{"top, deferred, parameter root", nil, true, nil, fx.param, true, false},
 	} {
 		ls := marked(held(false, tc.held...), tc.set...)
-		if got := ls.silencesRelease(tc.path, tc.deferred); got != tc.want {
+		ls.markerTop = tc.top
+		if got := (&passContext{}).silencesRelease(ls, tc.path, tc.deferred, token.NoPos); got != tc.want {
 			t.Errorf("%s: silencesRelease = %t, want %t", tc.name, got, tc.want)
 		}
 	}
@@ -281,9 +349,32 @@ func lockSource(shape string, n int) string {
 	return b.String()
 }
 
+// armSource has a loop whose body takes one of n locks, each on a value of its own, then n2 conditional no-ops.
+func armSource(n, n2 int) string {
+	var b strings.Builder
+	b.WriteString("package p\n\ntype Mutex struct{}\n\nfunc (*Mutex) Lock()   {}\nfunc (*Mutex) Unlock() {}\n\ntype T struct{ mu Mutex }\n\nfunc get() *T { return nil }\n\nfunc work() {}\n\n")
+	b.WriteString("func f(n, c int, d func() bool) {\n\tfor i := 0; i < n; i++ {\n\t\tswitch c {\n")
+	for i := 0; i < n; i++ {
+		if i == n-1 {
+			b.WriteString("\t\tdefault:\n")
+		} else {
+			fmt.Fprintf(&b, "\t\tcase %d:\n", i)
+		}
+		fmt.Fprintf(&b, "\t\t\tx%d := get()\n\t\t\tx%d.mu.Lock()\n", i, i)
+	}
+	b.WriteString("\t\t}\n")
+	for i := 0; i < n2; i++ {
+		b.WriteString("\t\tif d() {\n\t\t\twork()\n\t\t}\n")
+	}
+	b.WriteString("\t}\n}\n")
+	return b.String()
+}
+
 func TestCycleStateCap(t *testing.T) {
-	gaveUp := func(shape string, n int) bool {
-		pkg := buildTestPackage(t, "cap", lockSource(shape, n))
+	capText := fmt.Sprintf("checklocks gave up on this function: more than %d lock states reach one block in a loop", maxCycleStates)
+	budgetText := fmt.Sprintf("checklocks gave up on this function: more than %d block walks", maxFunctionWalks)
+	giveUp := func(src string) string {
+		pkg := buildTestPackage(t, "cap", src)
 		pass := &analysis.Pass{
 			Fset:             pkg.Prog.Fset,
 			Report:           func(analysis.Diagnostic) {},
@@ -296,36 +387,35 @@ func TestCycleStateCap(t *testing.T) {
 			functions:    make(map[*ssa.Function]struct{}),
 		}
 		pc.checkFunction(callSite{kind: siteEntry}, nil, pkg.Func("f"), &lockFunctionFacts{}, nil, false)
-		want := fmt.Sprintf("checklocks gave up on this function: more than %d lock states reach one block in a loop", maxCycleStates)
 		for _, r := range pc.pending {
-			if r.msg == want {
-				return true
-			}
 			if strings.Contains(r.msg, "gave up") {
-				t.Errorf("%s with %d locks gave up with %q", shape, n, r.msg)
+				return r.msg
 			}
 		}
-		return false
+		return ""
 	}
 	if maxCycleStates != 64 {
 		t.Fatalf("maxCycleStates = %d, want 64", maxCycleStates)
 	}
 	for _, tc := range []struct {
-		shape string
-		n     int
-		want  bool
+		name string
+		src  string
+		want string
 	}{
-		{"natural", 6, false},
-		{"natural", 7, true},
-		{"goto", 6, false},
-		{"goto", 7, true},
-		{"self", 6, false},
-		{"self", 7, true},
-		{"acyclic", 7, false},
-		{"acyclic", 9, false},
+		{"natural 6", lockSource("natural", 6), ""},
+		{"natural 7", lockSource("natural", 7), capText},
+		{"goto 6", lockSource("goto", 6), ""},
+		{"goto 7", lockSource("goto", 7), capText},
+		{"self 6", lockSource("self", 6), ""},
+		{"self 7", lockSource("self", 7), capText},
+		{"acyclic 7", lockSource("acyclic", 7), ""},
+		{"acyclic 9", lockSource("acyclic", 9), ""},
+		{"64 arms", armSource(64, 0), ""},
+		{"65 arms", armSource(65, 0), capText},
+		{"64 arms and 6 branches", armSource(64, 6), budgetText},
 	} {
-		if got := gaveUp(tc.shape, tc.n); got != tc.want {
-			t.Errorf("%s with %d locks: gave up = %t, want %t", tc.shape, tc.n, got, tc.want)
+		if got := giveUp(tc.src); got != tc.want {
+			t.Errorf("%s: gave up with %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

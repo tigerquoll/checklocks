@@ -74,9 +74,12 @@ type lockState struct {
 	// defers are the stack of defers that have been pushed.
 	defers []*ssa.Defer
 
-	// marker holds the locks dropped at a loop's back edge: a later release of one that
-	// is not held may have meant it. It is copied on write like the held map.
+	// marker holds the lock dropped at a loop's back edge: a later release of it that is
+	// not held may have meant it. It is copied on write like the held map.
 	marker map[pathKey]struct{}
+
+	// markerTop means more than markerBound locks were dropped and marker names none.
+	markerTop bool
 
 	// oracle is the parity build's check of the walk's stored reads.
 	oracle oracleRef
@@ -118,6 +121,7 @@ func (l *lockState) fork() *lockState {
 		consts:        l.consts,
 		defers:        l.defers,
 		marker:        l.marker,
+		markerTop:     l.markerTop,
 		oracle:        l.oracle,
 		refs:          l.refs,
 	}
@@ -660,8 +664,12 @@ func pathDies(p lockPath, body map[*ssa.BasicBlock]bool) bool {
 	return pathHasValue(p, func(b *ssa.BasicBlock) bool { return body[b] })
 }
 
-// dropDead removes the held locks whose paths die. Dropping one that was acquired adds it to the marker.
-func (l *lockState) dropDead(dies func(lockPath) bool) {
+// markerBound is the number of dropped locks a marker names before it becomes top.
+const markerBound = 1
+
+// dropDead removes the held locks whose paths die. Dropping one that was acquired adds it to the
+// marker. It returns the size of the marker that went to top, or 0 if it did not.
+func (l *lockState) dropDead(dies func(lockPath) bool) int {
 	var dead []pathKey
 	for k, info := range l.lockedMutexes {
 		if dies(info.path) {
@@ -669,29 +677,59 @@ func (l *lockState) dropDead(dies func(lockPath) bool) {
 		}
 	}
 	if len(dead) == 0 {
-		return
+		return 0
 	}
 	l.modify()
+	var dropped []pathKey
 	for _, k := range dead {
 		if !l.lockedMutexes[k].assumed {
-			if l.marker == nil {
-				l.marker = make(map[pathKey]struct{})
-			}
-			l.marker[k] = struct{}{}
+			dropped = append(dropped, k)
 		}
 		delete(l.lockedMutexes, k)
 	}
+	return l.markDropped(dropped)
 }
 
-// silencesRelease reports whether a release of p that is not held goes unreported: a
-// loop's back edge dropped it. A deferred release is resolved at exit, so its key need not
-// be the one dropped; any value-rooted path counts once something was dropped.
-func (l *lockState) silencesRelease(p lockPath, deferred bool) bool {
+// markDropped adds keys to the marker, which becomes top past markerBound keys and stays top.
+// It returns the size that tipped it, or 0. The caller has made the state writable.
+func (l *lockState) markDropped(keys []pathKey) int {
+	if l.markerTop {
+		return 0
+	}
+	if l.marker == nil && len(keys) > 0 {
+		l.marker = make(map[pathKey]struct{})
+	}
+	for _, k := range keys {
+		l.marker[k] = struct{}{}
+	}
+	if n := len(l.marker); markerBoundOn && n > markerBound {
+		l.marker, l.markerTop = nil, true
+		return n
+	}
+	return 0
+}
+
+// markerSet reports whether a lock was dropped.
+func (l *lockState) markerSet() bool {
+	return l.markerTop || len(l.marker) > 0
+}
+
+// silencesRelease reports whether a release of p that is not held goes unreported: a back edge
+// dropped it, or the marker is top and p has a value defined on a cycle of its own function. A
+// deferred release counts any value-rooted path once something was dropped.
+func (pc *passContext) silencesRelease(l *lockState, p lockPath, deferred bool, at token.Pos) bool {
 	if _, held := l.lockedMutexes[p.Key()]; held {
 		return false
 	}
-	if deferred {
-		return len(l.marker) > 0 && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
+	switch {
+	case deferred:
+		return l.markerSet() && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
+	case l.markerTop:
+		silenced := pathHasValue(p, func(b *ssa.BasicBlock) bool { return pc.cfgOf(b.Parent()).cyclic[b] })
+		if silenced {
+			pc.statTopSilenced(at, p)
+		}
+		return silenced
 	}
 	_, dropped := l.marker[p.Key()]
 	return dropped
