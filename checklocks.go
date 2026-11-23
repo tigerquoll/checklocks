@@ -505,6 +505,7 @@ func run(pass *analysis.Pass) (any, error) {
 	pc.flushReports()
 	pc.writeDecisions()
 	pc.writeWalkStats()
+	pc.writeSiteDump()
 
 	// Check for expected failures.
 	pc.checkFailures()
