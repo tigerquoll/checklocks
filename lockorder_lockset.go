@@ -38,6 +38,10 @@ type classSet struct {
 	// released is the classes released out of the caller's locks, and not taken back. A
 	// summary exports it so a call site can subtract it from its own held set.
 	released map[string]bool
+
+	// own counts the held locks the engine has no record of: operations whose lock is not a
+	// standard lock.
+	own map[string]int
 }
 
 func newClassSet() *classSet {
@@ -45,6 +49,7 @@ func newClassSet() *classSet {
 		counts:   make(map[string]int),
 		entry:    make(map[string]int),
 		released: make(map[string]bool),
+		own:      make(map[string]int),
 	}
 }
 
@@ -54,6 +59,10 @@ func (cs *classSet) fork() *classSet {
 		counts:   make(map[string]int, len(cs.counts)),
 		entry:    cs.entry,
 		released: make(map[string]bool, len(cs.released)),
+		own:      make(map[string]int, len(cs.own)),
+	}
+	for k, v := range cs.own {
+		out.own[k] = v
 	}
 	for k, v := range cs.counts {
 		out.counts[k] = v
@@ -71,6 +80,13 @@ func (cs *classSet) enter(class string) {
 	}
 	cs.entry[class]++
 	cs.acquire(class)
+}
+
+// raiseEntry adds a class to the entry baseline without counting it as held.
+func (cs *classSet) raiseEntry(class string) {
+	if class != "" && cs.entry[class] == 0 {
+		cs.entry[class] = 1
+	}
 }
 
 // acquire records that a class has been taken.
@@ -162,6 +178,11 @@ func (cs *classSet) String() string {
 // the path that still holds the lock.
 func (cs *classSet) merge(other *classSet) bool {
 	changed := false
+	for k, v := range other.own {
+		if cs.own[k] < v {
+			cs.own[k] = v
+		}
+	}
 	for k, v := range other.counts {
 		if cs.counts[k] < v {
 			cs.counts[k] = v

@@ -20,7 +20,6 @@ import (
 	"cmp"
 	"fmt"
 	"go/token"
-	"go/types"
 	"maps"
 	"net/url"
 	"os"
@@ -34,120 +33,15 @@ import (
 // shadowLogDir is where the shadow logs go; empty records and writes nothing.
 var shadowLogDir = os.Getenv("CHECKLOCKS_SHADOW_LOG")
 
-// shadowOrigin says how the engine came to hold a lock; the highest wins when states are joined.
-type shadowOrigin int
-
-const (
-	originBody shadowOrigin = iota
-	originEntry
-	originForced
-)
-
-func (o shadowOrigin) String() string { return [...]string{"body", "entry", "forced"}[o] }
-
-// shadowLock is a lock the engine holds at a call.
-type shadowLock struct {
-	path      lockPath
-	exclusive bool
-	assumed   bool
-	origin    shadowOrigin
-}
-
-// shadowEngine is what the engine records per pass: the locks held at each call of a top-level
-// function, joined over every state the replay reaches it in, and the functions it gave up on.
-type shadowEngine struct {
-	held   map[ssa.Instruction]map[pathKey]shadowLock
-	gaveUp map[*ssa.Function]string
-}
-
-// shadowCall records the locks held at a call of the function being replayed.
-func (pc *passContext) shadowCall(site callSite, wc *walkContext, ls *lockState) {
-	fn := wc.fn
-	if shadowLogDir == "" || pc.emit != emitReplay || site.instr == nil || fn.Parent() != nil || site.instr.Parent() != fn {
-		return
+// originOf says how the engine came to hold a lock.
+func originOf(l heldLock) string {
+	switch {
+	case l.assumed:
+		return "forced"
+	case l.entry:
+		return "entry"
 	}
-	e := &pc.shadow
-	if e.held == nil {
-		e.held = make(map[ssa.Instruction]map[pathKey]shadowLock)
-	}
-	rec := e.held[site.instr]
-	if rec == nil {
-		rec = make(map[pathKey]shadowLock)
-		e.held[site.instr] = rec
-	}
-	entry := pc.records[0].parent
-	for key, info := range ls.lockedMutexes {
-		origin := originBody
-		if _, ok := entry.lockedMutexes[key]; ok {
-			origin = originEntry
-		}
-		if info.assumed {
-			origin = originForced
-		}
-		if cur, ok := rec[key]; ok {
-			info.exclusive = info.exclusive || cur.exclusive
-			info.assumed = info.assumed || cur.assumed
-			origin = max(origin, cur.origin)
-		}
-		rec[key] = shadowLock{path: info.path, exclusive: info.exclusive, assumed: info.assumed, origin: origin}
-	}
-}
-
-// shadowGaveUp records why the walk of fn was abandoned.
-func (pc *passContext) shadowGaveUp(fn *ssa.Function) {
-	if shadowLogDir == "" {
-		return
-	}
-	if pc.shadow.gaveUp == nil {
-		pc.shadow.gaveUp = make(map[*ssa.Function]string)
-	}
-	reason := fmt.Sprintf("more than %d lock states reach one loop", maxHeadStates)
-	if pc.overBudget {
-		reason = fmt.Sprintf("more than %d block walks", maxFunctionWalks)
-	}
-	pc.shadow.gaveUp[fn] = reason
-}
-
-// shadowView answers lockorder's questions about what the engine held in one pass; its zero value has no pass.
-type shadowView struct {
-	e *shadowEngine
-}
-
-func (pc *passContext) shadowResult() shadowView {
-	if shadowLogDir == "" {
-		return shadowView{}
-	}
-	e := pc.shadow
-	return shadowView{&e}
-}
-
-// heldAt returns the locks the engine held at inst, and false when it recorded none or gave up on inst's function.
-func (v shadowView) heldAt(inst ssa.Instruction) ([]shadowLock, bool) {
-	rec, ok := v.e.held[inst]
-	if !ok || v.e.gaveUp[inst.Parent()] != "" {
-		return nil, false
-	}
-	keys := make([]pathKey, 0, len(rec))
-	for k := range rec {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	out := make([]shadowLock, len(keys))
-	for i, k := range keys {
-		out[i] = rec[k]
-	}
-	return out, true
-}
-
-// whyNone says why the engine has no record in fn: "literal", "gave up: <reason>", or "".
-func (v shadowView) whyNone(fn *ssa.Function) string {
-	if fn.Parent() != nil {
-		return "literal"
-	}
-	if reason := v.e.gaveUp[fn]; reason != "" {
-		return "gave up: " + reason
-	}
-	return ""
+	return "body"
 }
 
 type shadowLine struct {
@@ -156,14 +50,15 @@ type shadowLine struct {
 }
 
 // lockOrderShadow is what lockorder records per pass: the classes held at each call of the report walk,
-// and the comparison with the engine.
+// and the comparison with the engine. The classes are lockorder's state as driven up to the previous
+// site, since the comparison runs before the drive at each site.
 type lockOrderShadow struct {
 	held  map[ssa.Instruction]map[string]struct{}
 	lines []shadowLine
 
-	compared, diff, lonly, eonly, noengine, unmapped int
-	noview                                           bool
-	panicked                                         string
+	compared, diff, lonly, eonly, noengine, unmapped, unrecorded int
+	noview                                                       bool
+	panicked                                                     string
 }
 
 func (pc *lockOrderContext) shadowCall(call ssa.CallInstruction, cur *classSet, report bool) {
@@ -184,95 +79,6 @@ func (pc *lockOrderContext) shadowCall(call ssa.CallInstruction, cur *classSet, 
 	}
 }
 
-// shadowOwner walks the types along a lock path to the struct that owns its last field step,
-// and returns that owner, the field, and the type of the lock itself.
-func shadowOwner(p lockPath) (owner *types.Named, field string, final types.Type) {
-	if p.root.value == nil {
-		return nil, "", nil
-	}
-	deref := func(t types.Type) types.Type {
-		if ptr, ok := types.Unalias(t).Underlying().(*types.Pointer); ok {
-			return ptr.Elem()
-		}
-		return t
-	}
-	t := p.root.value.Type()
-	for i, s := range p.steps {
-		switch s.kind {
-		case stepDeref:
-			t = deref(t)
-		case stepField, stepFieldAddr:
-			base := t
-			if s.kind == stepFieldAddr {
-				base = deref(t)
-			}
-			st, ok := types.Unalias(base).Underlying().(*types.Struct)
-			if !ok || s.n >= st.NumFields() {
-				return nil, "", nil
-			}
-			owner, _ = types.Unalias(base).(*types.Named)
-			field = st.Field(s.n).Name()
-			t = st.Field(s.n).Type()
-			if s.kind == stepFieldAddr {
-				t = types.NewPointer(t)
-			}
-		case stepIndexAddr:
-			switch x := deref(t).Underlying().(type) {
-			case *types.Array:
-				t = types.NewPointer(x.Elem())
-			case *types.Slice:
-				t = types.NewPointer(x.Elem())
-			default:
-				return nil, "", nil
-			}
-		case stepIndex, stepConstIndex:
-			if tup, ok := t.(*types.Tuple); ok && s.n < tup.Len() {
-				t = tup.At(s.n).Type()
-				continue
-			}
-			switch x := types.Unalias(t).Underlying().(type) {
-			case *types.Array:
-				t = x.Elem()
-			case *types.Slice:
-				t = x.Elem()
-			case *types.Map:
-				t = x.Elem()
-			default:
-				return nil, "", nil
-			}
-		case stepLookup:
-			m, ok := types.Unalias(t).Underlying().(*types.Map)
-			if !ok {
-				return nil, "", nil
-			}
-			t = m.Elem()
-			// A comma-ok lookup is followed by an extract of its (element, ok) tuple.
-			if i+1 < len(p.steps) && p.steps[i+1].kind == stepConstIndex {
-				t = types.NewTuple(types.NewVar(token.NoPos, nil, "", t), types.NewVar(token.NoPos, nil, "", types.Typ[types.Bool]))
-			}
-		}
-	}
-	return owner, field, t
-}
-
-// shadowClass maps an engine lock to a class by the field rule 'F', else the type rule 'T', else 'U' for none.
-func (pc *lockOrderContext) shadowClass(p lockPath) (string, byte) {
-	owner, field, final := shadowOwner(p)
-	if owner != nil {
-		if c := pc.classForNamed(owner, field); c != "" {
-			return c, 'F'
-		}
-	}
-	if final != nil {
-		if named, ok := namedOf(final); ok {
-			if c := pc.classForNamed(named, ""); c != "" {
-				return c, 'T'
-			}
-		}
-	}
-	return "", 'U'
-}
-
 // shadowCompare compares the classes lockorder held at each call with the engine's.
 func (pc *lockOrderContext) shadowCompare() {
 	if shadowLogDir == "" || pc.check != checkOrder {
@@ -284,12 +90,11 @@ func (pc *lockOrderContext) shadowCompare() {
 			s.panicked = strings.ReplaceAll(fmt.Sprint(r), "\n", " ")
 		}
 	}()
-	res, _ := pc.pass.ResultOf[Analyzer].(*ownerResult)
-	if res == nil || res.shadow.e == nil {
+	view := pc.engineView()
+	if view == nil {
 		s.noview = true
 		return
 	}
-	view := res.shadow
 	pkg := pc.pass.Pkg.Path()
 	for inst, lo := range s.held {
 		pos := pc.pass.Fset.Position(inst.Pos())
@@ -306,13 +111,13 @@ func (pc *lockOrderContext) shadowCompare() {
 		ec := make(map[string]struct{})
 		origins := make(map[string][]string)
 		for _, l := range eng {
-			class, rule := pc.shadowClass(l.path)
+			class, rule := pc.engineClass(l.path)
 			if class == "" {
 				s.unmapped++
 				continue
 			}
 			ec[class] = struct{}{}
-			origins[class] = append(origins[class], fmt.Sprintf("%s/%c", l.origin, rule))
+			origins[class] = append(origins[class], fmt.Sprintf("%s/%c", originOf(l), rule))
 		}
 		var lOnly, eOnly []string
 		for c := range lo {
@@ -373,7 +178,7 @@ func (pc *lockOrderContext) shadowFlush(cycle bool) {
 	if s.panicked != "" {
 		fmt.Fprintf(&out, "P\t%s\t%s\n", pkg, s.panicked)
 	}
-	fmt.Fprintf(&out, "N\t%s\tcompared=%d\tdiff=%d\tlonly=%d\teonly=%d\tnoengine=%d\tunmapped=%d", pkg, s.compared, s.diff, s.lonly, s.eonly, s.noengine, s.unmapped)
+	fmt.Fprintf(&out, "N\t%s\tcompared=%d\tdiff=%d\tlonly=%d\teonly=%d\tnoengine=%d\tunmapped=%d\tunrecorded=%d", pkg, s.compared, s.diff, s.lonly, s.eonly, s.noengine, s.unmapped, s.unrecorded)
 	switch {
 	case cycle:
 		out.WriteString(" cycle")

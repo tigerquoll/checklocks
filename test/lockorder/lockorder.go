@@ -504,3 +504,106 @@ func (n *genNode[T]) visit(o *genNode[int]) {
 	o.visit(nil)
 	n.Unlock()
 }
+
+// --- locks the engine knows and this walk does not ------------------------------------
+
+// +checklocksacquire:a.mu
+func seamLockApp(a *App) { a.mu.Lock() }
+
+// +checklocksrelease:a.mu
+func seamUnlockApp(a *App) { a.mu.Unlock() }
+
+// +checklocksacquire:p.mu
+func seamLockPartition(p *Partition) { p.mu.Lock() }
+
+// +checklocksrelease:p.mu
+func seamUnlockPartition(p *Partition) { p.mu.Unlock() }
+
+func seamAcquireThenInvert(a *App, p *Partition) {
+	seamLockApp(a)
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+	a.mu.Unlock()
+}
+
+func seamReleaseThenReacquire(a *App) {
+	a.mu.Lock()
+	seamUnlockApp(a)
+	a.mu.Lock()
+	a.mu.Unlock()
+}
+
+func seamTakesPartition(p *Partition) {
+	seamLockPartition(p)
+	seamUnlockPartition(p)
+}
+
+func seamInversionThroughSummary(a *App, p *Partition) {
+	seamLockApp(a)
+	seamTakesPartition(p) // +lockorderfail=acquiring Partition (via seamTakesPartition) while holding App
+	a.mu.Unlock()
+}
+
+// The callee is declared below its caller, so only the settled summary reaches the caller.
+func seamInversionThroughRelease(a *App, p *Partition) {
+	a.mu.Lock()
+	a.seamRelockThenTake(p) // +lockorderfail=acquiring App (via (*App).seamRelockThenTake)|acquiring Partition (via (*App).seamRelockThenTake) while holding App
+	a.mu.Unlock()
+}
+
+// The callee's release is its own, so the caller's App stays held across what it goes on to take.
+func (a *App) seamRelockThenTake(p *Partition) {
+	seamLockApp(a)
+	a.mu.Unlock()
+	p.Lock()
+	p.Unlock()
+}
+
+// +checklockslocktype
+// +lockclass:SeamGuard
+type SeamGuard struct {
+	mu sync.Mutex
+}
+
+func (g *SeamGuard) Lock() { g.mu.Lock() }
+
+func (g *SeamGuard) Unlock() { g.mu.Unlock() }
+
+type seamGuarded struct {
+	g SeamGuard
+}
+
+// +checklocks:x.g
+func seamParameterGuard(x, y *seamGuarded) {
+	y.g.Lock() // +lockorderfail=acquiring SeamGuard (via (*SeamGuard).Lock) while holding SeamGuard
+	y.g.Unlock()
+}
+
+var seamGlobalGuard SeamGuard
+
+// +checklocks:seamGlobalGuard
+func seamGlobalGuarded(y *seamGuarded) {
+	y.g.Lock() // +lockorderfail=acquiring SeamGuard (via (*SeamGuard).Lock) while holding SeamGuard
+	y.g.Unlock()
+}
+
+// +checklocks:a.mu
+func seamNeedsApp(a *App) {}
+
+// +checklocksignore
+func seamAssumedOnly(a *App, p *Partition) {
+	seamNeedsApp(a)
+	p.Lock()
+	p.Unlock()
+}
+
+// +checklocksignore
+func seamAssumedOnOnePath(a *App, p *Partition, cond bool) {
+	if cond {
+		seamNeedsApp(a)
+	} else {
+		a.mu.Lock()
+	}
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+}

@@ -1286,3 +1286,14 @@ func g3T10(a *App) {
 	g3W10()               // +lockblockingfail=calling g3W10, which may block (calling DeclaredIgnored at lockblocking/lockblocking.go:1281 -> DeclaredIgnored is declared blocking at dep/dep.go:106)
 	a.Unlock()
 }
+
+// --- a lock taken through a callee the engine knows ------------------------------------
+
+// +checklocksacquire:a.mu
+func seamLockApp(a *App) { a.mu.Lock() }
+
+func seamSendUnderCalleeAcquire(a *App, c chan int) {
+	seamLockApp(a)
+	c <- 1 // +lockblockingfail=a channel send while holding App
+	a.mu.Unlock()
+}

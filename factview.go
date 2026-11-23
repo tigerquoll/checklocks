@@ -26,7 +26,7 @@ type objectSnapshot struct {
 // ownerResult is the Result of an analyzer whose facts other analyzers read.
 type ownerResult struct {
 	objects *objectSnapshot
-	shadow  shadowView
+	engine  *engineView
 }
 
 var ownerResultType = reflect.TypeOf((*ownerResult)(nil))

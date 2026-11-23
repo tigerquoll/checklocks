@@ -18,15 +18,7 @@ package checklocks
 
 import "golang.org/x/tools/go/ssa"
 
-type shadowEngine struct{}
-
-type shadowView struct{}
-
 type lockOrderShadow struct{}
-
-func (*passContext) shadowCall(callSite, *walkContext, *lockState) {}
-func (*passContext) shadowGaveUp(*ssa.Function)                    {}
-func (*passContext) shadowResult() shadowView                      { return shadowView{} }
 
 func (*lockOrderContext) shadowCall(ssa.CallInstruction, *classSet, bool) {}
 func (*lockOrderContext) shadowCompare()                                  {}

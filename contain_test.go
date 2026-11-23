@@ -192,3 +192,36 @@ func TestContainedHintsDedupe(t *testing.T) {
 		t.Errorf("after call 2: total %d, count %d; want 1, 1", oo.total, oo.counts[lock])
 	}
 }
+
+// engineFixture is a passContext with one record at the only instruction of f, as the replay leaves it.
+func engineFixture(t *testing.T) (*passContext, *ssa.Function, ssa.Instruction) {
+	t.Helper()
+	pc, fn := hintsFixture(t)
+	inst := fn.Blocks[0].Instrs[0]
+	lock := types.NewVar(token.NoPos, types.NewPackage("p", "p"), "mu", types.Typ[types.Int])
+	ls, _ := heldBy(lock)
+	pc.engine.add(inst, ls.lockedMutexes, nil)
+	pc.engine.setEntry(fn, ls.lockedMutexes)
+	return pc, fn, inst
+}
+
+// TestContainedEngineRecords pins that a function that panics leaves no engine record.
+func TestContainedEngineRecords(t *testing.T) {
+	pc, fn, inst := engineFixture(t)
+	pc.contained(fn, func() {})
+	if _, ok := pc.engine.heldAt(inst); !ok {
+		t.Error("completed function: no record at the site")
+	}
+	if _, ok := pc.engine.entryOf(fn); !ok {
+		t.Error("completed function: no entry record")
+	}
+
+	pc, fn, inst = engineFixture(t)
+	pc.contained(fn, func() { panic("boom") })
+	if _, ok := pc.engine.heldAt(inst); ok {
+		t.Error("panicked function: record at the site")
+	}
+	if _, ok := pc.engine.entryOf(fn); ok {
+		t.Error("panicked function: entry record")
+	}
+}

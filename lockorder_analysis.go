@@ -215,6 +215,7 @@ func blockOrder(fn *ssa.Function) []*ssa.BasicBlock {
 // acquire through its callee.
 func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, curInst *instanceSet, summary *summaryFact, report bool) {
 	pc.shadowCall(call, cur, report)
+	pc.drive(fn, call, cur)
 	callee := staticCallee(call)
 
 	// A lock operation changes what is held. Both the standard lock types and a type that
@@ -241,10 +242,16 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 						// acquisition: taking the lock back closes the gap.
 						summary.addAcquire(class, cur.releasedClasses())
 						cur.acquire(class)
+						if !isStandardLock(pc.pass, obj) {
+							cur.own[class]++
+						}
 						curInst.acquire(recv, class)
 					}
 				case opRelease:
 					cur.release(class, isReceiver(fn, recv))
+					if !isStandardLock(pc.pass, obj) && cur.own[class] > 0 {
+						cur.own[class]--
+					}
 					curInst.release(recv)
 				}
 				return
@@ -399,6 +406,10 @@ func (pc *lockOrderContext) entryClasses(fn *ssa.Function) *classSet {
 	for _, class := range pc.heldOnEntry(obj) {
 		cs.enter(class)
 	}
+	// What the engine entered with raises the baseline only; its locks are counted at each site.
+	for _, class := range pc.engineEntryClasses(fn) {
+		cs.raiseEntry(class)
+	}
 	return cs
 }
 
@@ -503,6 +514,7 @@ func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instructi
 	default:
 		return
 	}
+	pc.drive(fn, instr, cur)
 	// A channel operation is a wait this analysis inferred rather than one it can name, so
 	// it does not travel out of the package it occurs in unless the module says otherwise.
 	pc.noteBlocking(instr.Pos(), what, what /* waitKey: its kind is all that identifies it */, nil, cur.held(), cur.releasedClasses(), false /* named */, summary, report)

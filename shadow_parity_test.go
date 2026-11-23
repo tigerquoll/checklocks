@@ -131,8 +131,8 @@ func TestShadowAgree(t *testing.T) {
 	}
 	// The sites without an engine record: the literal's call and the mu.Lock and mu.Unlock calls in Guard's primitive bodies.
 	log, _, _ := shadowCorpus(t, "straight")
-	if n := log[len(log)-1]; !strings.Contains(n, "\tnoengine=3\t") {
-		t.Errorf("want noengine=3 so that every other site is counted, got %q", n)
+	if n := log[len(log)-1]; !strings.Contains(n, "\tnoengine=3\t") || !strings.Contains(n, "\tunrecorded=0") {
+		t.Errorf("want noengine=3 so that every other site is counted, and unrecorded=0, got %q", n)
 	}
 }
 

@@ -133,8 +133,8 @@ type passContext struct {
 	// decisions is what the tagged build keeps about check decisions; see decide.
 	decisions decisionState
 
-	// shadow is what the tagged build records for lockorder's shadow comparison; see shadow_parity.go.
-	shadow shadowEngine
+	// engine is what lockorder and lockblocking read of the held locks; see engineview.go.
+	engine engineView
 }
 
 // emitMode says what maybeFail and recordObservation do with what they are given.
@@ -211,6 +211,7 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 		}
 		pc.fnHints = nil
 		pc.current, pc.emit, pc.records = nil, emitDirect, nil
+		pc.engine.giveUp(fn, "analysis panicked")
 		// Loop B must not analyze the closures of a failed function out of context.
 		for work := []*ssa.Function{fn}; len(work) > 0; {
 			f := work[len(work)-1]
@@ -505,6 +506,6 @@ func run(pass *analysis.Pass) (any, error) {
 	pc.checkFailures()
 
 	res := snapshotOf(pass)
-	res.shadow = pc.shadowResult()
+	res.engine = &pc.engine
 	return res, nil
 }

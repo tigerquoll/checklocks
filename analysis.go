@@ -467,7 +467,7 @@ func (pc *passContext) checkGlobalAccess(wc *walkContext, inst ssa.Instruction, 
 }
 
 func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) {
-	pc.shadowCall(site, wc, ls)
+	pc.recordHeld(site.instr, wc, ls)
 	lff := wc.lff
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#CallCommon
 	//
@@ -1044,6 +1044,12 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		// lock as one named directly. See accessor.go.
 		pc.substituteGlobalAccessor(x, ls)
 		pc.checkCall(newCallSite(x), wc, ls)
+	case *ssa.Send, *ssa.Select:
+		pc.recordHeld(x, wc, ls)
+	case *ssa.UnOp:
+		if x.Op == token.ARROW {
+			pc.recordHeld(x, wc, ls)
+		}
 	case *ssa.Go:
 		pc.checkGoCall(newCallSite(x), wc, ls)
 	case *ssa.Defer:
@@ -1186,6 +1192,7 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 func (pc *passContext) replay() {
 	outerEmit := pc.emit
 	pc.emit = emitReplay
+	pc.recordEntry()
 	for _, r := range pc.records {
 		for run := 0; run < replayRuns; run++ {
 			pc.current = r
@@ -1507,7 +1514,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		return
 	}
 	if wc.gaveUp || pc.overBudget {
-		pc.shadowGaveUp(fn)
+		pc.recordGaveUp(fn)
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
 		pc.withdrawDecisions(decisionsAt)
 		pc.statOverflow()
