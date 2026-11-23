@@ -1108,7 +1108,7 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		// assume no lock facts or have any existing lock state. Only
 		// trivial closures are acceptable in this case.
 		clfn := x.Fn.(*ssa.Function)
-		if pc.isBareLockWrapper(clfn) && !startedAsGoroutine(x, nil) {
+		if pc.isBareLockWrapper(clfn) && onlyReturned(x) {
 			return nil, nil
 		}
 		nlff := lockFunctionFacts{
@@ -1133,47 +1133,40 @@ func (pc *passContext) isBareLockWrapper(fn *ssa.Function) bool {
 	return len(lff.HeldOnEntry) == 0
 }
 
-// startedAsGoroutine reports whether v, or a value derived from it, is started with go
-// or captured by a closure. checkGoCall skips such values, so the wrapper walk is the only check.
-func startedAsGoroutine(v ssa.Value, seen map[ssa.Value]bool) bool {
-	if seen == nil {
-		seen = make(map[ssa.Value]bool)
-	}
-	if seen[v] {
+// onlyReturned reports whether v is only returned by a declared function, through phis,
+// interfaces and conversions; any other use may run it later.
+func onlyReturned(v ssa.Value) bool {
+	if mc, ok := v.(*ssa.MakeClosure); !ok || mc.Parent().Parent() != nil {
 		return false
+	}
+	returned, ok := returnUses(v, make(map[ssa.Value]bool))
+	return ok && returned
+}
+
+func returnUses(v ssa.Value, seen map[ssa.Value]bool) (returned, ok bool) {
+	if seen[v] {
+		return false, true
 	}
 	seen[v] = true
 	refs := v.Referrers()
 	if refs == nil {
-		return false
+		return false, true
 	}
 	for _, ref := range *refs {
 		switch r := ref.(type) {
-		case *ssa.Go, *ssa.MakeClosure:
-			return true
-		case *ssa.Store:
-			// A captured variable is a heap cell bound into the closure.
-			if a, ok := r.Addr.(*ssa.Alloc); ok && r.Val == v && boundByClosure(a) {
-				return true
+		case *ssa.Return:
+			returned = true
+		case *ssa.Phi, *ssa.MakeInterface, *ssa.ChangeType:
+			rr, ok := returnUses(r.(ssa.Value), seen)
+			if !ok {
+				return false, false
 			}
-		case *ssa.Phi, *ssa.MakeInterface, *ssa.ChangeType, *ssa.Convert:
-			if startedAsGoroutine(ref.(ssa.Value), seen) {
-				return true
-			}
+			returned = returned || rr
+		default:
+			return false, false
 		}
 	}
-	return false
-}
-
-func boundByClosure(a *ssa.Alloc) bool {
-	if refs := a.Referrers(); refs != nil {
-		for _, ref := range *refs {
-			if _, ok := ref.(*ssa.MakeClosure); ok {
-				return true
-			}
-		}
-	}
-	return false
+	return returned, true
 }
 
 // blockRecord is the input a walk entered a block with, kept for the replay.

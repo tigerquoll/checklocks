@@ -93,10 +93,11 @@ Each analyzer's own flags are namespaced under its name:
 *   `-checklocks.atomic` (default true): enable the atomic access checks.
 *   `-checklocks.wrappers` (default true): report diagnostics that have no
     source position. These are about the call inside a bound-method wrapper
-    (a method value such as `f := t.M`): a method value called locally or
-    started with `go`, an escaping method value of an annotated non-lock
-    method, and a lock-op method value whose method has a precondition; and
-    the recover block of a `+checklocksreturnsfresh` function with a `defer`.
+    (a method value such as `f := t.M`): a lock-op method value other than one
+    a declared function only returns, a method value of an annotated non-lock
+    method (escaping or called locally), and a lock-op method value whose
+    method has a precondition; and the recover block of a
+    `+checklocksreturnsfresh` function with a `defer`.
     An ignore on the enclosing function suppresses the wrapper ones, and
     `-checklocks.wrappers=false` drops them when the output must be clean.
     gVisor excludes them by configuration. A

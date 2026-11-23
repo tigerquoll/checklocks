@@ -16,12 +16,39 @@ package checklocks
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// vettool is the checklocks binary the pins vet with, built once per test binary.
+var vettool string
+
+func TestMain(m *testing.M) {
+	os.Exit(runMain(m))
+}
+
+func runMain(m *testing.M) int {
+	if _, err := exec.LookPath("go"); err != nil {
+		return m.Run()
+	}
+	dir, err := os.MkdirTemp("", "checklocks-vettool")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer os.RemoveAll(dir)
+	bin := filepath.Join(dir, "checklocks")
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the vettool failed: %v\n%s", err, out)
+		return 1
+	}
+	vettool = bin
+	return m.Run()
+}
 
 const preconditionPin = `package pin
 
@@ -50,6 +77,9 @@ type T struct {
 // vetPositionless vets one scratch package and returns its non-header output lines.
 func vetPositionless(t *testing.T, src string) []string {
 	t.Helper()
+	if vettool == "" {
+		t.Skip("go is not on PATH")
+	}
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"go.mod": "module pin\n\ngo 1.22\n",
@@ -59,11 +89,7 @@ func vetPositionless(t *testing.T, src string) []string {
 			t.Fatal(err)
 		}
 	}
-	bin := filepath.Join(t.TempDir(), "checklocks")
-	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
-		t.Fatalf("building the vettool failed: %v\n%s", err, out)
-	}
-	cmd := exec.Command("go", "vet", "-vettool="+bin, "-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.inferred=false", "./...")
+	cmd := exec.Command("go", "vet", "-vettool="+vettool, "-lockstringer=false", "-lockorder=false", "-lockblocking=false", "-checklocks.inferred=false", "./...")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
@@ -96,12 +122,17 @@ func TestPreconditionWrapperStillReports(t *testing.T) {
 	}
 }
 
-// A lock method value started with go is walked and reports at -.
-func TestGoStartedWrapperStillReports(t *testing.T) {
+// A lock method value used other than by a return is walked and reports at -.
+func TestNonReturnedWrapperStillReports(t *testing.T) {
 	for name, fn := range map[string]string{
-		"direct":  "func g(t *T) { f := t.mu.Unlock; go f() }\n",
-		"phi":     "func g(t *T, c bool) { f := t.mu.Unlock; if c { f = t.rw.Unlock }; go f() }\n",
-		"capture": "func g(t *T) { f := t.mu.Unlock; go func() { f() }() }\n",
+		"direct":      "func g(t *T) { f := t.mu.Unlock; go f() }\n",
+		"phi":         "func g(t *T, c bool) { f := t.mu.Unlock; if c { f = t.rw.Unlock }; go f() }\n",
+		"capture":     "func g(t *T) { f := t.mu.Unlock; go func() { f() }() }\n",
+		"slice":       "func g(t *T) { fs := []func(){t.mu.Unlock}; for _, f := range fs { go f() } }\n",
+		"assert":      "func g(t *T) { var i any = t.mu.Unlock; go i.(func())() }\n",
+		"litarg":      "func g(t *T, c bool) { f := t.mu.Unlock; if c { f = t.rw.Unlock }; func(h func()) { go h() }(f) }\n",
+		"litret":      "func g(t *T) { f := func() func() { return t.mu.Unlock }(); go f() }\n",
+		"goandreturn": "func g(t *T) func() { f := t.mu.Unlock; go f(); return f }\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			lines := vetPositionless(t, goPinPrelude+fn)

@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package positionless holds code checklocks must not report without a source position:
-// a function's recover block and the escaping bound wrapper of a lock method value.
+// a function's recover block and the bound wrapper of a lock method value a declared
+// function only returns.
 package positionless
 
 import "sync"
@@ -75,19 +76,22 @@ func boundPhi(mu *sync.RWMutex, c bool) func() { // +checklocksfail=incompatible
 	return f // +checklocksfail={param:mu} exclusively)|{param:mu} non-exclusively)
 }
 
-type W struct {
-	mu   sync.RWMutex
-	stop func()
-}
-
-func boundRLock(w *W) {
-	w.stop = w.mu.RLock
-}
-
 func boundAny(mu *sync.Mutex) any {
 	return any(mu.Lock)
 }
 
 func boundLocker(l sync.Locker) func() {
 	return l.Unlock
+}
+
+func boundNamed(mu *sync.Mutex) (unlock func()) {
+	mu.Lock()
+	return mu.Unlock // +checklocksfail=return with unexpected locks held
+}
+
+type F func()
+
+func boundConv(mu *sync.Mutex) F {
+	mu.Lock()
+	return F(mu.Unlock) // +checklocksfail=return with unexpected locks held
 }
