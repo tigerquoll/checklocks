@@ -259,8 +259,7 @@ func TestDeferRelevant(t *testing.T) {
 	}
 }
 
-// sameKey reports whether two states are one element, and fails the test if the key of the
-// solver's membership disagrees.
+// sameKey reports sameElement(a, b) and fails the test when the element keys disagree with it.
 func sameKey(t *testing.T, pc *passContext, fn *ssa.Function, name string, a, b *lockState) bool {
 	t.Helper()
 	same := pc.sameElement(fn, a, b)
@@ -268,6 +267,13 @@ func sameKey(t *testing.T, pc *passContext, fn *ssa.Function, name string, a, b 
 		t.Errorf("%s: keys equal = %t but same element = %t", name, keys, same)
 	}
 	return same
+}
+
+func TestEmptyElementKey(t *testing.T) {
+	pc := noFactsPC()
+	if got := pc.buildElementKey(nil, newLockState()); got != emptyElementKey {
+		t.Errorf("the key built for an empty state is %q, want %q", got, emptyElementKey)
+	}
 }
 
 func TestSameElement(t *testing.T) {

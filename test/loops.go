@@ -396,3 +396,105 @@ func loopOverflowDefer(f *sevenLocks, c func() bool) { // +checklocksfail=checkl
 		}
 	}
 }
+
+// Exact markers; the marker bound analyses it.
+func loopMarkerGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	if c() {
+		f.a.Lock()
+	}
+	if c() {
+		f.b.Lock()
+	}
+	if c() {
+		f.c.Lock()
+	}
+	for c() {
+		p, q, r, s := loopGet(), loopGet(), loopGet(), loopGet()
+		if c() {
+			p.mu.Lock()
+		}
+		if c() {
+			q.mu.Lock()
+		}
+		if c() {
+			r.mu.Lock()
+		}
+		if c() {
+			s.mu.Lock()
+		}
+	}
+}
+
+func loopSeqThenInLoopGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	if c() {
+		f.a.Lock()
+	}
+	if c() {
+		f.b.Lock()
+	}
+	if c() {
+		f.c.Lock()
+	}
+	if c() {
+		f.d.Lock()
+	}
+	for c() {
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+}
+
+var loopSink func() // +checklocksfail=may require checklocks annotation for m1, used with lock held 100% of the time|may require checklocks annotation for m2, used with lock held 100% of the time|may require checklocks annotation for m3, used with lock held 100% of the time|may require checklocks annotation for m4, used with lock held 100% of the time|may require checklocks annotation for m5, used with lock held 100% of the time|may require checklocks annotation for m6, used with lock held 100% of the time|may require checklocks annotation for m7, used with lock held 100% of the time
+
+// +checklocks:t.mu
+func loopNeedsMu(t *loopT) {}
+
+// The literal passed on inside an inline literal that gives up in one entry state is still analysed.
+func loopNestedGiveUp(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c, c1, c2, c3, c4, c5, c6, c7 bool, n int) { // +checklocksfail=incompatible return states
+	if c {
+		m1.Lock()
+		m2.Lock()
+		m3.Lock()
+		m4.Lock()
+		m5.Lock()
+		m6.Lock()
+		m7.Lock()
+	} else {
+		loopWork()
+	}
+	func() { // +checklocksfail=checklocks gave up on this function
+		for i := 0; i < n; i++ {
+			if c1 {
+				m1.Lock() // +checklocksfail=already locked
+			}
+			if c2 {
+				m2.Lock() // +checklocksfail=already locked
+			}
+			if c3 {
+				m3.Lock() // +checklocksfail=already locked
+			}
+			if c4 {
+				m4.Lock() // +checklocksfail=already locked
+			}
+			if c5 {
+				m5.Lock() // +checklocksfail=already locked
+			}
+			if c6 {
+				m6.Lock() // +checklocksfail=already locked
+			}
+			if c7 {
+				m7.Lock() // +checklocksfail=already locked
+			}
+		}
+		loopSink = func() {
+			loopNeedsMu(t) // +checklocksfail=must hold t.mu exclusively
+		}
+	}()
+} // +checklocksfail=return with unexpected locks held

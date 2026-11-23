@@ -52,12 +52,8 @@ func permuteSuccs(order string, fn *ssa.Function, block *ssa.BasicBlock) []*ssa.
 	case "reverse":
 		reversed = true
 	default:
-		seed, err := strconv.ParseUint(order, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintf("CHECKLOCKS_WALK_ORDER %q is not empty, \"reverse\" or a decimal seed", order))
-		}
 		h := fnv.New64a()
-		fmt.Fprintf(h, "%d\x00%s\x00%d", seed, fn.String(), block.Index)
+		fmt.Fprintf(h, "%d\x00%s\x00%d", walkSeed(order), fn.String(), block.Index)
 		reversed = h.Sum64()&1 == 1
 	}
 	if !reversed {
@@ -66,6 +62,28 @@ func permuteSuccs(order string, fn *ssa.Function, block *ssa.BasicBlock) []*ssa.
 	out := slices.Clone(block.Succs)
 	slices.Reverse(out)
 	return out
+}
+
+func walkSeed(order string) uint64 {
+	seed, err := strconv.ParseUint(order, 10, 64)
+	if err != nil {
+		panic(fmt.Sprintf("CHECKLOCKS_WALK_ORDER %q is not empty, \"reverse\" or a decimal seed", order))
+	}
+	return seed
+}
+
+// workRank orders the worklist: as untagged for SSA order, newest first for "reverse", by a
+// seeded hash of the arrival number for a seed.
+func workRank(fn *ssa.Function, rpo, seq int) [2]int {
+	switch walkOrder {
+	case "":
+		return [2]int{rpo, seq}
+	case "reverse":
+		return [2]int{0, -seq}
+	}
+	h := fnv.New64a()
+	fmt.Fprintf(h, "%d\x00%s\x00%d", walkSeed(walkOrder), fn.String(), seq)
+	return [2]int{int(h.Sum64() >> 1), seq}
 }
 
 // parityCheck panics unless the typed path and object match the string builders'.
@@ -223,6 +241,9 @@ type blockParity struct {
 
 	// out is the state the solve ended the block in.
 	out *lockState
+
+	// insertKey is the element key of the parent when it was queued, outKey that of out.
+	insertKey, outKey string
 }
 
 func (pc *passContext) capture() *blockCapture {
@@ -255,9 +276,18 @@ func (pc *passContext) parityObservation(inst almostInst, accessObj types.Object
 	}
 }
 
-func (p *blockParity) walked(ls *lockState) {
+// entered panics unless the parent still has the key it was queued under.
+func (p *blockParity) entered(pc *passContext, fn *ssa.Function, parent *lockState, key string) {
+	p.insertKey = key
+	if now := pc.elementKey(fn, parent); now != key {
+		panic(fmt.Sprintf("block solve parity: %s: the parent changed after it was queued: %q, now %q", fn.String(), key, now))
+	}
+}
+
+func (p *blockParity) walked(pc *passContext, fn *ssa.Function, ls *lockState) {
 	p.walk.state = ls.identitySummary(func(lockInfo) bool { return true })
 	p.out = ls
+	p.outKey = pc.elementKey(fn, ls)
 }
 
 // replayed panics unless the replay run that just ended matches the walk's capture.
@@ -289,6 +319,9 @@ func (p *blockParity) replayed(pc *passContext, r *blockRecord, ls *lockState, g
 	}
 	if !pc.sameElement(r.wc.fn, p.out, ls) {
 		panic(fmt.Sprintf("block replay parity: %s: the replay's out is not the solve's", where))
+	}
+	if key := pc.elementKey(r.wc.fn, ls); key != p.outKey {
+		panic(fmt.Sprintf("block replay parity: %s: the replay's out key %q is not the solve's %q", where, key, p.outKey))
 	}
 }
 

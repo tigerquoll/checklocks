@@ -20,6 +20,7 @@ import (
 	"go/types"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -42,16 +43,31 @@ func (pc *passContext) sameElement(fn *ssa.Function, a, b *lockState) bool {
 	}) && pc.sameRelevantStored(fn, a, b)
 }
 
+// emptyElementKey is the key of a state with no identity component.
+const emptyElementKey = "0;0;0;0;0;"
+
 // elementKey encodes the identity components of s, so two states have one key exactly when sameElement holds.
 func (pc *passContext) elementKey(fn *ssa.Function, s *lockState) string {
+	if len(s.lockedMutexes) == 0 && len(s.marker) == 0 && len(s.defers) == 0 && len(s.aliases) == 0 {
+		if si := pc.relevantSlots(fn); si == nil || len(si.slots) == 0 {
+			return emptyElementKey
+		}
+	}
+	return pc.buildElementKey(fn, s)
+}
+
+func (pc *passContext) buildElementKey(fn *ssa.Function, s *lockState) string {
 	var b strings.Builder
 	part := func(sorted bool, parts []string) {
 		if sorted {
 			slices.Sort(parts)
 		}
-		fmt.Fprintf(&b, "%d;", len(parts))
+		b.WriteString(strconv.Itoa(len(parts)))
+		b.WriteByte(';')
 		for _, p := range parts {
-			fmt.Fprintf(&b, "%d:%s", len(p), p)
+			b.WriteString(strconv.Itoa(len(p)))
+			b.WriteByte(':')
+			b.WriteString(p)
 		}
 	}
 	locks := make([]string, 0, len(s.lockedMutexes))

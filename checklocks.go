@@ -98,6 +98,13 @@ type passContext struct {
 	// relevantDefers memoises deferRelevant per defer site.
 	relevantDefers map[*ssa.Defer]bool
 
+	// cfgs holds the block graph facts of each function, read by every solve of it.
+	cfgs map[*ssa.Function]*cfgFacts
+
+	// marked lists the functions checkFunction added to functions, in order, so a walk
+	// that gives up can take back the ones it added.
+	marked []*ssa.Function
+
 	// slotInfos memoises relevantSlots per function.
 	slotInfos map[*ssa.Function]*slotInfo
 

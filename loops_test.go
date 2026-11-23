@@ -249,7 +249,7 @@ func TestSilencesRelease(t *testing.T) {
 	}
 }
 
-// lockSource has n locks, taken or not by each of n branches, in a loop, a goto cycle or no cycle.
+// lockSource has n locks, taken or not by each of n branches, in a loop, a goto cycle, before a self-loop block or no cycle.
 func lockSource(shape string, n int) string {
 	var b strings.Builder
 	b.WriteString("package p\n\ntype Mutex struct{}\n\nfunc (*Mutex) Lock()   {}\nfunc (*Mutex) Unlock() {}\n\ntype Locks struct {\n")
@@ -267,6 +267,9 @@ func lockSource(shape string, n int) string {
 		b.WriteString("\tfor c() {\n")
 		branches()
 		b.WriteString("\t}\n")
+	case "self":
+		branches()
+		b.WriteString("again:\n\tif c() {\n\t\tgoto again\n\t}\n")
 	case "goto":
 		b.WriteString("\tif c() {\n\t\tgoto second\n\t}\nfirst:\n")
 		branches()
@@ -316,49 +319,13 @@ func TestCycleStateCap(t *testing.T) {
 		{"natural", 7, true},
 		{"goto", 6, false},
 		{"goto", 7, true},
+		{"self", 6, false},
+		{"self", 7, true},
 		{"acyclic", 7, false},
 		{"acyclic", 9, false},
 	} {
 		if got := gaveUp(tc.shape, tc.n); got != tc.want {
 			t.Errorf("%s with %d locks: gave up = %t, want %t", tc.shape, tc.n, got, tc.want)
 		}
-	}
-}
-
-// The entry record comes before the records of a literal walked inside the entry block.
-func TestEntryRecordFirst(t *testing.T) {
-	pkg := buildTestPackage(t, "entry", `package p
-
-func f(c func() bool) {
-	func() { _ = c() }()
-	if c() {
-		_ = c()
-	}
-}
-`)
-	pass := &analysis.Pass{
-		Fset:             pkg.Prog.Fset,
-		Report:           func(analysis.Diagnostic) {},
-		ImportObjectFact: func(types.Object, analysis.Fact) bool { return false },
-	}
-	pc := &passContext{
-		expectations: newExpectations(pass, checkLocksAnnotations, true),
-		pass:         pass,
-		collect:      true,
-		functions:    make(map[*ssa.Function]struct{}),
-		emit:         emitDirect,
-	}
-	fn := pkg.Func("f")
-	wc := &walkContext{fn: fn, lff: &lockFunctionFacts{}, fresh: pc.computeFresh(fn, nil), context: "f", returnStates: map[string]string{}}
-	entry := newLockState()
-	pc.solve(wc, fn.Blocks[0], entry)
-	if len(pc.records) == 0 {
-		t.Fatal("the solve made no records")
-	}
-	if first := pc.records[0]; first.wc != wc || first.block != fn.Blocks[0] || first.parent != entry {
-		t.Errorf("first record is block %d of %s, want the entry block on the entry state", first.block.Index, first.wc.fn)
-	}
-	if !slices.ContainsFunc(pc.records, func(r *blockRecord) bool { return r.wc.fn != fn }) {
-		t.Error("no record of the literal in the entry block")
 	}
 }

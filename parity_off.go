@@ -31,7 +31,8 @@ const replayRuns = 1
 
 type blockParity struct{}
 
-func (blockParity) walked(*lockState)                                       {}
+func (blockParity) entered(*passContext, *ssa.Function, *lockState, string) {}
+func (blockParity) walked(*passContext, *ssa.Function, *lockState)          {}
 func (blockParity) replayed(*passContext, *blockRecord, *lockState, bool)   {}
 func (*passContext) parityFinding(token.Pos, string, ...any)                {}
 func (*passContext) parityObservation(almostInst, types.Object, *lockState) {}
@@ -56,3 +57,6 @@ var recoverPanics = true
 
 // succOrder is the order the walk visits a block's successors in.
 func succOrder(_ *ssa.Function, block *ssa.BasicBlock) []*ssa.BasicBlock { return block.Succs }
+
+// workRank orders the worklist: reverse-postorder number first, oldest first.
+func workRank(_ *ssa.Function, rpo, seq int) [2]int { return [2]int{rpo, seq} }

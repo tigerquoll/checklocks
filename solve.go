@@ -38,6 +38,19 @@ type cfgFacts struct {
 	loops map[edge]map[*ssa.BasicBlock]bool
 }
 
+// cfgOf returns the block graph facts of fn, built once per pass.
+func (pc *passContext) cfgOf(fn *ssa.Function) *cfgFacts {
+	g := pc.cfgs[fn]
+	if g == nil {
+		if pc.cfgs == nil {
+			pc.cfgs = make(map[*ssa.Function]*cfgFacts)
+		}
+		g = newCFGFacts(fn)
+		pc.cfgs[fn] = g
+	}
+	return g
+}
+
 func newCFGFacts(fn *ssa.Function) *cfgFacts {
 	g := &cfgFacts{
 		rpo:       make(map[*ssa.BasicBlock]int),
@@ -119,20 +132,21 @@ func cyclicBlocks(blocks []*ssa.BasicBlock, keep func(from, to *ssa.BasicBlock) 
 
 // workItem is a block and the state it was reached in, waiting to be transferred.
 type workItem struct {
-	rpo, seq int
-	block    *ssa.BasicBlock
-	state    *lockState
+	rank  [2]int
+	block *ssa.BasicBlock
+	state *lockState
+	key   string
 }
 
-// workList pops the item of least reverse-postorder number, oldest first.
+// workList pops the item of least rank.
 type workList []workItem
 
 func (w workList) Len() int { return len(w) }
 func (w workList) Less(i, j int) bool {
-	if w[i].rpo != w[j].rpo {
-		return w[i].rpo < w[j].rpo
+	if w[i].rank[0] != w[j].rank[0] {
+		return w[i].rank[0] < w[j].rank[0]
 	}
-	return w[i].seq < w[j].seq
+	return w[i].rank[1] < w[j].rank[1]
 }
 func (w workList) Swap(i, j int) { w[i], w[j] = w[j], w[i] }
 func (w *workList) Push(x any)   { *w = append(*w, x.(workItem)) }
@@ -156,11 +170,10 @@ type solver struct {
 // solve transfers every pair reachable from root entered with entry, once each, in a
 // record of its own. It stops when the walk gives up or runs out of budget.
 func (pc *passContext) solve(wc *walkContext, root *ssa.BasicBlock, entry *lockState) {
-	sv := &solver{pc: pc, wc: wc, cfg: newCFGFacts(wc.fn), seen: make(map[*ssa.BasicBlock]map[string]*lockState)}
+	sv := &solver{pc: pc, wc: wc, cfg: pc.cfgOf(wc.fn), seen: make(map[*ssa.BasicBlock]map[string]*lockState)}
 	sv.insert(root, entry)
 	for len(sv.work) > 0 && !wc.gaveUp && !pc.overBudget {
-		item := heap.Pop(&sv.work).(workItem)
-		sv.transfer(item.block, item.state)
+		sv.transfer(heap.Pop(&sv.work).(workItem))
 	}
 }
 
@@ -182,23 +195,24 @@ func (sv *solver) insert(block *ssa.BasicBlock, s *lockState) {
 	}
 	pairs[key] = s
 	sv.seq++
-	heap.Push(&sv.work, workItem{rpo: sv.cfg.rpo[block], seq: sv.seq, block: block, state: s})
+	heap.Push(&sv.work, workItem{rank: workRank(sv.wc.fn, sv.cfg.rpo[block], sv.seq), block: block, state: s, key: key})
 }
 
 // transfer runs block on parent and sends the result along each edge out of it.
-func (sv *solver) transfer(block *ssa.BasicBlock, parent *lockState) {
-	pc, wc := sv.pc, sv.wc
+func (sv *solver) transfer(item workItem) {
+	pc, wc, block, parent := sv.pc, sv.wc, item.block, item.state
 	if pc.walks++; pc.walks > maxFunctionWalks {
 		pc.overBudget = true
 	}
 	pc.statWalk(wc, block, parent)
 	rec := &blockRecord{wc: wc, block: block, parent: parent}
 	pc.records = append(pc.records, rec)
+	rec.parity.entered(pc, wc.fn, parent, item.key)
 	outerRec, outerEmit := pc.current, pc.emit
 	pc.current, pc.emit = rec, emitWalk
 	ls, rls := pc.transferBlock(wc, block, parent)
 	pc.current, pc.emit = outerRec, outerEmit
-	rec.parity.walked(ls)
+	rec.parity.walked(pc, wc.fn, ls)
 
 	if rls != nil {
 		text, summary := rls.acquiredString(wc.entryLocks)

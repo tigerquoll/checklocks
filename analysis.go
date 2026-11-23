@@ -1310,7 +1310,10 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		// they are not explicitly invoked here. Note that this can
 		// happen if the anonymous functions are e.g. passed only as
 		// parameters or used to initialize some structure.
-		pc.functions[fn] = struct{}{}
+		if _, ok := pc.functions[fn]; !ok {
+			pc.functions[fn] = struct{}{}
+			pc.marked = append(pc.marked, fn)
+		}
 	}()
 	if _, ok := pc.functions[fn]; !force && ok {
 		// This function has already been analyzed at least once.
@@ -1399,7 +1402,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if len(fn.Blocks) > 0 {
 		roots = append(roots, fn.Blocks[0])
 	}
-	recordsAt, pendingAt, decisionsAt := len(pc.records), len(pc.pending), pc.decisionMark()
+	recordsAt, pendingAt, decisionsAt, markedAt := len(pc.records), len(pc.pending), pc.decisionMark(), len(pc.marked)
 	for _, root := range roots {
 		wc.returnStates = make(map[string]string)
 		pc.solve(wc, root, ls)
@@ -1429,6 +1432,13 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		pc.recordGaveUp(fn)
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
 		pc.withdrawDecisions(decisionsAt)
+		if outer != nil {
+			// The enclosing walk goes on, so what this walk marked done was never analysed.
+			for _, f := range pc.marked[markedAt:] {
+				delete(pc.functions, f)
+			}
+			pc.marked = pc.marked[:markedAt]
+		}
 		pc.statOverflow()
 		pc.decide(decisionAt{fn: fn, label: "overflow", pos: fn.Pos(), context: context}, loopOverflow, false)
 		if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok && !lff.Ignore {
@@ -1440,8 +1450,9 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		} else {
 			pc.suppressed()
 		}
-		// Loop B must not analyze the closures of a function that was given up on.
-		for work := []*ssa.Function{fn}; len(work) > 0; {
+		// Loop B must not analyze the closures of a function that was given up on. A nested
+		// walk's closures are the enclosing walk's to reach, or loop B's if it does not.
+		for work := []*ssa.Function{fn}; len(work) > 0 && outer == nil; {
 			f := work[len(work)-1]
 			work = append(work[:len(work)-1], f.AnonFuncs...)
 			pc.functions[f] = struct{}{}
