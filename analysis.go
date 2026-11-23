@@ -1134,7 +1134,7 @@ func (pc *passContext) isBareLockWrapper(fn *ssa.Function) bool {
 }
 
 // onlyReturned reports whether v is only returned by a declared function, through phis,
-// interfaces and conversions; any other use may run it later.
+// interface boxing and ChangeType; any other use may run it in this invocation.
 func onlyReturned(v ssa.Value) bool {
 	if mc, ok := v.(*ssa.MakeClosure); !ok || mc.Parent().Parent() != nil {
 		return false

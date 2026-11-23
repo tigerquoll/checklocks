@@ -122,7 +122,7 @@ func TestPreconditionWrapperStillReports(t *testing.T) {
 	}
 }
 
-// A lock method value used other than by a return is walked and reports at -.
+// A lock method value not only returned by a declared function is walked and reports at -.
 func TestNonReturnedWrapperStillReports(t *testing.T) {
 	for name, fn := range map[string]string{
 		"direct":      "func g(t *T) { f := t.mu.Unlock; go f() }\n",
