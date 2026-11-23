@@ -39,8 +39,8 @@ type classSet struct {
 	// summary exports it so a call site can subtract it from its own held set.
 	released map[string]bool
 
-	// site is the classes of the entry locks only the engine has, as it held them at the last
-	// recorded site; it is replaced at every recorded site and never counted down.
+	// site is the classes of the entry locks only the engine has, as it held them at the current site;
+	// it is replaced at every call and channel operation, cleared where the engine has no record, and never counted down.
 	site map[string]int
 
 	// eng is the engine's locks that counts includes, and the class each is counted under: the
