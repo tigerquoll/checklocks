@@ -680,7 +680,7 @@ type droppedKey struct {
 // regionsOf returns the regions of the values p is built from that are defined on a cycle of their function.
 func (pc *passContext) regionsOf(p lockPath) regionSet {
 	var rs regionSet
-	// The predicate never accepts, so pathHasValue visits every value.
+	// The predicate never accepts, so pathHasValue visits every value-rooted part.
 	pathHasValue(p, func(b *ssa.BasicBlock) bool {
 		if r, ok := pc.cfgOf(b.Parent()).region[b]; ok {
 			rs = rs.with(r)
@@ -745,9 +745,9 @@ func (l *lockState) markerSet() bool {
 	return l.markerTop || len(l.marker) > 0
 }
 
-// silencesRelease reports whether a release of p that is not held goes unreported: a back edge
-// dropped it, or the marker is top and p has a value defined in a loop that dropped a lock. A
-// deferred release counts any value-rooted path once something was dropped.
+// silencesRelease reports whether a release of p that is not held goes unreported: a back edge dropped it, or the
+// marker is top and p has a value defined in a region (a loop, or a goto-cycle block) that defines a dropped lock's
+// value. A deferred release counts any value-rooted path once something was dropped.
 func (pc *passContext) silencesRelease(l *lockState, p lockPath, deferred bool, at token.Pos) bool {
 	if _, held := l.lockedMutexes[p.Key()]; held {
 		return false
