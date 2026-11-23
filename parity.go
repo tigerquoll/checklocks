@@ -293,6 +293,9 @@ func (p *blockParity) walked(pc *passContext, fn *ssa.Function, ls *lockState) {
 // replayed panics unless the replay run that just ended matches the walk's capture.
 func (p *blockParity) replayed(pc *passContext, r *blockRecord, ls *lockState, grew bool) {
 	where := fmt.Sprintf("%s block %d", r.wc.fn.String(), r.block.Index)
+	if now := pc.elementKey(r.wc.fn, r.parent); now != p.insertKey {
+		panic(fmt.Sprintf("block replay parity: %s: the parent changed before its replay: %q, now %q", where, p.insertKey, now))
+	}
 	if grew {
 		panic(fmt.Sprintf("block replay parity: %s: replay entered a nested walk", where))
 	}

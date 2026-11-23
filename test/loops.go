@@ -498,3 +498,183 @@ func loopNestedGiveUp(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c, c1, c
 		}
 	}()
 } // +checklocksfail=return with unexpected locks held
+
+// A closure run inline inside a literal that gives up is not analysed again without the locks it ran under.
+func loopGiveUpInline(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
+	t.mu.Lock()
+	func() { // +checklocksfail=checklocks gave up on this function
+		func() { loopNeedsMu(t) }()
+		for i := 0; i < n; i++ {
+			if c1 {
+				m1.Lock()
+			}
+			if c2 {
+				m2.Lock()
+			}
+			if c3 {
+				m3.Lock()
+			}
+			if c4 {
+				m4.Lock()
+			}
+			if c5 {
+				m5.Lock()
+			}
+			if c6 {
+				m6.Lock()
+			}
+			if c7 {
+				m7.Lock()
+			}
+		}
+		func() { loopNeedsMu(t) }()
+	}()
+	t.mu.Unlock()
+}
+
+func loopGiveUpInlineField(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
+	t.mu.Lock()
+	func() { // +checklocksfail=checklocks gave up on this function
+		for i := 0; i < n; i++ {
+			if c1 {
+				m1.Lock()
+			}
+			if c2 {
+				m2.Lock()
+			}
+			if c3 {
+				m3.Lock()
+			}
+			if c4 {
+				m4.Lock()
+			}
+			if c5 {
+				m5.Lock()
+			}
+			if c6 {
+				m6.Lock()
+			}
+			if c7 {
+				m7.Lock()
+			}
+		}
+		func() { t.x = 1 }()
+	}()
+	t.mu.Unlock()
+}
+
+func loopGiveUpBreakOnly(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7, c8 bool) {
+	t.mu.Lock()
+	func() { // +checklocksfail=checklocks gave up on this function
+		for {
+			if c1 {
+				m1.Lock()
+			}
+			if c2 {
+				m2.Lock()
+			}
+			if c3 {
+				m3.Lock()
+			}
+			if c4 {
+				m4.Lock()
+			}
+			if c5 {
+				m5.Lock()
+			}
+			if c6 {
+				m6.Lock()
+			}
+			if c7 {
+				m7.Lock()
+			}
+			if c8 {
+				break
+			}
+		}
+		func() { loopNeedsMu(t) }()
+	}()
+	t.mu.Unlock()
+}
+
+func loopGiveUpThreeLevels(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
+	t.mu.Lock()
+	func() { // +checklocksfail=checklocks gave up on this function
+		for i := 0; i < n; i++ {
+			if c1 {
+				m1.Lock()
+			}
+			if c2 {
+				m2.Lock()
+			}
+			if c3 {
+				m3.Lock()
+			}
+			if c4 {
+				m4.Lock()
+			}
+			if c5 {
+				m5.Lock()
+			}
+			if c6 {
+				m6.Lock()
+			}
+			if c7 {
+				m7.Lock()
+			}
+		}
+		func() {
+			loopWork()
+			func() { loopNeedsMu(t) }()
+		}()
+	}()
+	t.mu.Unlock()
+}
+
+var loopBreakSink func() // +checklocksfail=may require checklocks annotation for m1, used with lock held 100% of the time|may require checklocks annotation for m2, used with lock held 100% of the time|may require checklocks annotation for m3, used with lock held 100% of the time|may require checklocks annotation for m4, used with lock held 100% of the time|may require checklocks annotation for m5, used with lock held 100% of the time|may require checklocks annotation for m6, used with lock held 100% of the time|may require checklocks annotation for m7, used with lock held 100% of the time
+
+// The loop exits only through a break; the literal after it is still analysed in the state that does not give up.
+func loopGiveUpTwoEntries(c bool, t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7, c8 bool) { // +checklocksfail=incompatible return states
+	if c {
+		m1.Lock()
+		m2.Lock()
+		m3.Lock()
+		m4.Lock()
+		m5.Lock()
+		m6.Lock()
+		m7.Lock()
+	} else {
+		loopWork()
+	}
+	func() { // +checklocksfail=checklocks gave up on this function
+		for {
+			if c1 {
+				m1.Lock() // +checklocksfail=already locked
+			}
+			if c2 {
+				m2.Lock() // +checklocksfail=already locked
+			}
+			if c3 {
+				m3.Lock() // +checklocksfail=already locked
+			}
+			if c4 {
+				m4.Lock() // +checklocksfail=already locked
+			}
+			if c5 {
+				m5.Lock() // +checklocksfail=already locked
+			}
+			if c6 {
+				m6.Lock() // +checklocksfail=already locked
+			}
+			if c7 {
+				m7.Lock() // +checklocksfail=already locked
+			}
+			if c8 {
+				break
+			}
+		}
+		loopBreakSink = func() {
+			loopNeedsMu(t) // +checklocksfail=must hold t.mu exclusively
+		}
+	}()
+} // +checklocksfail=return with unexpected locks held

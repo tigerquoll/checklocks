@@ -1300,6 +1300,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if outer == nil {
 		pc.walks, pc.overBudget = 0, false
 		pc.entryGuards = nil
+		pc.marked, pc.givenUp = pc.marked[:0], pc.givenUp[:0]
 	}
 	defer pc.walkChain(fn)()
 	pc.decisions.enter()
@@ -1450,17 +1451,23 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		} else {
 			pc.suppressed()
 		}
-		// Loop B must not analyze the closures of a function that was given up on. A nested
-		// walk's closures are the enclosing walk's to reach, or loop B's if it does not.
-		for work := []*ssa.Function{fn}; len(work) > 0 && outer == nil; {
+		// Loop B must not analyse the closures of a function given up on, out of the context it reached them in.
+		for work := []*ssa.Function{fn}; len(work) > 0; {
 			f := work[len(work)-1]
 			work = append(work[:len(work)-1], f.AnonFuncs...)
-			pc.functions[f] = struct{}{}
+			if outer == nil {
+				pc.functions[f] = struct{}{}
+			} else {
+				pc.givenUp = append(pc.givenUp, f)
+			}
 		}
 	}
 
 	if outer == nil {
 		pc.replay()
+		for _, f := range pc.givenUp {
+			pc.functions[f] = struct{}{}
+		}
 	}
 
 	// Update all lock state accordingly. This will be called only if we

@@ -329,6 +329,34 @@ func TestSameElement(t *testing.T) {
 	}
 }
 
+func TestEmptyStateKeys(t *testing.T) {
+	fx := newLoopFixture(t)
+	pkg := buildTestPackage(t, "defers", deferSource)
+	pc := deferPC(pkg.Prog.Fset)
+	sites := deferSites(pkg.Func("ordered"))
+	withDefer := func(d *ssa.Defer) *lockState {
+		ls := newLockState()
+		ls.defers = []*ssa.Defer{d}
+		return ls
+	}
+	aliased := newLockState()
+	aliased.aliases[fx.param.Key()] = fx.global
+	for _, tc := range []struct {
+		name  string
+		other *lockState
+		same  bool
+	}{
+		{"marker", marked(newLockState(), fx.inside), false},
+		{"alias", aliased, false},
+		{"relevant defer", withDefer(sites[1]), false},
+		{"no-op defer", withDefer(sites[0]), true},
+	} {
+		if got := sameKey(t, pc, nil, tc.name, newLockState(), tc.other); got != tc.same {
+			t.Errorf("empty state against %s only: same element = %t, want %t", tc.name, got, tc.same)
+		}
+	}
+}
+
 const slotSource = `package p
 
 type Aliased struct{ mu int }
