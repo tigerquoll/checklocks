@@ -28,7 +28,7 @@ import (
 
 const lockorderPkg = modulePrefix + "test/lockorder"
 
-// siteDumpOf vets the corpus under one walk order and returns the dump of .
+// siteDumpOf vets the lockorder corpus under one walk order and returns its site dump.
 func siteDumpOf(t *testing.T, bin, order string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -81,8 +81,12 @@ func TestSiteDump(t *testing.T) {
 	if !slices.IsSorted(lines) {
 		t.Errorf("the dump is not sorted")
 	}
-	if !strings.Contains(forward, "*") {
-		t.Errorf("want a lock held at entry in the dump")
+	atEntry := slices.ContainsFunc(lines, func(l string) bool {
+		f := strings.Split(l, "\t")
+		return len(f) == 4 && strings.Contains(f[3], "*")
+	})
+	if !atEntry {
+		t.Errorf("want a site held at entry in the dump")
 	}
 	if !strings.Contains(forward, "\tentry\t") {
 		t.Errorf("want an entry line in the dump")
