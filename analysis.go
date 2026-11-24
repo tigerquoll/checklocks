@@ -329,7 +329,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		// read-only.
 		if lgf.AtomicDisposition != atomicRequired {
 			// There is no force key, no atomic access and no lock held.
-			pc.maybeFail(inst.Pos(), "invalid field access, %s (%s) must be locked when accessing %s (locks: %s)", guardName, s, accessObj.Name(), ls.String())
+			pc.maybeFailLocks(ls, inst.Pos(), "invalid field access, %s (%s) must be locked when accessing %s (locks: %s)", guardName, s, accessObj.Name(), ls.String())
 		} else {
 			pc.suppressed()
 		}
@@ -356,7 +356,7 @@ func (pc *passContext) checkGuards(wc *walkContext, inst almostInst, from ssa.Va
 		// even if we do hold all the locks.
 		pc.decide(where, atomicWrite, !isWrite, object)
 		if isWrite {
-			pc.maybeFail(inst.Pos(), "non-atomic write of field %s, writes must still be atomic with locks held (locks: %s)", accessObj.Name(), ls.String())
+			pc.maybeFailLocks(ls, inst.Pos(), "non-atomic write of field %s, writes must still be atomic with locks held (locks: %s)", accessObj.Name(), ls.String())
 		}
 	case atomicDisallow:
 		// If atomic analysis is not enabled, skip.
@@ -685,7 +685,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			} else if _, forced := pc.forced[pc.positionKey(site.Pos())]; forced {
 				pc.suppressed()
 			} else {
-				pc.maybeFail(site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
+				pc.maybeFailLocks(ls, site.Pos(), "attempt to release %s (%s), but not held (locks: %s)", g.fieldName, p.String(), ls.String())
 			}
 		}
 	}
@@ -720,7 +720,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			// The lock is really taken here, whatever assumed it earlier.
 			ls.setAssumed(p, false)
 			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
-				pc.maybeFail(site.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
+				pc.maybeFailLocks(ls, site.Pos(), "attempt to acquire %s (%s), but already held (locks: %s)", g.fieldName, p.String(), ls.String())
 			} else {
 				pc.suppressed()
 			}
@@ -780,9 +780,9 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 		if held {
 			if !forced && !lff.Ignore {
 				if g.fg.Exclusive {
-					pc.maybeFail(callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
+					pc.maybeFailLocks(ls, callPos, "must not hold %s exclusively (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
 				} else {
-					pc.maybeFail(callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
+					pc.maybeFailLocks(ls, callPos, "must not hold %s (%s) to call %s, but held (locks: %s)", g.fieldName, p.String(), fn.Name(), ls.String())
 				}
 			} else {
 				pc.suppressed()
@@ -812,7 +812,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 		pc.decide(at, callHeld, ok, g.fieldName, fn.Name())
 		if !ok {
 			if !forced && !lff.Ignore {
-				pc.maybeFail(callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), fn.Name(), ls.String())
+				pc.maybeFailLocks(ls, callPos, "must hold %s %s (%s) to call %s, but not held (locks: %s)", g.fieldName, exclusiveStr(g.fg.Exclusive), p.String(), fn.Name(), ls.String())
 			} else {
 				pc.suppressed()
 				if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
@@ -843,7 +843,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				ls.setAssumed(p, false)
 				if !lff.Ignore && !forced {
 					// Double locking a mutex that is already locked.
-					pc.maybeFail(callPos, "%s already locked (locks: %s)", p.String(), ls.String())
+					pc.maybeFailLocks(ls, callPos, "%s already locked (locks: %s)", p.String(), ls.String())
 				} else {
 					pc.suppressed()
 				}
@@ -855,7 +855,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				pc.opFailed = true
 				if !forced && !lff.Ignore && !pc.silencesRelease(ls, p, site.kind == siteDefer, callPos) {
 					// Unlocking something that is already unlocked.
-					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
+					pc.maybeFailLocks(ls, callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
 				} else {
 					pc.suppressed()
 				}
@@ -867,7 +867,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				pc.opFailed = true
 				if !forced && !lff.Ignore && !pc.silencesRelease(ls, p, site.kind == siteDefer, callPos) {
 					// Downgrading something that may not be downgraded.
-					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
+					pc.maybeFailLocks(ls, callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
 				} else {
 					pc.suppressed()
 				}
@@ -1236,7 +1236,7 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 					continue
 				}
 				if _, ok := pc.forced[pc.positionKey(pos)]; !ok && !wc.lff.Ignore {
-					pc.maybeFail(pos, "lock %s (%s) not held %s (locks: %s)", g.fieldName, p.String(), exclusiveStr(g.fg.Exclusive), rls.String())
+					pc.maybeFailLocks(rls, pos, "lock %s (%s) not held %s (locks: %s)", g.fieldName, p.String(), exclusiveStr(g.fg.Exclusive), rls.String())
 					failed = true
 					continue
 				}
@@ -1251,7 +1251,7 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 				counted := rls.countOnReturn(wc.entryLocks) == len(wc.lff.HeldOnExit)
 				pc.decide(at, returnCount, counted)
 				if !counted && !wc.lff.Ignore {
-					pc.maybeFail(pos, "return with unexpected locks held (locks: %s)", rls.String())
+					pc.maybeFailLocks(rls, pos, "return with unexpected locks held (locks: %s)", rls.String())
 				} else if !counted {
 					pc.suppressed()
 				}
@@ -1383,7 +1383,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 				// This can only happen if the same value is declared
 				// multiple times, and should be caught by the earlier
 				// fact scanning. Keep it here as a sanity check.
-				pc.maybeFail(fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, p.String(), ls.String())
+				pc.maybeFailLocks(ls, fn.Pos(), "lock %s (%s) acquired multiple times or differently (locks: %s)", g.fieldName, p.String(), ls.String())
 			} else {
 				pc.suppressed()
 			}

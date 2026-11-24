@@ -115,6 +115,9 @@ func (pc *passContext) cutCheck(fn *ssa.Function, kept, dropped *lockState) {
 			panic(fmt.Sprintf("substitution of %s differs between two states cut as one element in %s", key, fn))
 		}
 	}
+	for key, a := range kept.marker {
+		parityCheckMarked(key, a.path, dropped.marker[key].path)
+	}
 }
 
 // statWalk counts one walk of block on parent.

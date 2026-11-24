@@ -571,6 +571,35 @@ mark the function `+checklocksignore`, which says its body is not checked. A
 `+checklocksforce` on the function line silences the message too, and the
 findings are still dropped.
 
+## Locks lost in a loop
+
+A report ends with the locks held at that point, `(locks: ...)`. When a lock taken
+through a value a loop defines is still held at the loop's back edge, the next
+pass defines the value again, so checklocks can no longer say whether that lock is
+held. A report that fires only in such a state says so inside the same parentheses:
+
+```
+... (locks: no locks held; lost track in an earlier pass of the loop containing line 142: &({*ssa.Call:clauseOne:t0}.mu))
+... (locks: &({param:g}.mu) exclusively; lost track of other locks in an earlier pass of the loop containing line 142)
+```
+
+The first names the lock; the second means several were lost and none is named.
+A path through a value made in a loop prints that value as an SSA name, such as
+`{*ssa.Call:clauseOne:t0}`.
+The line is the loop's `for`, or its first body line for a range over a map, a
+range over an integer, `for {}` and a `goto` cycle. A loop in another file reads
+`other.go:N`, and several loops read `the loops containing lines N, M`. A `goto`
+cycle counts as a loop, and so does the code after the loop: the state travels
+with the path out of it. A lock taken again on a later pass is held, so it is not
+named. A report that also fires in a state with nothing lost prints once, without
+the clause. No report appears or disappears because of the clause. A
+`+checklocksfail=` expectation should not include the closing `)` of the locks
+group, since a clause can be inserted before it.
+
+To clear it, annotate the lock so it is declared rather than discovered, release it
+before the back edge, or restructure the loop so the lock is not taken through a
+value it defines.
+
 ## Objects Under Construction
 
 An object nothing else can reach cannot be raced with, so its guards say nothing

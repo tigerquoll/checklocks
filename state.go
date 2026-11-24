@@ -15,11 +15,14 @@
 package checklocks
 
 import (
+	"cmp"
 	"fmt"
 	"go/token"
 	"go/types"
 	"maps"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -75,9 +78,9 @@ type lockState struct {
 	deferStack
 
 	// marker holds the lock dropped at a loop's back edge, with the regions of its path's
-	// values: a later release of it that is not held may have meant it. It is copied on write
-	// like the held map.
-	marker map[pathKey]regionSet
+	// values and the path for reports: a later release of it that is not held may have
+	// meant it. It is copied on write like the held map.
+	marker map[pathKey]markedLock
 
 	// markerTop means more than markerBound locks were dropped and marker names none;
 	// topRegions are the regions their paths' values were defined in.
@@ -652,10 +655,18 @@ func pathDies(p lockPath, body map[*ssa.BasicBlock]bool) bool {
 // markerBound is the number of dropped locks a marker names before it becomes top.
 const markerBound = 1
 
-// droppedKey is a dropped lock's key and the regions of its path's values.
+// markedLock is a marker entry: the regions of the dropped path's values, and the path for reports.
+// Only the regions are identity.
+type markedLock struct {
+	regions regionSet
+	path    lockPath
+}
+
+// droppedKey is a dropped lock's key, the regions of its path's values, and the path for reports.
 type droppedKey struct {
 	key     pathKey
 	regions regionSet
+	path    lockPath
 }
 
 // regionsOf returns the regions of the values p is built from that are defined on a cycle of their function.
@@ -687,7 +698,7 @@ func (l *lockState) dropDead(dies func(lockPath) bool, regionsOf func(lockPath) 
 	var dropped []droppedKey
 	for _, k := range dead {
 		if info := l.lockedMutexes[k]; !info.assumed {
-			dropped = append(dropped, droppedKey{k, regionsOf(info.path)})
+			dropped = append(dropped, droppedKey{k, regionsOf(info.path), info.path})
 		}
 		delete(l.lockedMutexes, k)
 	}
@@ -705,15 +716,19 @@ func (l *lockState) markDropped(keys []droppedKey) int {
 		return 0
 	}
 	if l.marker == nil && len(keys) > 0 {
-		l.marker = make(map[pathKey]regionSet)
+		l.marker = make(map[pathKey]markedLock)
 	}
 	for _, d := range keys {
-		l.marker[d.key] = l.marker[d.key].union(d.regions)
+		old, seen := l.marker[d.key]
+		if seen {
+			parityCheckMarked(d.key, old.path, d.path)
+		}
+		l.marker[d.key] = markedLock{old.regions.union(d.regions), d.path}
 	}
 	if n := len(l.marker); markerBoundOn && n > markerBound {
 		var top regionSet
-		for _, rs := range l.marker {
-			top = top.union(rs)
+		for _, m := range l.marker {
+			top = top.union(m.regions)
 		}
 		l.marker, l.markerTop, l.topRegions = nil, true, top
 		return n
@@ -724,6 +739,104 @@ func (l *lockState) markDropped(keys []droppedKey) int {
 // markerSet reports whether a lock was dropped.
 func (l *lockState) markerSet() bool {
 	return l.markerTop || len(l.marker) > 0
+}
+
+// lostClause words, for a report at pos, the locks l lost track of and the loops that lost them.
+// It is empty when every dropped lock is held again.
+func (pc *passContext) lostClause(l *lockState, pos token.Pos) string {
+	var paths []string
+	rs := l.topRegions
+	if !l.markerTop {
+		rs = nil
+		for k, m := range l.marker {
+			if _, held := l.lockedMutexes[k]; !held {
+				paths = append(paths, m.path.String())
+				rs = rs.union(m.regions)
+			}
+		}
+		if len(paths) == 0 {
+			return ""
+		}
+		slices.Sort(paths)
+	}
+	in := pc.loopsPhrase(rs, pc.pass.Fset.Position(pos).Filename)
+	if l.markerTop {
+		return "; lost track of other locks in an earlier pass of " + in
+	}
+	return "; lost track in an earlier pass of " + in + ": " + strings.Join(paths, ", ")
+}
+
+// maxClauseLoops is the number of loops a clause names before it counts the rest.
+const maxClauseLoops = 3
+
+// loopsPhrase says where the loops of the regions are, by the smallest line of a non-phi instruction
+// in their blocks, preferring the header's file: "line N" in file, else "base.go:N".
+func (pc *passContext) loopsPhrase(rs regionSet, file string) string {
+	type at struct {
+		line int
+		name string
+	}
+	var found []at
+	for r := range rs {
+		body := map[*ssa.BasicBlock]bool{r.block: true}
+		if r.loop {
+			for _, p := range r.block.Preds {
+				if r.block.Dominates(p) {
+					maps.Copy(body, loopBody(r.block, p))
+				}
+			}
+		}
+		// Prefer the header's file, then the smallest line, then the file name, so ties under line directives do not depend on map order.
+		var hdr string
+		for _, inst := range r.block.Instrs {
+			if inst.Pos().IsValid() {
+				hdr = pc.pass.Fset.Position(inst.Pos()).Filename
+				break
+			}
+		}
+		rank := func(p token.Position) int {
+			if p.Filename == hdr {
+				return 0
+			}
+			return 1
+		}
+		var best token.Position
+		for b := range body {
+			for _, inst := range b.Instrs {
+				if _, phi := inst.(*ssa.Phi); phi || !inst.Pos().IsValid() {
+					continue
+				}
+				p := pc.pass.Fset.Position(inst.Pos())
+				if best.Line == 0 || cmp.Or(cmp.Compare(rank(p), rank(best)), cmp.Compare(p.Line, best.Line), strings.Compare(p.Filename, best.Filename)) < 0 {
+					best = p
+				}
+			}
+		}
+		if best.Line != 0 {
+			name := strconv.Itoa(best.Line)
+			if best.Filename != file {
+				name = fmt.Sprintf("%s:%d", filepath.Base(best.Filename), best.Line)
+			}
+			found = append(found, at{best.Line, name})
+		}
+	}
+	slices.SortFunc(found, func(a, b at) int { return cmp.Or(cmp.Compare(a.line, b.line), strings.Compare(a.name, b.name)) })
+	found = slices.CompactFunc(found, func(a, b at) bool { return a == b })
+	names := make([]string, len(found))
+	for i, f := range found {
+		names[i] = f.name
+	}
+	switch {
+	case len(names) == 0:
+		return "a loop"
+	case len(names) == 1 && !strings.Contains(names[0], ":"):
+		return "the loop containing line " + names[0]
+	case len(names) == 1:
+		return "the loop containing " + names[0]
+	case len(names) > maxClauseLoops:
+		names = append(names[:maxClauseLoops], fmt.Sprintf("and %d more", len(names)-maxClauseLoops))
+	}
+	return "the loops containing lines " + strings.Join(names, ", ")
 }
 
 // answerKind is what a lock state says about one lock.

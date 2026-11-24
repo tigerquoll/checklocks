@@ -270,20 +270,45 @@ func (pc *passContext) mergeHints() {
 type pendingReport struct {
 	pos token.Pos
 	msg string
+
+	// clause is the lost-lock text for the end of msg's lock list; see lostClause.
+	clause string
+}
+
+// withClause puts clause inside the closing parenthesis of msg.
+func withClause(msg, clause string) string {
+	if clause == "" {
+		return msg
+	}
+	return strings.TrimSuffix(msg, ")") + clause + ")"
 }
 
 // maybeFail collects a potential failure where this pass collects, and otherwise
 // reports it immediately as the embedded expectations do.
 func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...any) {
-	pc.parityFinding(pos, fmtStr, args...)
+	pc.maybeFailClause(pos, "", fmtStr, args...)
+}
+
+// maybeFailLocks is maybeFail for a report ending in the lock list of ls, which gains ls's lost locks.
+func (pc *passContext) maybeFailLocks(ls *lockState, pos token.Pos, fmtStr string, args ...any) {
+	clause := ""
+	if ls.markerSet() {
+		clause = pc.lostClause(ls, pos)
+	}
+	pc.maybeFailClause(pos, clause, fmtStr, args...)
+}
+
+func (pc *passContext) maybeFailClause(pos token.Pos, clause, fmtStr string, args ...any) {
+	msg := fmt.Sprintf(fmtStr, args...)
+	pc.parityFinding(pos, "%s", withClause(msg, clause))
 	if pc.emit == emitWalk {
 		return
 	}
 	if !pc.collect {
-		pc.expectations.maybeFail(pos, fmtStr, args...)
+		pc.expectations.maybeFail(pos, "%s", withClause(msg, clause))
 		return
 	}
-	pc.pending = append(pc.pending, pendingReport{pos: pos, msg: fmt.Sprintf(fmtStr, args...)})
+	pc.pending = append(pc.pending, pendingReport{pos: pos, msg: msg, clause: clause})
 }
 
 // flushReports emits the collected reports. The walk reaches a site once per path, in
@@ -292,10 +317,11 @@ func (pc *passContext) flushReports() {
 	pending := pc.pending
 	pc.pending = nil
 	slices.SortStableFunc(pending, func(a, b pendingReport) int {
-		return cmp.Or(comparePos(pc.pass.Fset, a.pos, b.pos), strings.Compare(a.msg, b.msg))
+		return cmp.Or(comparePos(pc.pass.Fset, a.pos, b.pos), cmp.Compare(a.pos, b.pos), strings.Compare(a.msg, b.msg), strings.Compare(a.clause, b.clause))
 	})
-	for _, r := range slices.Compact(pending) {
-		if msg, ok := pc.consider(r.pos, "%s", r.msg); ok {
+	// A report seen in a known state and a lost one prints once, without the clause.
+	for _, r := range slices.CompactFunc(pending, func(a, b pendingReport) bool { return a.pos == b.pos && a.msg == b.msg }) {
+		if msg, ok := pc.consider(r.pos, "%s", withClause(r.msg, r.clause)); ok {
 			pc.pass.Report(analysis.Diagnostic{Pos: r.pos, Message: msg})
 		}
 	}

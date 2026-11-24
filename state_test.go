@@ -15,6 +15,7 @@
 package checklocks
 
 import (
+	"fmt"
 	"go/constant"
 	"go/token"
 	"go/types"
@@ -22,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -155,5 +157,106 @@ func TestIdentitySummaryTwins(t *testing.T) {
 	}
 	if one.identitySummary(all) == two.identitySummary(all) {
 		t.Errorf("states of different locks share the summary %q", one.identitySummary(all))
+	}
+}
+
+// TestLostClause pins the clause: the lost paths, held ones left out, the loops by line, the cap.
+func TestLostClause(t *testing.T) {
+	pc := &passContext{}
+	nf := newNestFixture(t, pc)
+	pc.pass = &analysis.Pass{Fset: nf.fn.Prog.Fset}
+	in := "; lost track in an earlier pass of "
+	outer, inner := nf.outer.String(), nf.inner.String()
+	file := nf.fn.Prog.Fset.Position(nf.fn.Pos()).Filename
+	for _, tc := range []struct {
+		name string
+		ls   *lockState
+		want string
+	}{
+		{"known", newLockState(), ""},
+		{"one key", markedIn(newLockState(), nf.outer, nf.rOuter), in + "the loop containing line 29: " + outer},
+		{"held again", markedIn(held(false, nf.outer), nf.outer, nf.rOuter), ""},
+		{"one held again", markedIn(markedIn(held(false, nf.outer), nf.outer, nf.rOuter), nf.inner, nf.rInner), in + "the loop containing line 32: " + inner},
+		{"two loops", markedIn(markedIn(newLockState(), nf.inner, nf.rInner), nf.outer, nf.rOuter), in + "the loops containing lines 29, 32: " + min(outer, inner) + ", " + max(outer, inner)},
+		{"two keys, one loop", markedIn(markedIn(newLockState(), nf.inner, nf.rInner), nf.outer, nf.rInner), in + "the loop containing line 32: " + min(outer, inner) + ", " + max(outer, inner)},
+		{"top", toppedIn(newLockState(), nf.rSib), "; lost track of other locks in an earlier pass of the loop containing line 37"},
+		{"top held", toppedIn(held(false, nf.outer), nf.rOuter, nf.rInner, nf.rSib), "; lost track of other locks in an earlier pass of the loops containing lines 29, 32, 37"},
+		{"no region", markedIn(newLockState(), nf.outer), in + "a loop: " + outer},
+	} {
+		if got := pc.lostClause(tc.ls, nf.fn.Pos()); got != tc.want {
+			t.Errorf("%s: clause %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := pc.loopsPhrase(regions(nf.rInner), file+"x"); !strings.HasPrefix(got, "the loop containing ") || strings.Contains(got, "line") || !strings.HasSuffix(got, ":32") {
+		t.Errorf("a loop in another file reads %q, want its file and line", got)
+	}
+}
+
+// TestLostClauseCap pins that more than maxClauseLoops loops are counted, not listed.
+func TestLostClauseCap(t *testing.T) {
+	src := "package p\n\nfunc get(i int) *int { return nil }\n\nfunc f(n int) {\n"
+	for k := range 5 {
+		src += fmt.Sprintf("\tfor i := 0; i < n; i++ {\n\t\t_ = get(%d)\n\t}\n", k)
+	}
+	src += "}\n"
+	pkg := buildTestPackage(t, "cap", src)
+	pc := &passContext{pass: &analysis.Pass{Fset: pkg.Prog.Fset}}
+	var rs regionSet
+	for _, r := range pc.cfgOf(pkg.Func("f")).region {
+		rs = rs.with(r)
+	}
+	if len(rs) != 5 {
+		t.Fatalf("%d loops, want 5", len(rs))
+	}
+	want := "the loops containing lines 6, 9, 12, and 2 more"
+	if got := pc.loopsPhrase(rs, pkg.Prog.Fset.Position(pkg.Func("f").Pos()).Filename); got != want {
+		t.Errorf("loops phrase %q, want %q", got, want)
+	}
+}
+
+// TestLostClauseLineTie pins that the loop's line does not depend on map order when a //line
+// directive gives a body line and the header the same number.
+func TestLostClauseLineTie(t *testing.T) {
+	src := "package p\n\nfunc get() int { return 0 }\nfunc f(n int) {\n\tfor i := 0; i < n; i++ {\n//line other.go:5\n\t\t_ = get()\n\t}\n}\n"
+	pkg := buildTestPackage(t, "tie", src)
+	pc := &passContext{pass: &analysis.Pass{Fset: pkg.Prog.Fset}}
+	var rs regionSet
+	for _, r := range pc.cfgOf(pkg.Func("f")).region {
+		rs = rs.with(r)
+	}
+	file := pkg.Prog.Fset.Position(pkg.Func("f").Pos()).Filename
+	for range 30 {
+		if got := pc.loopsPhrase(rs, file); got != "the loop containing line 5" {
+			t.Fatalf("loop phrase %q, want the header's file and line", got)
+		}
+	}
+}
+
+// TestFlushReportsLineTie pins that two positions the line directives map to one place do not split
+// a report seen in a known and a lost state.
+func TestFlushReportsLineTie(t *testing.T) {
+	fset := token.NewFileSet()
+	f := fset.AddFile("x.go", -1, 60)
+	f.SetLines([]int{0, 20, 40})
+	f.AddLineColumnInfo(20, "m.go", 5, 1)
+	f.AddLineColumnInfo(40, "m.go", 5, 1)
+	var got []string
+	pass := &analysis.Pass{Fset: fset, Report: func(d analysis.Diagnostic) { got = append(got, d.Message) }}
+	pc := &passContext{pass: pass, collect: true, expectations: newExpectations(pass, checkLocksAnnotations, true)}
+	a, b := f.Pos(20), f.Pos(40)
+	pc.pending = []pendingReport{{a, "x (locks: none)", ""}, {b, "x (locks: none)", ""}, {a, "x (locks: none)", "; lost"}}
+	pc.flushReports()
+	if want := []string{"x (locks: none)", "x (locks: none)"}; !slices.Equal(got, want) {
+		t.Errorf("reports %q, want %q", got, want)
+	}
+}
+
+// TestWithClause pins that the clause goes inside the closing parenthesis.
+func TestWithClause(t *testing.T) {
+	if got := withClause("x (locks: a)", "; y"); got != "x (locks: a; y)" {
+		t.Errorf("clause reads %q", got)
+	}
+	if got := withClause("x (locks: a)", ""); got != "x (locks: a)" {
+		t.Errorf("no clause reads %q", got)
 	}
 }

@@ -181,10 +181,10 @@ func TestPathDies(t *testing.T) {
 }
 
 // dropped makes a marker holding the keys of the paths, with no regions.
-func dropped(paths ...lockPath) map[pathKey]regionSet {
-	m := make(map[pathKey]regionSet)
+func dropped(paths ...lockPath) map[pathKey]markedLock {
+	m := make(map[pathKey]markedLock)
 	for _, p := range paths {
-		m[p.Key()] = nil
+		m[p.Key()] = markedLock{path: p}
 	}
 	return m
 }
@@ -198,9 +198,9 @@ func marked(ls *lockState, paths ...lockPath) *lockState {
 // markedIn adds the path to the marker of ls with the regions.
 func markedIn(ls *lockState, p lockPath, rs ...region) *lockState {
 	if ls.marker == nil {
-		ls.marker = make(map[pathKey]regionSet)
+		ls.marker = make(map[pathKey]markedLock)
 	}
-	ls.marker[p.Key()] = regions(rs...)
+	ls.marker[p.Key()] = markedLock{regions(rs...), p}
 	return ls
 }
 
@@ -304,7 +304,7 @@ func TestMarkerBound(t *testing.T) {
 	nf := newNestFixture(t, &passContext{})
 	a, b, c := fx.inside.Key(), fx.before.Key(), fx.phi.Key()
 	r1, r2, r3 := nf.rOuter, nf.rInner, nf.rSib
-	da, db, dc := droppedKey{a, regions(r1)}, droppedKey{b, regions(r2)}, droppedKey{c, regions(r3)}
+	da, db, dc := droppedKey{a, regions(r1), fx.inside}, droppedKey{b, regions(r2), fx.before}, droppedKey{c, regions(r3), fx.phi}
 	mark := func(keys ...droppedKey) *lockState {
 		l := newLockState()
 		l.markDropped(keys)
@@ -324,13 +324,13 @@ func TestMarkerBound(t *testing.T) {
 		{"same key again", mark(da), []droppedKey{da}, map[pathKey]regionSet{a: regions(r1)}, nil, false, 0},
 		{"second key", mark(da), []droppedKey{db}, nil, regions(r1, r2), true, 2},
 		{"two keys at once", newLockState(), []droppedKey{da, db}, nil, regions(r1, r2), true, 2},
-		{"two keys of one region", newLockState(), []droppedKey{da, {b, regions(r1)}}, nil, regions(r1), true, 2},
+		{"two keys of one region", newLockState(), []droppedKey{da, {b, regions(r1), fx.before}}, nil, regions(r1), true, 2},
 		{"top takes the regions of a key", mark(da, db), []droppedKey{dc}, nil, regions(r1, r2, r3), true, 0},
 		{"top takes nothing new", mark(da, db), []droppedKey{da}, nil, regions(r1, r2), true, 0},
 		{"top absorbs nothing", mark(da, db), nil, nil, regions(r1, r2), true, 0},
 	} {
 		size := tc.from.markDropped(tc.keys)
-		if size != tc.size || tc.from.markerTop != tc.isTop || !maps.Equal(tc.from.topRegions, tc.top) || !maps.EqualFunc(tc.from.marker, tc.want, func(x, y regionSet) bool { return maps.Equal(x, y) }) {
+		if size != tc.size || tc.from.markerTop != tc.isTop || !maps.Equal(tc.from.topRegions, tc.top) || !maps.EqualFunc(tc.from.marker, tc.want, func(x markedLock, y regionSet) bool { return maps.Equal(x.regions, y) }) {
 			t.Errorf("%s: size %d, top %t over %v, marker %v; want size %d, top %t over %v, marker %v", tc.name, size, tc.from.markerTop, tc.from.topRegions, tc.from.marker, tc.size, tc.isTop, tc.top, tc.want)
 		}
 	}
@@ -343,7 +343,7 @@ func TestMarkerBound(t *testing.T) {
 			once.markDropped(append(slices.Clone(first), second...))
 			twice.markDropped(first)
 			twice.markDropped(second)
-			if once.markerTop != twice.markerTop || !maps.Equal(once.topRegions, twice.topRegions) || !maps.EqualFunc(once.marker, twice.marker, func(x, y regionSet) bool { return maps.Equal(x, y) }) {
+			if once.markerTop != twice.markerTop || !maps.Equal(once.topRegions, twice.topRegions) || !maps.EqualFunc(once.marker, twice.marker, func(x, y markedLock) bool { return maps.Equal(x.regions, y.regions) }) {
 				t.Errorf("%v then %v: at once top %t over %v marker %v, in two steps top %t over %v marker %v", first, second, once.markerTop, once.topRegions, once.marker, twice.markerTop, twice.topRegions, twice.marker)
 			}
 		}
@@ -358,7 +358,7 @@ func TestDropDead(t *testing.T) {
 	ls := held(false, fx.param, fx.inside)
 	ls.dropDead(dies, pc.regionsOf)
 	want := pc.regionsOf(fx.inside)
-	if ls.count() != 1 || len(ls.marker) != 1 || len(want) != 1 || !maps.Equal(ls.marker[fx.inside.Key()], want) {
+	if ls.count() != 1 || len(ls.marker) != 1 || len(want) != 1 || !maps.Equal(ls.marker[fx.inside.Key()].regions, want) {
 		t.Errorf("a dead acquired lock: %d held, marker %v, want 1 held and the dropped key in the marker with the region %v", ls.count(), ls.marker, want)
 	}
 	if _, ok := ls.lockedMutexes[fx.param.Key()]; !ok {

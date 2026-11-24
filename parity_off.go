@@ -27,6 +27,8 @@ func parityCheck(*resolvedValue, *lockState, lockPath, types.Object) {}
 
 func parityCheckEntry(pathKey, lockInfo) {}
 
+func parityCheckMarked(pathKey, lockPath, lockPath) {}
+
 const replayRuns = 1
 
 const markerBoundOn = true

@@ -53,7 +53,7 @@ import (
 // Polarity: a client suppresses or derives only on a definite answer; unknown always reports and never
 // creates a report. Where isHeld is read, unknown reads as not held.
 func (pc *passContext) sameElement(fn *ssa.Function, a, b *lockState) bool {
-	return a.isCompatible(b) && a.markerTop == b.markerTop && maps.Equal(a.topRegions, b.topRegions) && maps.EqualFunc(a.marker, b.marker, func(x, y regionSet) bool { return maps.Equal(x, y) }) && pc.sameRelevantDefers(a, b) && maps.EqualFunc(a.aliases, b.aliases, func(x, y lockPath) bool {
+	return a.isCompatible(b) && a.markerTop == b.markerTop && maps.Equal(a.topRegions, b.topRegions) && maps.EqualFunc(a.marker, b.marker, func(x, y markedLock) bool { return maps.Equal(x.regions, y.regions) }) && pc.sameRelevantDefers(a, b) && maps.EqualFunc(a.aliases, b.aliases, func(x, y lockPath) bool {
 		return x.Key() == y.Key()
 	}) && pc.sameRelevantStored(fn, a, b)
 }
@@ -98,7 +98,7 @@ func markerKey(s *lockState) string {
 		b.WriteString(strconv.Itoa(len(k)))
 		b.WriteByte(':')
 		b.WriteString(k)
-		b.WriteString(s.marker[pathKey(k)].key())
+		b.WriteString(s.marker[pathKey(k)].regions.key())
 	}
 	return b.String()
 }

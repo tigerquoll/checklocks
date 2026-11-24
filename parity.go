@@ -116,6 +116,13 @@ func parityCheckEntry(key pathKey, info lockInfo) {
 	}
 }
 
+// parityCheckMarked panics unless two paths under one marker key read the same in a report.
+func parityCheckMarked(key pathKey, a, b lockPath) {
+	if a.Key() != key || b.Key() != key || a.String() != b.String() {
+		panic(fmt.Sprintf("marker parity: key %q, paths %q and %q", key, a.String(), b.String()))
+	}
+}
+
 func oldSynthesize(entry fieldEntry, s string, typ types.Type) (string, types.Object) {
 	switch f := entry.(type) {
 	case *fieldStruct:

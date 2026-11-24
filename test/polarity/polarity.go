@@ -168,3 +168,49 @@ func overCap(f *sevenLocks, t *T, c func() bool) { // +checklocksfail=checklocks
 		}
 	}
 }
+
+// The report text names what the state lost track of, and the loop it was lost in. A lock locked
+// again on a later pass is held, so it is not named; a report seen in a known state too has none.
+
+func clauseOne(c func() bool, g *T) { // +checklocksfail=incompatible return states
+	for c() {
+		x := get()
+		x.v = 1 // +checklocksfail=(locks: no locks held)|(locks: &({param:g}.mu) exclusively; lost track in an earlier pass of the loop containing line 176: &({*ssa.Call:clauseOne:t0}.mu))
+		x.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+} // +checklocksfail=lost track in an earlier pass of the loop containing line 176: &({*ssa.Call:clauseOne:t0}.mu))
+
+func clauseTop(c func() bool, g *T) { // +checklocksfail=incompatible return states
+	for c() {
+		x, y := get(), get()
+		x.v = 1 // +checklocksfail=(locks: no locks held)|; lost track of other locks in an earlier pass of the loop containing line 185)
+		x.mu.Lock()
+		y.mu.Lock()
+		g.mu.Lock() // +checklocksfail=; lost track of other locks in an earlier pass of the loop containing line 185)
+	}
+} // +checklocksfail=; lost track of other locks in an earlier pass of the loop containing line 185)
+
+func clauseRelocked(c func() bool, g *T) { // +checklocksfail=incompatible return states
+	for c() {
+		x := get()
+		x.mu.Lock()
+		g.mu.Lock() // +checklocksfail=.mu) exclusively,&({param:g}.mu) exclusively)
+	}
+} // +checklocksfail=return with unexpected locks held
+
+func clauseBoth(c func() bool) {
+	for c() {
+		x := get()
+		x.v = 1 // +checklocksfail=(locks: no locks held)
+		x.mu.Lock()
+	}
+}
+
+func clauseMap(m map[int]*T, g *T) { // +checklocksfail=incompatible return states
+	for _, t := range m {
+		t.v = 1 // +checklocksfail=(locks: no locks held)|; lost track in an earlier pass of the loop containing line 212: &({*ssa.Next:clauseMap:t1}[2].mu))
+		t.mu.Lock()
+		g.mu.Lock() // +checklocksfail=already locked
+	}
+} // +checklocksfail=return with unexpected locks held
