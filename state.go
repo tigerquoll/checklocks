@@ -71,8 +71,8 @@ type lockState struct {
 	// It is read-only here and shared by every fork; see nameConstants.
 	consts map[*ssa.Const]string
 
-	// defers are the stack of defers that have been pushed.
-	defers []*ssa.Defer
+	// deferStack is the defers that have been pushed.
+	deferStack
 
 	// marker holds the lock dropped at a loop's back edge, with the regions of its path's
 	// values: a later release of it that is not held may have meant it. It is copied on write
@@ -102,7 +102,6 @@ func newLockState() *lockState {
 		stored:        make(map[ssa.Value]ssa.Value),
 		bound:         make(map[ssa.Value]ssa.Value),
 		substitutions: make(map[ssa.Value]substitution),
-		defers:        make([]*ssa.Defer, 0),
 		refs:          &refs,
 	}
 }
@@ -122,7 +121,7 @@ func (l *lockState) fork() *lockState {
 		bound:         l.bound,
 		substitutions: l.substitutions,
 		consts:        l.consts,
-		defers:        l.defers,
+		deferStack:    l.deferStack,
 		marker:        l.marker,
 		markerTop:     l.markerTop,
 		topRegions:    l.topRegions,
@@ -151,9 +150,6 @@ func (l *lockState) modify() {
 
 		// Reset the used values.
 		clear(l.used)
-
-		// Copy the defers.
-		l.defers = slices.Clone(l.defers)
 
 		// Copy the dropped locks.
 		l.marker = maps.Clone(l.marker)
@@ -633,25 +629,10 @@ func (l *lockState) acquiredString(entry map[pathKey]bool) (string, string) {
 	return (&lockState{lockedMutexes: held}).String(), l.identitySummary(keep)
 }
 
-// pushDefer pushes a defer onto the stack. A site already on it is a loop's second pass.
-func (l *lockState) pushDefer(d *ssa.Defer) {
-	if slices.Contains(l.defers, d) {
-		return
-	}
-	l.modify()
-	l.defers = append(l.defers, d)
-}
-
-// popDefer pops a defer from the stack.
-func (l *lockState) popDefer() *ssa.Defer {
-	// Does not technically modify the underlying slice.
-	count := len(l.defers)
-	if count == 0 {
-		return nil
-	}
-	d := l.defers[count-1]
-	l.defers = l.defers[:count-1]
-	return d
+// pushDefer pushes d. A no-op adds the entry (d, no after) if absent; a relevant defer, new or again,
+// joins the after of each no-op entry lacking it.
+func (l *lockState) pushDefer(d *ssa.Defer, relevant bool) {
+	l.deferStack = l.deferStack.push(d, relevant)
 }
 
 // pathHasValue reports whether p's root, or the root of an index it passes through, is a

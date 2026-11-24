@@ -248,6 +248,9 @@ type blockParity struct {
 	// runs counts the replay runs that ended.
 	runs int
 
+	// wantIn and wantOut are the defer stacks the replay must start and end the block with once the join has run.
+	wantIn, wantOut *deferStack
+
 	// insertKey is the element key of the parent when it was queued, outKey that of out.
 	insertKey, outKey string
 }
@@ -296,6 +299,8 @@ func (p *blockParity) walked(pc *passContext, fn *ssa.Function, ls *lockState) {
 	p.outKey = pc.elementKey(fn, ls)
 }
 
+func (p *blockParity) joined(in, out deferStack) { p.wantIn, p.wantOut = &in, &out }
+
 // replayed panics unless the replay run that just ended matches the walk's capture.
 func (p *blockParity) replayed(pc *passContext, r *blockRecord, ls *lockState, grew bool) {
 	where := fmt.Sprintf("%s block %d run %d", r.wc.fn.String(), r.block.Index, p.runs)
@@ -332,6 +337,9 @@ func (p *blockParity) replayed(pc *passContext, r *blockRecord, ls *lockState, g
 	}
 	if key := pc.elementKey(r.wc.fn, ls); key != p.outKey {
 		panic(fmt.Sprintf("block replay parity: %s: the replay's out key %q is not the solve's %q", where, key, p.outKey))
+	}
+	if msg := p.deferStacksOff(r.parent.deferStack, ls.deferStack); msg != "" {
+		panic(fmt.Sprintf("block replay parity: %s: %s", where, msg))
 	}
 }
 
@@ -490,3 +498,19 @@ func (pc *passContext) writeDecisions() {
 
 // recoverPanics is off so that a panic fails the parity build loudly.
 var recoverPanics = false
+
+// deferStacksOff describes how the replay's start and end defer stacks differ from the joined ones, or returns "".
+func (p *blockParity) deferStacksOff(in, out deferStack) string {
+	for i, e := range out.noops {
+		if slices.Contains(out.noops[:i], e) {
+			return "a no-op entry is on the stack twice"
+		}
+	}
+	switch {
+	case p.wantIn != nil && !in.equal(*p.wantIn):
+		return "the replay started on a defer stack that is not the joined one"
+	case p.wantOut != nil && !out.equal(*p.wantOut):
+		return "the replay's defer stack is not the joined one"
+	}
+	return ""
+}

@@ -250,19 +250,21 @@ func (pc *passContext) solve(wc *walkContext, root *ssa.BasicBlock, entry *lockS
 	}
 }
 
-// insert queues the pair unless it is there already. A new class at a cycle block past the cap gives the walk up.
-func (sv *solver) insert(block *ssa.BasicBlock, s *lockState) {
+// insert queues the pair unless it is there already, and returns it. A new class at a cycle block
+// past the cap gives the walk up and returns no pair.
+func (sv *solver) insert(block *ssa.BasicBlock, s *lockState) pairID {
 	class, mark := sv.pc.classKey(sv.wc.fn, s), markerKey(s)
+	pair := pairID{block, class + mark}
 	classes := sv.seen[block]
 	marks, ok := classes[class]
 	if kept, ok := marks[mark]; ok {
 		sv.pc.cutCheck(sv.wc.fn, kept, s)
-		return
+		return pair
 	}
 	if !ok {
 		if len(classes) >= maxCycleStates && sv.cfg.cyclic[block] {
 			sv.wc.gaveUp = true
-			return
+			return pairID{}
 		}
 		if classes == nil {
 			classes = make(map[string]map[string]*lockState)
@@ -273,7 +275,8 @@ func (sv *solver) insert(block *ssa.BasicBlock, s *lockState) {
 	}
 	marks[mark] = s
 	sv.seq++
-	heap.Push(&sv.work, workItem{rank: workRank(sv.wc.fn, sv.cfg.rpo[block], sv.seq), block: block, state: s, key: class + mark})
+	heap.Push(&sv.work, workItem{rank: workRank(sv.wc.fn, sv.cfg.rpo[block], sv.seq), block: block, state: s, key: pair.key})
+	return pair
 }
 
 // transfer runs block on parent and sends the result along each edge out of it.
@@ -283,7 +286,7 @@ func (sv *solver) transfer(item workItem) {
 		pc.overBudget = true
 	}
 	pc.statWalk(wc, block, parent)
-	rec := &blockRecord{wc: wc, block: block, parent: parent}
+	rec := &blockRecord{wc: wc, block: block, parent: parent, pair: pairID{block, item.key}}
 	pc.records = append(pc.records, rec)
 	rec.parity.entered(pc, wc.fn, parent, item.key)
 	outerRec, outerEmit := pc.current, pc.emit
@@ -300,7 +303,7 @@ func (sv *solver) transfer(item workItem) {
 		if wc.gaveUp || pc.overBudget {
 			return
 		}
-		sv.insert(succ, sv.carry(block, succ, ls))
+		rec.outs = append(rec.outs, sv.insert(succ, sv.carry(block, succ, ls)))
 	}
 }
 

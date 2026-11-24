@@ -17,6 +17,7 @@
 package checklocks
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -51,6 +52,50 @@ func siteDumpOf(t *testing.T, bin, order string) string {
 	}
 	t.Fatalf("order %q wrote no site dump for the lockorder package; files %v\n%s", order, files, out)
 	return ""
+}
+
+// takePoolHeld is the held field of the dump lines at the djTakePool defer of each case in test/lockorder/deferjoin.go.
+var takePoolHeld = map[string]string{
+	"djLoopRelease":   "-",
+	"djPinRepeat":     "&(&({param:e}.info).g)*,&(&({param:e}.info).h)",
+	"djPinTwoRelease": "&(&({param:e}.info).g)*",
+	"djPinAcquire":    "&(&({param:e}.info).g),&(&({param:e}.info).h)*",
+	"djPinReleased":   "-",
+	"djPinRelock":     "-",
+	"djPinVis":        "&(&({param:e}.info).g)*",
+	"djPinTwoRel":     "&(&({param:e}.info).h)*",
+}
+
+// checkTakePoolHeld checks every dump line at those sites holds exactly the locks of takePoolHeld.
+func checkTakePoolHeld(t *testing.T, lines []string) {
+	t.Helper()
+	src, err := os.ReadFile("test/lockorder/deferjoin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Split(string(src), "\n")
+	for fn, want := range takePoolHeld {
+		at := slices.IndexFunc(text, func(l string) bool { return strings.HasPrefix(l, "func "+fn+"(") })
+		off := slices.IndexFunc(text[max(at, 0):], func(l string) bool { return strings.Contains(l, "defer djTakePool(p)") })
+		if at < 0 || off < 0 {
+			t.Errorf("%s: no djTakePool defer in the corpus", fn)
+			continue
+		}
+		prefix := fmt.Sprintf("%s\tdeferjoin.go:%d:", fn, at+off+1)
+		found := false
+		for _, l := range lines {
+			if !strings.HasPrefix(l, prefix) {
+				continue
+			}
+			found = true
+			if f := strings.Split(l, "\t"); len(f) != 4 || f[3] != want {
+				t.Errorf("%s: dump line %q, want the held field %q", fn, l, want)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no dump line for its djTakePool defer", fn)
+		}
+	}
 }
 
 // TestSiteDump checks the site dump of the lockorder corpus is non-empty, sorted and the same in every walk order.
@@ -91,7 +136,10 @@ func TestSiteDump(t *testing.T) {
 	if !strings.Contains(forward, "\tentry\t") {
 		t.Errorf("want an entry line in the dump")
 	}
-	if reverse := siteDumpOf(t, bin, "reverse"); reverse != forward {
-		t.Errorf("the dump differs between forward and reverse order")
+	checkTakePoolHeld(t, lines)
+	for _, order := range []string{"reverse", "7"} {
+		if got := siteDumpOf(t, bin, order); got != forward {
+			t.Errorf("the dump differs between forward and order %q", order)
+		}
 	}
 }

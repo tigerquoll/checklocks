@@ -35,6 +35,7 @@ type blockParity struct{}
 
 func (blockParity) entered(*passContext, *ssa.Function, *lockState, string) {}
 func (blockParity) walked(*passContext, *ssa.Function, *lockState)          {}
+func (*blockParity) joined(deferStack, deferStack)                          {}
 func (blockParity) replayed(*passContext, *blockRecord, *lockState, bool)   {}
 func (*passContext) parityFinding(token.Pos, string, ...any)                {}
 func (*passContext) parityObservation(almostInst, types.Object, *lockState) {}

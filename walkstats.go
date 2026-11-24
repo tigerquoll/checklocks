@@ -46,10 +46,11 @@ type walkStats struct {
 	// storers holds, per function, the addresses it stores to.
 	storers map[*ssa.Function]map[ssa.Value]bool
 
-	reads, walks, nested, overflow int
-	distinct                       map[blockKey][]*lockState
-	classes                        map[blockKey]map[string]bool
-	fnWalks                        map[string]int
+	// deferMay counts the collapsed no-op entries a defer unwind ran.
+	reads, walks, nested, overflow, deferMay int
+	distinct                                 map[blockKey][]*lockState
+	classes                                  map[blockKey]map[string]bool
+	fnWalks                                  map[string]int
 
 	// widened lists the marker widenings; silenced the releases a top marker silenced.
 	widened  map[string]bool
@@ -176,6 +177,9 @@ func (pc *passContext) statTopSilenced(at token.Pos, p lockPath) {
 // statOverflow counts a give-up.
 func (pc *passContext) statOverflow() { pc.stats.overflow++ }
 
+// statDeferMay counts n collapsed no-op entries run.
+func (pc *passContext) statDeferMay(n int) { pc.stats.deferMay += n }
+
 // writeWalkStats writes the statistics of this vet unit to its own file in the stats directory.
 func (pc *passContext) writeWalkStats() {
 	if walkStatsDir == "" {
@@ -226,8 +230,8 @@ func (pc *passContext) writeWalkStats() {
 		}
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "walks %d\nnested %d\nmaxDistinct %d\t%s\nover16 %d\nover64 %d\noverflow %d\noracleReads %d\noracleMisses 0\n",
-		st.walks, st.nested, maxDistinct, where, over16, over64, st.overflow, st.reads)
+	fmt.Fprintf(&out, "walks %d\nnested %d\nmaxDistinct %d\t%s\nover16 %d\nover64 %d\noverflow %d\noracleReads %d\noracleMisses 0\ndeferMay %d\n",
+		st.walks, st.nested, maxDistinct, where, over16, over64, st.overflow, st.reads, st.deferMay)
 	for _, bucket := range slices.Sorted(maps.Keys(hist)) {
 		fmt.Fprintf(&out, "hist<=%d %d\n", bucket, hist[bucket])
 	}

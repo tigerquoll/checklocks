@@ -36,4 +36,5 @@ func (*passContext) statWidened(*walkContext, *ssa.BasicBlock, int)     {}
 func (*passContext) statTopRegions(int)                                 {}
 func (*passContext) statTopSilenced(token.Pos, lockPath)                {}
 func (*passContext) statOverflow()                                      {}
+func (*passContext) statDeferMay(int)                                   {}
 func (*passContext) writeWalkStats()                                    {}

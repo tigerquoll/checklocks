@@ -25,6 +25,7 @@
 // +lockorder:App < Manager
 // +lockorder:Manager < Tracker
 // +lockorder:Partition < SeamInner
+// +lockorder:DjPool < DjGuard
 // +lockhierarchical:Queue
 package lockorder
 

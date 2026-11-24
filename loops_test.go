@@ -382,14 +382,14 @@ func TestDropDead(t *testing.T) {
 func TestPushDeferTwice(t *testing.T) {
 	fx := newLoopFixture(t)
 	ls := newLockState()
-	ls.pushDefer(fx.defers[0])
-	ls.pushDefer(fx.defers[0])
-	if len(ls.defers) != 1 {
-		t.Errorf("a defer site pushed twice leaves %d on the stack, want 1", len(ls.defers))
+	ls.pushDefer(fx.defers[0], false)
+	ls.pushDefer(fx.defers[0], false)
+	if len(ls.noops) != 1 {
+		t.Errorf("a defer site pushed twice leaves %d on the stack, want 1", len(ls.noops))
 	}
-	ls.pushDefer(fx.defers[1])
-	if len(ls.defers) != 2 {
-		t.Errorf("a second site leaves %d on the stack, want 2", len(ls.defers))
+	ls.pushDefer(fx.defers[1], false)
+	if len(ls.noops) != 2 {
+		t.Errorf("a second site leaves %d on the stack, want 2", len(ls.noops))
 	}
 }
 

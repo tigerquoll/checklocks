@@ -1070,11 +1070,9 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 	case *ssa.Go:
 		pc.checkGoCall(newCallSite(x), wc, ls)
 	case *ssa.Defer:
-		ls.pushDefer(x)
+		ls.pushDefer(x, pc.deferRelevant(x))
 	case *ssa.RunDefers:
-		for d := ls.popDefer(); d != nil; d = ls.popDefer() {
-			pc.checkCall(newCallSite(d), wc, ls)
-		}
+		pc.runDefers(wc, ls)
 	case *ssa.MakeClosure:
 		if refs := x.Referrers(); refs != nil {
 			var (
@@ -1172,6 +1170,10 @@ type blockRecord struct {
 	block  *ssa.BasicBlock
 	parent *lockState
 	parity blockParity
+
+	// pair is the block and element key the record entered under; outs are the pairs its edges reached.
+	pair pairID
+	outs []pairID
 }
 
 // returnPos is where a report at ret is printed. A fall-off-the-end return has no
@@ -1469,6 +1471,9 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	}
 
 	if outer == nil {
+		if !wc.gaveUp && !pc.overBudget {
+			pc.joinDefers(wc, recordsAt)
+		}
 		pc.replay()
 		for _, f := range pc.givenUp {
 			pc.functions[f] = struct{}{}
