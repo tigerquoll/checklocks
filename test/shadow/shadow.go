@@ -69,3 +69,14 @@ func commaOK(m map[string]*guarded, k string) {
 	other()
 	v.g.Unlock()
 }
+
+func keep(f func()) {}
+
+func litEscapes(x *guarded) {
+	f := func() {
+		x.g.Lock()
+		other()
+		x.g.Unlock()
+	}
+	keep(f)
+}

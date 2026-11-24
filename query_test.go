@@ -254,6 +254,161 @@ func TestViewQueryInexact(t *testing.T) {
 	}
 }
 
+func litSource() string {
+	var b strings.Builder
+	b.WriteString(`package p
+
+type Mutex struct{}
+
+func (*Mutex) Lock()   {}
+func (*Mutex) Unlock() {}
+
+type Locks struct {
+	a, b, c, d, e, f, g Mutex
+}
+
+func sink()         {}
+func keep(f func()) {}
+
+func twoStates(m *Mutex, c bool) {
+	f := func() { sink() }
+	if c {
+		m.Lock()
+		f()
+		m.Unlock()
+	} else {
+		f()
+	}
+}
+
+func bothHeld(m *Mutex) {
+	f := func() { sink() }
+	m.Lock()
+	f()
+	f()
+	m.Unlock()
+}
+
+func escapeFree(m *Mutex) {
+	f := func(*Mutex) { sink() }
+	m.Lock()
+	f(m)
+	m.Unlock()
+	go f(m)
+}
+
+func escapeClosure(m *Mutex) {
+	f := func() { sink(); println(m != nil) }
+	m.Lock()
+	f()
+	m.Unlock()
+	go f()
+}
+
+func nested(m *Mutex) {
+	outer := func() {
+		inner := func() { sink(); println(m != nil) }
+		inner()
+	}
+	m.Lock()
+	outer()
+	m.Unlock()
+	keep(outer)
+}
+
+func gaveUp(m *Mutex, l *Locks, c func() bool) {
+	m.Lock()
+	func() {
+		for c() {
+`)
+	for _, f := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		b.WriteString("\t\t\tif c() {\n\t\t\t\tl." + f + ".Lock()\n\t\t\t}\n")
+	}
+	b.WriteString(`		}
+		sink()
+	}()
+	sink()
+	m.Unlock()
+}
+`)
+	return b.String()
+}
+
+// litAnswers walks fn of src and returns it, the view, and a renderer of the answers at a function's sink calls.
+func litAnswers(t *testing.T, src, fn string) (top *ssa.Function, e *engineView, answers func(*ssa.Function) string) {
+	t.Helper()
+	pkg := buildTestPackage(t, "lit", src)
+	pass := &analysis.Pass{
+		Fset:             pkg.Prog.Fset,
+		Report:           func(analysis.Diagnostic) {},
+		ImportObjectFact: func(types.Object, analysis.Fact) bool { return false },
+	}
+	pc := &passContext{
+		expectations: newExpectations(pass, checkLocksAnnotations, true),
+		pass:         pass,
+		collect:      true,
+		functions:    make(map[*ssa.Function]struct{}),
+		engine:       &engineView{},
+	}
+	top = pkg.Func(fn)
+	pc.checkFunction(callSite{kind: siteEntry}, nil, top, &lockFunctionFacts{}, nil, false)
+	names := map[viewKind]string{viewUnknown: "unknown", viewAll: "all", viewSome: "some", viewNone: "none"}
+	answers = func(f *ssa.Function) string {
+		var out []string
+		for _, b := range f.Blocks {
+			for _, inst := range b.Instrs {
+				c, ok := inst.(*ssa.Call)
+				if !ok || c.Call.Value.Name() != "sink" {
+					continue
+				}
+				locks, ok := pc.engine.heldAt(inst)
+				if !ok {
+					out = append(out, "-")
+					continue
+				}
+				var kinds []string
+				for _, l := range locks {
+					kinds = append(kinds, names[pc.engine.query(inst, l.path.Key()).kind])
+				}
+				out = append(out, "["+strings.Join(kinds, ",")+"]")
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	return top, pc.engine, answers
+}
+
+// TestViewLiteralSites checks a literal only called directly is answered over its walks, any other has no record.
+func TestViewLiteralSites(t *testing.T) {
+	src := litSource()
+	for _, tc := range []struct {
+		fn, inFn, inLit, why string
+	}{
+		{"twoStates", "", "[some]", ""},
+		{"bothHeld", "", "[all]", ""},
+		{"escapeFree", "", "-", "not called directly"},
+		{"escapeClosure", "", "-", "not called directly"},
+		{"gaveUp", "[all]", "-", "gave up: more than 64 lock states reach one block in a loop"},
+	} {
+		top, e, answers := litAnswers(t, src, tc.fn)
+		lit := top.AnonFuncs[0]
+		if inFn, inLit := answers(top), answers(lit); inFn != tc.inFn || inLit != tc.inLit {
+			t.Errorf("%s: sink answers in the function %q and in its literal %q, want %q and %q", tc.fn, inFn, inLit, tc.inFn, tc.inLit)
+		}
+		if got := e.whyNone(lit); tc.inLit == "-" && got != tc.why {
+			t.Errorf("%s: whyNone = %q, want %q", tc.fn, got, tc.why)
+		}
+		if got := (&engineView{}).whyNone(lit); tc.fn == "twoStates" && got != "not reached" {
+			t.Errorf("a literal no walk reached: whyNone = %q, want not reached", got)
+		}
+	}
+	top, e, answers := litAnswers(t, src, "nested")
+	inner := top.AnonFuncs[0].AnonFuncs[0]
+	if got, why := answers(inner), e.whyNone(inner); got != "-" || why != "not called directly" {
+		t.Errorf("nested: inner literal answers %q, whyNone %q, want no record because the literal around it escapes", got, why)
+	}
+}
+
 // unwindFixture is the replay of one function's defers, each recorded as a site of an engine.
 type unwindFixture struct {
 	pc    *passContext

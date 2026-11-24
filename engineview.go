@@ -35,9 +35,9 @@ type heldLock struct {
 	guards []string
 }
 
-// engineView is what the engine records per pass for lockorder and lockblocking, for top-level
-// functions only: locks held at each call and channel operation, entry locks, and what each
-// call's annotations acquired and released. A nil view records and reports nothing.
+// engineView is what the engine records per pass for lockorder and lockblocking: locks held at
+// each call and channel operation, entry locks, and what each call's annotations acquired and
+// released. Sites of function literals are recorded for held only. A nil view records and reports nothing.
 type engineView struct {
 	// held is the locks held at each site in some state; a client that suppresses or derives must use query.
 	held   map[ssa.Instruction]map[pathKey]heldLock
@@ -55,6 +55,9 @@ type engineView struct {
 
 	// inexact is the sites that answer unknown, marked before or after their record.
 	inexact map[ssa.Instruction]bool
+
+	// callOnly caches recordable.
+	callOnly map[*ssa.Function]bool
 }
 
 // siteView is the joined states of one site, as flags that adding a state twice does not change.
@@ -292,18 +295,84 @@ func (e *engineView) entryOf(fn *ssa.Function) ([]heldLock, bool) {
 	return locks, true
 }
 
-// whyNone says why the engine has no record in fn: "literal", "gave up: <reason>", or "".
+// whyNone says why the engine has no record in fn: "gave up: <reason>", "not called directly" (the literal or one
+// around it is used otherwise) or "not reached" for a literal, or "".
 func (e *engineView) whyNone(fn *ssa.Function) string {
-	if fn.Parent() != nil {
-		return "literal"
-	}
 	if e == nil {
 		return ""
 	}
 	if reason := e.gaveUp[fn]; reason != "" {
 		return "gave up: " + reason
 	}
-	return ""
+	if fn.Parent() == nil {
+		return ""
+	}
+	if !e.recordable(fn) {
+		return "not called directly"
+	}
+	return "not reached"
+}
+
+// recordable says whether the sites of the literal fn are recorded: it and every literal around it
+// is only ever called directly. A function that is not a literal is recordable.
+func (e *engineView) recordable(fn *ssa.Function) bool {
+	parent := fn.Parent()
+	if parent == nil {
+		return true
+	}
+	if ok, cached := e.callOnly[fn]; cached {
+		return ok
+	}
+	ok := e.recordable(parent) && calledOnly(fn)
+	if e.callOnly == nil {
+		e.callOnly = make(map[*ssa.Function]bool)
+	}
+	e.callOnly[fn] = ok
+	return ok
+}
+
+// calledOnly says whether every use of the literal fn in its parent, through its closure if it has
+// one, is as the callee of a call or defer.
+func calledOnly(fn *ssa.Function) bool {
+	for _, b := range fn.Parent().Blocks {
+		for _, inst := range b.Instrs {
+			if mc, ok := inst.(*ssa.MakeClosure); ok && mc.Fn == fn {
+				if refs := mc.Referrers(); refs != nil && slices.ContainsFunc(*refs, func(r ssa.Instruction) bool { return !isCallee(r, mc) }) {
+					return false
+				}
+				continue
+			}
+			for _, op := range inst.Operands(nil) {
+				if *op == fn && !isCallee(inst, fn) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// isCallee says whether inst calls v and uses it nowhere else.
+func isCallee(inst ssa.Instruction, v ssa.Value) bool {
+	var c *ssa.CallCommon
+	switch x := inst.(type) {
+	case *ssa.Call:
+		c = &x.Call
+	case *ssa.Defer:
+		c = &x.Call
+	default:
+		return false
+	}
+	if c.IsInvoke() || c.Value != v {
+		return false
+	}
+	uses := 0
+	for _, op := range inst.Operands(nil) {
+		if *op == v {
+			uses++
+		}
+	}
+	return uses == 1
 }
 
 // replaying returns the engine, and whether inst is a site of the top-level function whose
@@ -316,10 +385,19 @@ func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
 	return pc.engine, fn.Parent() == nil && inst.Parent() == fn
 }
 
-// recordHeld records the locks held at inst, a call or channel operation of the function being replayed.
+// recordHeld records the locks held at inst, a call or channel operation of the function being replayed or of a
+// recordable literal inside it.
 func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *lockState) {
 	fn := wc.fn
-	if pc.engine == nil || pc.emit != emitReplay || inst == nil || fn.Parent() != nil || inst.Parent() != fn || len(pc.records) == 0 {
+	if pc.engine == nil || pc.emit != emitReplay || inst == nil || inst.Parent() != fn || len(pc.records) == 0 {
+		return
+	}
+	top := pc.records[0].wc.fn
+	if top.Parent() != nil || !pc.engine.recordable(fn) {
+		return
+	}
+	// A literal's no-op defer entries are whichever arrived first, so their sites have no record.
+	if d, ok := inst.(*ssa.Defer); ok && fn != top && !pc.deferRelevant(d) {
 		return
 	}
 	pc.engine.add(inst, ls, pc.records[0].parent.lockedMutexes)

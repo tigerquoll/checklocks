@@ -141,6 +141,45 @@ func checkUnwindAnswers(t *testing.T, lines []string) {
 	}
 }
 
+// litCells are the functions of test/lockorder/litsites.go and how many dump site lines each has.
+var litCells = map[string]int{
+	"litTwoStates$1":     1,
+	"litArms$1":          0,
+	"litGap$1":           2,
+	"litEscapeFree$1":    0,
+	"litEscapeClosure$1": 0,
+	"litNested$1":        0,
+	"litNested$1$1":      0,
+	"litGaveUp$1":        0,
+	"litGaveUp":          5,
+}
+
+// checkLitCells checks the dump lines of litCells, the some answer, and the give-up line.
+func checkLitCells(t *testing.T, lines []string) {
+	t.Helper()
+	count := map[string]int{}
+	for _, l := range lines {
+		f := strings.Split(l, "\t")
+		switch {
+		case len(f) == 5:
+			count[f[0]]++
+			if f[0] == "litTwoStates$1" && !strings.HasSuffix(f[4], "=some/x") {
+				t.Errorf("dump line %q, want its lock answered some", l)
+			}
+		case f[0] == "litGaveUp$1" && f[1] == "gaveup":
+			count["gaveup"]++
+		}
+	}
+	for fn, want := range litCells {
+		if count[fn] != want {
+			t.Errorf("%s: %d dump lines, want %d", fn, count[fn], want)
+		}
+	}
+	if count["gaveup"] != 1 {
+		t.Errorf("want one give-up line for litGaveUp$1, got %d", count["gaveup"])
+	}
+}
+
 // TestSiteDump checks the site dump of the lockorder corpus is non-empty, sorted and the same in every walk order.
 func TestSiteDump(t *testing.T) {
 	// The analyzer runs in a subprocess; reading the corpus registers it as an input of this test's cache entry.
@@ -181,6 +220,7 @@ func TestSiteDump(t *testing.T) {
 	}
 	checkTakePoolHeld(t, lines)
 	checkUnwindAnswers(t, lines)
+	checkLitCells(t, lines)
 	for _, order := range []string{"reverse", "7"} {
 		if got := siteDumpOf(t, bin, order); got != forward {
 			t.Errorf("the dump differs between forward and order %q", order)
