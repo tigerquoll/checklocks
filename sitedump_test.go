@@ -88,12 +88,55 @@ func checkTakePoolHeld(t *testing.T, lines []string) {
 				continue
 			}
 			found = true
-			if f := strings.Split(l, "\t"); len(f) != 4 || f[3] != want {
+			if f := strings.Split(l, "\t"); len(f) != 5 || f[3] != want {
 				t.Errorf("%s: dump line %q, want the held field %q", fn, l, want)
 			}
 		}
 		if !found {
 			t.Errorf("%s: no dump line for its djTakePool defer", fn)
+		}
+	}
+}
+
+// unwindCells are the functions of the corpus whose deferred calls are checked: how many dump lines each has
+// before its first deferred call, how many deferred calls, and whether their unwind is inexact.
+var unwindCells = map[string]struct {
+	before, calls int
+	inexact       bool
+}{
+	"djFailedUnlock":       {1, 3, true},
+	"djCleanUnlock":        {1, 2, false},
+	"djLiteralUnlock":      {1, 3, true},
+	"djForcedPrecondition": {0, 2, true},
+}
+
+// checkUnwindAnswers checks every deferred call of unwindCells answers unknown when its unwind is inexact, with
+// the failure silenced, and none does when it is exact.
+func checkUnwindAnswers(t *testing.T, lines []string) {
+	t.Helper()
+	count := map[string]int{}
+	for _, l := range lines {
+		f := strings.Split(l, "\t")
+		cell, ok := unwindCells[f[0]]
+		if len(f) != 5 || !ok {
+			continue
+		}
+		if count[f[0]]++; count[f[0]] <= cell.before {
+			continue
+		}
+		if got := strings.Contains(f[4], "?"); got != cell.inexact {
+			t.Errorf("%s: dump line %q, unknown flag %t, want %t", f[0], l, got, cell.inexact)
+		}
+		if cell.inexact && f[3] != "-" && !strings.Contains(f[4], "=unknown") {
+			t.Errorf("%s: dump line %q, want its held lock answered unknown", f[0], l)
+		}
+		if !cell.inexact && f[3] != "-" && !strings.Contains(f[4], "=all/x") {
+			t.Errorf("%s: dump line %q, want its held lock answered all", f[0], l)
+		}
+	}
+	for fn, cell := range unwindCells {
+		if count[fn] != cell.before+cell.calls {
+			t.Errorf("%s: %d dump lines, want %d", fn, count[fn], cell.before+cell.calls)
 		}
 	}
 }
@@ -128,7 +171,7 @@ func TestSiteDump(t *testing.T) {
 	}
 	atEntry := slices.ContainsFunc(lines, func(l string) bool {
 		f := strings.Split(l, "\t")
-		return len(f) == 4 && strings.Contains(f[3], "*")
+		return len(f) == 5 && strings.Contains(f[3], "*")
 	})
 	if !atEntry {
 		t.Errorf("want a site held at entry in the dump")
@@ -137,6 +180,7 @@ func TestSiteDump(t *testing.T) {
 		t.Errorf("want an entry line in the dump")
 	}
 	checkTakePoolHeld(t, lines)
+	checkUnwindAnswers(t, lines)
 	for _, order := range []string{"reverse", "7"} {
 		if got := siteDumpOf(t, bin, order); got != forward {
 			t.Errorf("the dump differs between forward and order %q", order)

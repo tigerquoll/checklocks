@@ -37,4 +37,5 @@ func (*passContext) statTopRegions(int)                                 {}
 func (*passContext) statTopSilenced(token.Pos, lockPath)                {}
 func (*passContext) statOverflow()                                      {}
 func (*passContext) statDeferMay(int)                                   {}
+func (*passContext) statDeferUnknown()                                  {}
 func (*passContext) writeWalkStats()                                    {}

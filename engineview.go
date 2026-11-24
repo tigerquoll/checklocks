@@ -39,6 +39,7 @@ type heldLock struct {
 // functions only: locks held at each call and channel operation, entry locks, and what each
 // call's annotations acquired and released. A nil view records and reports nothing.
 type engineView struct {
+	// held is the locks held at each site in some state; a client that suppresses or derives must use query.
 	held   map[ssa.Instruction]map[pathKey]heldLock
 	entry  map[*ssa.Function][]heldLock
 	gaveUp map[*ssa.Function]string
@@ -48,14 +49,83 @@ type engineView struct {
 
 	// releases is the real locks each call's release annotations dropped, in some state.
 	releases map[ssa.Instruction]map[pathKey]bool
+
+	// sites is what query reads, kept beside held.
+	sites map[ssa.Instruction]*siteView
+
+	// inexact is the sites that answer unknown, marked before or after their record.
+	inexact map[ssa.Instruction]bool
+}
+
+// siteView is the joined states of one site, as flags that adding a state twice does not change.
+type siteView struct {
+	// every says a key was held in every state added; exclusive that each state holding it did so exclusively.
+	every, exclusive map[pathKey]bool
+
+	// marker is the union of the states' marker keys; top says some state's marker was top.
+	marker map[pathKey]bool
+	top    bool
+}
+
+// viewKind is what the states at a site say about one lock.
+type viewKind uint8
+
+const (
+	viewUnknown viewKind = iota
+	viewAll
+	viewSome
+	viewNone
+)
+
+// viewAnswer is the answer of engineView.query; exclusive and assumed are set for all and some.
+type viewAnswer struct {
+	kind               viewKind
+	exclusive, assumed bool
+}
+
+// query says whether the lock under the canonical key k is held in all, some or none of the states at inst, or unknown.
+// The held field is the some answer: a client that suppresses or derives must use query.
+func (e *engineView) query(inst ssa.Instruction, k pathKey) viewAnswer {
+	if !e.usable(inst) {
+		return viewAnswer{}
+	}
+	sv := e.sites[inst]
+	if sv == nil || e.inexact[inst] {
+		return viewAnswer{}
+	}
+	if every, ok := sv.every[k]; ok {
+		kind := viewSome
+		if every {
+			kind = viewAll
+		}
+		return viewAnswer{kind: kind, exclusive: sv.exclusive[k], assumed: e.held[inst][k].assumed}
+	}
+	if sv.top || sv.marker[k] {
+		return viewAnswer{}
+	}
+	return viewAnswer{kind: viewNone}
+}
+
+// markInexact marks the site of inst as an approximation, and says whether the mark is new.
+func (e *engineView) markInexact(inst ssa.Instruction) bool {
+	if e == nil || e.inexact[inst] {
+		return false
+	}
+	if e.inexact == nil {
+		e.inexact = make(map[ssa.Instruction]bool)
+	}
+	e.inexact[inst] = true
+	return true
 }
 
 // add joins the locks held at inst in one state into the site's record. A lock counts as
 // assumed only if every state that holds it assumes it. An empty set is still a record.
-func (e *engineView) add(inst ssa.Instruction, locks, entry map[pathKey]lockInfo) {
+func (e *engineView) add(inst ssa.Instruction, ls *lockState, entry map[pathKey]lockInfo) {
 	if e == nil {
 		return
 	}
+	locks := ls.lockedMutexes
+	e.addSite(inst, ls)
 	if e.held == nil {
 		e.held = make(map[ssa.Instruction]map[pathKey]heldLock)
 	}
@@ -72,6 +142,35 @@ func (e *engineView) add(inst ssa.Instruction, locks, entry map[pathKey]lockInfo
 		}
 		rec[key] = heldLock{path: info.path, assumed: info.assumed, entry: atEntry}
 	}
+}
+
+// addSite joins a state into the site's flags; a key first seen after the site had a record
+// was not held in every state.
+func (e *engineView) addSite(inst ssa.Instruction, ls *lockState) {
+	if e.sites == nil {
+		e.sites = make(map[ssa.Instruction]*siteView)
+	}
+	sv := e.sites[inst]
+	first := sv == nil
+	if first {
+		sv = &siteView{every: make(map[pathKey]bool), exclusive: make(map[pathKey]bool), marker: make(map[pathKey]bool)}
+		e.sites[inst] = sv
+	}
+	for k := range sv.every {
+		if _, ok := ls.lockedMutexes[k]; !ok {
+			sv.every[k] = false
+		}
+	}
+	for k, info := range ls.lockedMutexes {
+		if _, seen := sv.every[k]; !seen {
+			sv.every[k], sv.exclusive[k] = first, true
+		}
+		sv.exclusive[k] = sv.exclusive[k] && info.exclusive
+	}
+	for k := range ls.marker {
+		sv.marker[k] = true
+	}
+	sv.top = sv.top || ls.markerTop
 }
 
 // setEntry records the locks fn is entered with, and the guards each came from.
@@ -223,7 +322,7 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *loc
 	if pc.engine == nil || pc.emit != emitReplay || inst == nil || fn.Parent() != nil || inst.Parent() != fn || len(pc.records) == 0 {
 		return
 	}
-	pc.engine.add(inst, ls.lockedMutexes, pc.records[0].parent.lockedMutexes)
+	pc.engine.add(inst, ls, pc.records[0].parent.lockedMutexes)
 }
 
 // recordGain records a lock the annotations of the call at inst took, or made real.

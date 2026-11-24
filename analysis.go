@@ -667,6 +667,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		pc.decide(at, effectResolve, resolved, g.fieldName)
 		if !resolved {
 			// See above: this cannot be forced.
+			pc.opFailed = true
 			pc.maybeFail(site.Pos(), "field %s cannot be resolved", g.fieldName)
 			continue
 		}
@@ -678,6 +679,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			lost = append(lost, p)
 		}
 		if !ok {
+			pc.opFailed = true
 			if lff.Ignore || pc.silencesRelease(ls, p, site.kind == siteDefer, site.Pos()) {
 				pc.suppressed()
 			} else if _, forced := pc.forced[pc.positionKey(site.Pos())]; forced {
@@ -696,6 +698,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		tracked := g.rv.valid()
 		pc.decide(at, acquireDiscarded, tracked, g.fieldName)
 		if !tracked {
+			pc.opFailed = true
 			pc.maybeFail(site.Pos(), "lock %s is acquired through a discarded result and cannot be tracked", g.fieldName)
 			continue
 		}
@@ -713,6 +716,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 			}
 		}
 		if !ok {
+			pc.opFailed = true
 			// The lock is really taken here, whatever assumed it earlier.
 			ls.setAssumed(p, false)
 			if _, ok := pc.forced[pc.positionKey(site.Pos())]; !ok && !lff.Ignore {
@@ -813,6 +817,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 				pc.suppressed()
 				if forcedPath, inserted := ls.lockField(g.rv, g.exclusive); inserted {
 					// The force asserts the lock, it does not take it.
+					pc.opFailed = true
 					ls.setAssumed(forcedPath, true)
 				}
 			}
@@ -833,6 +838,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.lockField(rv, exclusive)
 			pc.decide(at, lockOpLock, ok)
 			if !ok {
+				pc.opFailed = true
 				// The lock is really taken here, whatever assumed it earlier.
 				ls.setAssumed(p, false)
 				if !lff.Ignore && !forced {
@@ -846,6 +852,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.unlockField(rv, exclusive)
 			pc.decide(at, lockOpUnlock, ok)
 			if !ok {
+				pc.opFailed = true
 				if !forced && !lff.Ignore && !pc.silencesRelease(ls, p, site.kind == siteDefer, callPos) {
 					// Unlocking something that is already unlocked.
 					pc.maybeFail(callPos, "%s already unlocked or locked differently (locks: %s)", p.String(), ls.String())
@@ -857,6 +864,7 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 			p, ok := ls.downgradeField(rv)
 			pc.decide(at, lockOpDowngrade, ok)
 			if !ok {
+				pc.opFailed = true
 				if !forced && !lff.Ignore && !pc.silencesRelease(ls, p, site.kind == siteDefer, callPos) {
 					// Downgrading something that may not be downgraded.
 					pc.maybeFail(callPos, "%s already unlocked or not exclusive (locks: %s)", p.String(), ls.String())
@@ -1296,9 +1304,9 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if pc.emit == emitReplay {
 		return
 	}
-	outerEmit := pc.emit
+	outerEmit, outerFailed := pc.emit, pc.opFailed
 	pc.emit = emitDirect
-	defer func() { pc.emit = outerEmit }()
+	defer func() { pc.emit, pc.opFailed = outerEmit, outerFailed }()
 	if outer == nil {
 		pc.walks, pc.overBudget = 0, false
 		pc.entryGuards = nil

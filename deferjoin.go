@@ -153,10 +153,46 @@ func (pc *passContext) through(block *ssa.BasicBlock, s deferStack) deferStack {
 	return s
 }
 
+// runDefers unwinds ls's defers. A no-op run as a may entry answers unknown to query at its site, and so does
+// every site of an unwind in which a relevant call failed, a relevant deferred literal ran, or a relevant defer
+// is in a cycle.
 func (pc *passContext) runDefers(wc *walkContext, ls *lockState) {
-	if n := unwindDefers(ls, func(d *ssa.Defer, at *lockState) { pc.checkCall(newCallSite(d), wc, at) }); pc.emit != emitReplay {
+	st := ls.deferStack
+	var ran []*ssa.Defer
+	failed := false
+	n := unwindDefers(ls, func(d *ssa.Defer, at *lockState) {
+		pc.opFailed = false
+		pc.checkCall(newCallSite(d), wc, at)
+		failed = failed || pc.opFailed && slices.Contains(st.defers, d)
+		ran = append(ran, d)
+	})
+	inexact := failed || slices.ContainsFunc(st.defers, func(d *ssa.Defer) bool {
+		return runsLiteral(d) || pc.cfgOf(d.Parent()).cyclic[d.Block()]
+	})
+	if pc.emit != emitReplay {
 		pc.statDeferMay(n)
+		return
 	}
+	marked := false
+	for _, d := range ran {
+		if inexact || slices.ContainsFunc(st.noops, func(e deferEntry) bool { return e.d == d && e.may }) {
+			marked = pc.engine.markInexact(d) || marked
+		}
+	}
+	if marked {
+		pc.statDeferUnknown()
+	}
+}
+
+// runsLiteral says d calls a function literal, whose body replay does not walk.
+func runsLiteral(d *ssa.Defer) bool {
+	switch v := d.Common().Value.(type) {
+	case *ssa.MakeClosure:
+		return true
+	case *ssa.Function:
+		return v.Object() == nil
+	}
+	return false
 }
 
 // unwindDefers runs ls's relevant defers in reverse rank order, then each no-op entry on a fork of the start

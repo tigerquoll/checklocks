@@ -26,13 +26,13 @@ func TestEngineViewJoin(t *testing.T) {
 	at, other := f.Blocks[0].Instrs[0], g.Blocks[0].Instrs[0]
 
 	p := newLockPath(pathRootValue, nil, nil, "mu")
-	held := func(assumed bool) map[pathKey]lockInfo {
-		return map[pathKey]lockInfo{p.Key(): {path: p, assumed: assumed}}
+	held := func(assumed bool) *lockState {
+		return &lockState{lockedMutexes: map[pathKey]lockInfo{p.Key(): {path: p, assumed: assumed}}}
 	}
 	var e engineView
 	e.add(at, held(true), nil)
-	e.add(at, held(false), held(false))
-	e.add(other, nil, nil)
+	e.add(at, held(false), held(false).lockedMutexes)
+	e.add(other, newLockState(), nil)
 
 	got, ok := e.heldAt(at)
 	if !ok || len(got) != 1 || got[0].assumed || !got[0].entry {
@@ -72,7 +72,7 @@ func TestEngineViewEffects(t *testing.T) {
 
 	var none *engineView
 	none.addGain(at, p)
-	none.add(at, nil, nil)
+	none.add(at, newLockState(), nil)
 	if _, ok := none.heldAt(at); ok || none.gainsOf(at) != nil || none.releasesOf(at) != nil {
 		t.Error("nil view reported records")
 	}

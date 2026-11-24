@@ -150,6 +150,9 @@ type passContext struct {
 
 	// entryGuards names the guards each entry lock of the function being walked came from.
 	entryGuards map[pathKey][]string
+
+	// opFailed is set when a lock operation's transfer fails, whether or not a report follows.
+	opFailed bool
 }
 
 // emitMode says what maybeFail and recordObservation do with what they are given.

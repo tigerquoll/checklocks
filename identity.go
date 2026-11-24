@@ -26,17 +26,32 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// sameElement reports whether two states are one element of the walk of fn. A lockState component is identity or payload:
+// sameElement reports whether two states are one element of the walk of fn: the solver keys on
+// classKey plus markerKey. A lockState component is identity or payload:
 //
-//	held locks, with mode and assumed tag    identity
-//	marker or top, with its regions          identity
-//	defers that can matter, in stack order   identity
-//	aliases                                  identity
-//	stored values of fn's relevant slots     identity
-//	other stored values, bound, used         payload
-//	other defers, substitutions, consts      payload
+//	held locks, with mode and assumed tag    identity, classKey
+//	relevant defers, in stack order          identity, classKey
+//	aliases                                  identity, classKey
+//	stored values of fn's relevant slots     identity, classKey
+//	marker or top, with its regions          identity, markerKey
+//	no-op defers                             payload, joined over every arrival by joinDefers
+//	other stored values, bound, used         payload, the first arrival's is kept
+//	substitutions, consts                    payload, the first arrival's is kept
 //
-// Payload is not compared; the first arrival's is kept. See relevantSlots for the slots.
+// See relevantSlots for the slots. Two answers read an element:
+//
+//	query (state.go)         held, notHeld or unknown, for one lock in one state. Unknown: the marker names
+//	                         the lock, or is top and the lock has a value in a dropped lock's region.
+//	engineView.query         all, some, none or unknown, for the states recorded at one site. Unknown:
+//	                         no record, a function given up on, no state held the lock and a state's marker
+//	                         names it or was top, or an inexact site: a no-op defer run as a may entry, an
+//	                         unwind in which a relevant deferred call's lock operation failed or which runs
+//	                         a relevant deferred literal, or a relevant defer in a cycle.
+//
+// Panic unwinds are not walked, so deferred-call answers cover normal returns only.
+//
+// Polarity: a client suppresses or derives only on a definite answer; unknown always reports and never
+// creates a report. Where isHeld is read, unknown reads as not held.
 func (pc *passContext) sameElement(fn *ssa.Function, a, b *lockState) bool {
 	return a.isCompatible(b) && a.markerTop == b.markerTop && maps.Equal(a.topRegions, b.topRegions) && maps.EqualFunc(a.marker, b.marker, func(x, y regionSet) bool { return maps.Equal(x, y) }) && pc.sameRelevantDefers(a, b) && maps.EqualFunc(a.aliases, b.aliases, func(x, y lockPath) bool {
 		return x.Key() == y.Key()

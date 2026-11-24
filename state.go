@@ -726,26 +726,48 @@ func (l *lockState) markerSet() bool {
 	return l.markerTop || len(l.marker) > 0
 }
 
-// silencesRelease reports whether a release of p that is not held goes unreported: a back edge dropped it, or the
-// marker is top and p has a value defined in a region (a loop, or a goto-cycle block) that defines a dropped lock's
-// value. A deferred release counts any value-rooted path once something was dropped.
-func (pc *passContext) silencesRelease(l *lockState, p lockPath, deferred bool, at token.Pos) bool {
-	if _, held := l.lockedMutexes[p.Key()]; held {
-		return false
+// answerKind is what a lock state says about one lock.
+type answerKind uint8
+
+const (
+	ansNotHeld answerKind = iota
+	ansHeld
+	ansUnknown
+)
+
+// lockAnswer is the answer of query; exclusive and assumed are set only when held.
+type lockAnswer struct {
+	kind               answerKind
+	exclusive, assumed bool
+}
+
+// query says whether l holds p. It is unknown when a back edge dropped p's lock: the marker names p, or is
+// top and p has a value defined in a region that defines a dropped lock's value.
+func (pc *passContext) query(l *lockState, p lockPath) lockAnswer {
+	key := p.Key()
+	if info, ok := l.lockedMutexes[key]; ok {
+		return lockAnswer{kind: ansHeld, exclusive: info.exclusive, assumed: info.assumed}
 	}
+	_, named := l.marker[key]
+	if named || l.markerTop && pathHasValue(p, func(b *ssa.BasicBlock) bool {
+		r, ok := pc.cfgOf(b.Parent()).region[b]
+		_, in := l.topRegions[r]
+		return ok && in
+	}) {
+		return lockAnswer{kind: ansUnknown}
+	}
+	return lockAnswer{}
+}
+
+// silencesRelease reports whether a release of p that is not held goes unreported: query says unknown.
+// A deferred release has a wider rule: any value-rooted path counts once something was dropped.
+func (pc *passContext) silencesRelease(l *lockState, p lockPath, deferred bool, at token.Pos) bool {
 	var silenced bool
-	switch {
-	case deferred:
-		silenced = l.markerSet() && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
-	case l.markerTop:
-		silenced = pathHasValue(p, func(b *ssa.BasicBlock) bool {
-			r, ok := pc.cfgOf(b.Parent()).region[b]
-			_, in := l.topRegions[r]
-			return ok && in
-		})
-	default:
-		_, silenced = l.marker[p.Key()]
-		return silenced
+	if deferred {
+		_, held := l.lockedMutexes[p.Key()]
+		silenced = !held && l.markerSet() && pathHasValue(p, func(*ssa.BasicBlock) bool { return true })
+	} else {
+		silenced = pc.query(l, p).kind == ansUnknown
 	}
 	if silenced && l.markerTop {
 		pc.statTopSilenced(at, p)

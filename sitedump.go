@@ -64,7 +64,50 @@ func heldString(locks []heldLock) string {
 	return strings.Join(parts, ",")
 }
 
-// writeSiteDump writes one line per engine site, entry and give-up record of this vet unit to its own file in the dump directory.
+// answersString renders query's answer for each lock recorded at inst, with "?" when the site
+// answers unknown for a lock not recorded.
+func (e *engineView) answersString(inst ssa.Instruction, locks []heldLock) string {
+	var parts []string
+	for _, l := range locks {
+		a := e.query(inst, l.path.Key())
+		suffix := map[viewKind]string{viewUnknown: "unknown", viewAll: "all", viewSome: "some", viewNone: "none"}[a.kind]
+		if a.exclusive {
+			suffix += "/x"
+		}
+		if a.assumed {
+			suffix += "/a"
+		}
+		parts = append(parts, l.path.String()+"="+suffix)
+	}
+	if e.inexact[inst] || e.unrecordedUnknown(inst, locks) {
+		parts = append(parts, "?")
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, ",")
+}
+
+// unrecordedUnknown says some state at inst was top, or its marker names a lock that is not among locks.
+func (e *engineView) unrecordedUnknown(inst ssa.Instruction, locks []heldLock) bool {
+	sv := e.sites[inst]
+	if sv == nil {
+		return false
+	}
+	if sv.top {
+		return true
+	}
+	for k := range sv.marker {
+		if !slices.ContainsFunc(locks, func(l heldLock) bool { return l.path.Key() == k }) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeSiteDump writes one line per engine site, with query's answers, and the entry and give-up
+// records of this vet unit to its own file in the dump directory.
 func (pc *passContext) writeSiteDump() {
 	if siteDumpDir == "" || pc.engine == nil {
 		return
@@ -85,7 +128,8 @@ func (pc *passContext) writeSiteDump() {
 			pos = fmt.Sprintf("%s:%d:%d", filepath.Base(at.Filename), at.Line, at.Column)
 		}
 		held, _ := e.heldSet(inst)
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s", relFuncName(inst.Parent()), pos, dumpKind(inst), heldString(sortedHeld(held))))
+		locks := sortedHeld(held)
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s", relFuncName(inst.Parent()), pos, dumpKind(inst), heldString(locks), e.answersString(inst, locks)))
 	}
 	for fn, locks := range e.entry {
 		lines = append(lines, fmt.Sprintf("%s\tentry\t%s", relFuncName(fn), heldString(locks)))

@@ -370,3 +370,36 @@ func djPinLiteral(b *djBox) {
 		defer djOther()
 	}()
 }
+
+// djFailedUnlock unlocks twice by defer under a no-op; the second unlock fails and checklocks is silenced.
+//
+// +checklocksignore
+func djFailedUnlock(s *djGuarded) {
+	s.mu.Lock()
+	defer djNoop()
+	defer s.mu.Unlock()
+	defer s.mu.Unlock()
+}
+
+// djCleanUnlock is the same with one unlock, which every site answers exactly.
+func djCleanUnlock(s *djGuarded) {
+	s.mu.Lock()
+	defer djNoop()
+	defer s.mu.Unlock()
+}
+
+// djLiteralUnlock defers an unlock in a literal, which replay does not walk, and the unlock itself; the literal's fails.
+//
+// +checklocksignore
+func djLiteralUnlock(s *djGuarded) {
+	s.mu.Lock()
+	defer djNoop()
+	defer func() { s.mu.Unlock() }()
+	defer s.mu.Unlock()
+}
+
+// djForcedPrecondition forces the lock the deferred call needs, which inserts an assumed lock.
+func djForcedPrecondition(s *djGuarded) {
+	defer djNoop()
+	defer djTouch(s) // +checklocksforce
+}

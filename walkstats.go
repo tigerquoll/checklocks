@@ -48,6 +48,7 @@ type walkStats struct {
 
 	// deferMay counts the collapsed no-op entries a defer unwind ran.
 	reads, walks, nested, overflow, deferMay int
+	deferUnknown                             int
 	distinct                                 map[blockKey][]*lockState
 	classes                                  map[blockKey]map[string]bool
 	fnWalks                                  map[string]int
@@ -180,6 +181,10 @@ func (pc *passContext) statOverflow() { pc.stats.overflow++ }
 // statDeferMay counts n collapsed no-op entries run.
 func (pc *passContext) statDeferMay(n int) { pc.stats.deferMay += n }
 
+// statDeferUnknown counts an unwind in replay that marks a site unknown for the first time: a may entry, a failed relevant call,
+// a relevant literal or a relevant defer in a cycle.
+func (pc *passContext) statDeferUnknown() { pc.stats.deferUnknown++ }
+
 // writeWalkStats writes the statistics of this vet unit to its own file in the stats directory.
 func (pc *passContext) writeWalkStats() {
 	if walkStatsDir == "" {
@@ -230,8 +235,8 @@ func (pc *passContext) writeWalkStats() {
 		}
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "walks %d\nnested %d\nmaxDistinct %d\t%s\nover16 %d\nover64 %d\noverflow %d\noracleReads %d\noracleMisses 0\ndeferMay %d\n",
-		st.walks, st.nested, maxDistinct, where, over16, over64, st.overflow, st.reads, st.deferMay)
+	fmt.Fprintf(&out, "walks %d\nnested %d\nmaxDistinct %d\t%s\nover16 %d\nover64 %d\noverflow %d\noracleReads %d\noracleMisses 0\ndeferMay %d\ndeferUnknown %d\n",
+		st.walks, st.nested, maxDistinct, where, over16, over64, st.overflow, st.reads, st.deferMay, st.deferUnknown)
 	for _, bucket := range slices.Sorted(maps.Keys(hist)) {
 		fmt.Fprintf(&out, "hist<=%d %d\n", bucket, hist[bucket])
 	}

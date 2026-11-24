@@ -106,7 +106,7 @@ var analyzerCases = []struct {
 		// no source position, such as those about the call inside a bound-method
 		// wrapper. gVisor's own nogo configuration excludes them too. The flag
 		// disables no analysis.
-		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg", "./test/order"},
+		args: []string{"-lockstringer=false", "-checklocks.wrappers=false", "./test", "./test/crosspkg", "./test/order", "./test/polarity"},
 	},
 	{
 		name: "lockstringer",

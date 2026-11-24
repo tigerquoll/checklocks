@@ -201,7 +201,7 @@ func engineFixture(t *testing.T) (*passContext, *ssa.Function, ssa.Instruction) 
 	inst := fn.Blocks[0].Instrs[0]
 	lock := types.NewVar(token.NoPos, types.NewPackage("p", "p"), "mu", types.Typ[types.Int])
 	ls, _ := heldBy(lock)
-	pc.engine.add(inst, ls.lockedMutexes, nil)
+	pc.engine.add(inst, ls, nil)
 	pc.engine.setEntry(fn, ls.lockedMutexes, nil)
 	path := newLockPath(pathRootValue, nil, nil, "mu")
 	pc.engine.addGain(inst, path)

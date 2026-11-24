@@ -542,6 +542,35 @@ The comment must still BEGIN with an annotation. A comment that mentions one in
 passing is prose, and prose about annotations is common in a code base that
 uses them.
 
+## When checklocks gives up
+
+A function whose lock states multiply past a bound is abandoned, not analyzed
+approximately. checklocks says so once, on the function's line, with one of:
+
+```
+checklocks gave up on this function: more than 40000 block walks
+checklocks gave up on this function: more than 64 lock states reach one block in a loop
+```
+
+The first counts every walk of a block in the function, the bodies of the
+function literals it calls included. The second counts the distinct lock states
+that reach one block inside a loop (or a `goto` cycle): sets of held locks, with
+their modes and assumed tags, aliases, the defers that matter and the values
+stored in some locals. The marker for a lock a loop dropped is not part of the
+count.
+
+When it gives up, checklocks drops every finding in that function and in the
+closures inside it, so a bug there is not reported. `lockorder` falls back to
+its own walk of the function, without what the engine adds. Callers of the
+function are still checked against its annotations; nothing the walk of its body
+found reaches them.
+
+To clear it, split the function so each loop holds fewer lock combinations,
+annotate its locks so more are declared on entry than discovered by the walk, or
+mark the function `+checklocksignore`, which says its body is not checked. A
+`+checklocksforce` on the function line silences the message too, and the
+findings are still dropped.
+
 ## Objects Under Construction
 
 An object nothing else can reach cannot be raced with, so its guards say nothing
