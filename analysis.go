@@ -837,7 +837,9 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 		case opAcquire:
 			p, ok := ls.lockField(rv, exclusive)
 			pc.decide(at, lockOpLock, ok)
-			if !ok {
+			if ok {
+				pc.recordOpGain(site.instr, p)
+			} else {
 				pc.opFailed = true
 				// The lock is really taken here, whatever assumed it earlier.
 				ls.setAssumed(p, false)

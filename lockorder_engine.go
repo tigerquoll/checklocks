@@ -17,6 +17,8 @@ package checklocks
 import (
 	"go/token"
 	"go/types"
+	"maps"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -68,6 +70,71 @@ func (pc *lockOrderContext) engineKeyClass(fn *ssa.Function, key pathKey, path l
 	}
 	class, _ := pc.engineClass(path)
 	return class
+}
+
+// acquiredClass returns the class a call acquires as a lock operation visitCall recognises, or "".
+func (pc *lockOrderContext) acquiredClass(call ssa.CallInstruction) string {
+	obj := calledFunc(staticCallee(call))
+	if obj == nil || lockOpName(obj.Name()) != opAcquire {
+		return ""
+	}
+	if recv, ok := receiverOf(call); ok {
+		return pc.classOf(recv)
+	}
+	return ""
+}
+
+// labels returns, for each engine lock a call of fn took, the classes lockorder acquired at those calls.
+func (pc *lockOrderContext) labels(fn *ssa.Function) map[pathKey]map[string]struct{} {
+	if own, ok := pc.labelSets[fn]; ok {
+		return own
+	}
+	own := make(map[pathKey]map[string]struct{})
+	if pc.labelSets == nil {
+		pc.labelSets = make(map[*ssa.Function]map[pathKey]map[string]struct{})
+	}
+	pc.labelSets[fn] = own
+	view := pc.engineView()
+	for _, b := range fn.Blocks {
+		for _, inst := range b.Instrs {
+			call, ok := inst.(ssa.CallInstruction)
+			if !ok {
+				continue
+			}
+			class := pc.acquiredClass(call)
+			if class == "" {
+				continue
+			}
+			for _, gained := range []map[pathKey]lockPath{view.gainsOf(call), view.opGainsOf(call)} {
+				for k := range gained {
+					if own[k] == nil {
+						own[k] = make(map[string]struct{})
+					}
+					own[k][class] = struct{}{}
+				}
+			}
+		}
+	}
+	return own
+}
+
+// engineClasses returns the classes of a held engine lock and the rule that found them: 'e' for
+// the class lockorder entered it under, 'l' for the classes of the acquires that took it, else
+// the projection's rule. A forced lock is only projected.
+func (pc *lockOrderContext) engineClasses(fn *ssa.Function, l heldLock) ([]string, byte) {
+	if !l.assumed {
+		k := l.path.Key()
+		if class := pc.engineEntry(fn)[k]; class != "" {
+			return []string{class}, 'e'
+		}
+		if set := pc.labels(fn)[k]; len(set) > 0 {
+			return slices.Sorted(maps.Keys(set)), 'l'
+		}
+	}
+	if class, rule := pc.engineClass(l.path); class != "" {
+		return []string{class}, rule
+	}
+	return nil, 'U'
 }
 
 // applyEffect adds the locks the annotations of a call this analysis did not treat as a lock

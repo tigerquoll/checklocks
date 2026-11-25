@@ -38,7 +38,7 @@ var shadowRun struct {
 	decision []string
 }
 
-// shadowLogs vets the shadow corpus once with both logs on and returns what they wrote.
+// shadowLogs vets the shadow and lockorder corpora once with both logs on and returns what they wrote.
 func shadowLogs(t *testing.T) (shadow map[string]string, decision []string) {
 	t.Helper()
 	shadowRun.once.Do(func() {
@@ -47,7 +47,7 @@ func shadowLogs(t *testing.T) (shadow map[string]string, decision []string) {
 			t.Fatalf("building the vettool failed: %v\n%s", err, out)
 		}
 		shadowDir, decisionDir := t.TempDir(), t.TempDir()
-		cmd := exec.Command("go", "vet", "-vettool="+bin, "./test/shadow")
+		cmd := exec.Command("go", "vet", "-vettool="+bin, "./test/shadow", "./test/lockorder")
 		cmd.Env = append(os.Environ(), "GOCACHE="+t.TempDir(), "CHECKLOCKS_SHADOW_LOG="+shadowDir, "CHECKLOCKS_DECISION_LOG="+decisionDir)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("vet failed: %v\n%s", err, out)
@@ -81,12 +81,18 @@ func shadowLogs(t *testing.T) (shadow map[string]string, decision []string) {
 // shadowCorpus returns the shadow log of the corpus package and the first and last line of a function in its source.
 func shadowCorpus(t *testing.T, fn string) (lines []string, first, last int) {
 	t.Helper()
+	return corpusLog(t, shadowPkg, "test/shadow/shadow.go", fn)
+}
+
+// corpusLog is shadowCorpus for the function fn of the file src of package pkg.
+func corpusLog(t *testing.T, pkg, file, fn string) (lines []string, first, last int) {
+	t.Helper()
 	logs, _ := shadowLogs(t)
-	log, ok := logs[strings.ReplaceAll(shadowPkg, "/", "%2F")+".log"]
+	log, ok := logs[strings.ReplaceAll(pkg, "/", "%2F")+".log"]
 	if !ok {
 		t.Fatalf("no shadow log for the corpus in %v", logs)
 	}
-	src, err := os.ReadFile("test/shadow/shadow.go")
+	src, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,8 +110,13 @@ func shadowCorpus(t *testing.T, fn string) (lines []string, first, last int) {
 	return strings.Split(strings.TrimSuffix(log, "\n"), "\n"), first, last
 }
 
-// linesIn returns the D and X lines positioned inside lines first to last of the corpus.
+// linesIn returns the D and X lines positioned inside lines first to last of the shadow corpus.
 func linesIn(log []string, first, last int) []string {
+	return linesInFile(log, "shadow.go", first, last)
+}
+
+// linesInFile is linesIn for the file of that name.
+func linesInFile(log []string, file string, first, last int) []string {
 	var out []string
 	for _, l := range log {
 		f := strings.Split(l, "\t")
@@ -113,7 +124,7 @@ func linesIn(log []string, first, last int) []string {
 			continue
 		}
 		for n := first; n <= last; n++ {
-			if strings.Contains(f[2], fmt.Sprintf("shadow.go:%d:", n)) {
+			if strings.Contains(f[2], fmt.Sprintf("%s:%d:", file, n)) {
 				out = append(out, l)
 			}
 		}
@@ -170,6 +181,22 @@ func TestShadowEngineOnly(t *testing.T) {
 	f := strings.Split(got[0], "\t")
 	if f[0] != "D" || f[4] != "call" || f[5] != "Lonly=" || f[6] != "Eonly=G" || len(f) != 8 || f[7] != "G=body/T" {
 		t.Errorf("want a D call line with Eonly G from the body by the type rule, got %q", got[0])
+	}
+}
+
+// TestShadowLabel pins that a lock reached through an alias takes the class of the acquire that took it.
+func TestShadowLabel(t *testing.T) {
+	log, first, last := corpusLog(t, lockorderPkg, "test/lockorder/lockorder.go", "seamAliasBody")
+	if got := linesInFile(log, "lockorder.go", first, last); len(got) > 0 {
+		t.Errorf("want no difference in seamAliasBody, got %q", got)
+	}
+}
+
+// TestShadowEntryClass pins that an entry lock takes the class lockorder entered it under.
+func TestShadowEntryClass(t *testing.T) {
+	log, first, last := corpusLog(t, lockorderPkg, "test/lockorder/lockorder.go", "seamAliasEntry")
+	if got := linesInFile(log, "lockorder.go", first, last); len(got) > 0 {
+		t.Errorf("want no difference in seamAliasEntry, got %q", got)
 	}
 }
 

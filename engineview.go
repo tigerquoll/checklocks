@@ -47,6 +47,10 @@ type engineView struct {
 	// gains is the real locks each call's acquire annotations took, joined over the states.
 	gains map[ssa.Instruction]map[pathKey]lockPath
 
+	// opGains is the lock a direct lock operation took at each call, joined over the states. It is
+	// kept apart from gains, which the old walk reads at every call it does not consume.
+	opGains map[ssa.Instruction]map[pathKey]lockPath
+
 	// releases is the real locks each call's release annotations dropped, in some state.
 	releases map[ssa.Instruction]map[pathKey]bool
 
@@ -205,6 +209,20 @@ func (e *engineView) addGain(inst ssa.Instruction, path lockPath) {
 	e.gains[inst][path.Key()] = path
 }
 
+// addOpGain records that the direct lock operation at inst took path.
+func (e *engineView) addOpGain(inst ssa.Instruction, path lockPath) {
+	if e == nil {
+		return
+	}
+	if e.opGains == nil {
+		e.opGains = make(map[ssa.Instruction]map[pathKey]lockPath)
+	}
+	if e.opGains[inst] == nil {
+		e.opGains[inst] = make(map[pathKey]lockPath)
+	}
+	e.opGains[inst][path.Key()] = path
+}
+
 // addRelease records that the annotations of the call at inst released path.
 func (e *engineView) addRelease(inst ssa.Instruction, path lockPath) {
 	if e == nil {
@@ -283,6 +301,14 @@ func (e *engineView) gainsOf(inst ssa.Instruction) map[pathKey]lockPath {
 		return nil
 	}
 	return e.gains[inst]
+}
+
+// opGainsOf returns the lock the call took as a direct lock operation, or nil.
+func (e *engineView) opGainsOf(inst ssa.Instruction) map[pathKey]lockPath {
+	if !e.usable(inst) {
+		return nil
+	}
+	return e.opGains[inst]
 }
 
 // releasesOf returns the locks the call's release annotations dropped in some state, or nil.
@@ -409,6 +435,13 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *loc
 func (pc *passContext) recordGain(inst ssa.Instruction, path lockPath) {
 	if e, ok := pc.replaying(inst); ok {
 		e.addGain(inst, path)
+	}
+}
+
+// recordOpGain records the lock a direct lock operation at inst took.
+func (pc *passContext) recordOpGain(inst ssa.Instruction, path lockPath) {
+	if e, ok := pc.replaying(inst); ok {
+		e.addOpGain(inst, path)
 	}
 }
 

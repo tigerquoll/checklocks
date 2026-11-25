@@ -114,13 +114,15 @@ func (pc *lockOrderContext) shadowCompare() {
 		ec := make(map[string]struct{})
 		origins := make(map[string][]string)
 		for _, l := range eng {
-			class, rule := pc.engineClass(l.path)
-			if class == "" {
+			classes, rule := pc.engineClasses(fn, l)
+			if len(classes) == 0 {
 				s.unmapped++
 				continue
 			}
-			ec[class] = struct{}{}
-			origins[class] = append(origins[class], fmt.Sprintf("%s/%c", originOf(l), rule))
+			for _, class := range classes {
+				ec[class] = struct{}{}
+				origins[class] = append(origins[class], fmt.Sprintf("%s/%c", originOf(l), rule))
+			}
 		}
 		var lOnly, eOnly []string
 		for c := range lo {
