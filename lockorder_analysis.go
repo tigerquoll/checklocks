@@ -408,6 +408,9 @@ func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, he
 // has been annotated for guarded fields gets the ordering check for free: a function
 // declared to run with a lock held starts with that lock's class held here.
 func (pc *lockOrderContext) entryLocks(fn *ssa.Function) siteLocks {
+	if l := pc.recordState(); l != nil {
+		return l
+	}
 	cs := newClassSet()
 	cs.pc = pc
 	obj := funcObject(fn)
@@ -424,6 +427,9 @@ func (pc *lockOrderContext) entryLocks(fn *ssa.Function) siteLocks {
 }
 
 func (pc *lockOrderContext) emptyLocks() siteLocks {
+	if l := pc.recordState(); l != nil {
+		return l
+	}
 	cs := newClassSet()
 	cs.pc = pc
 	return cs
@@ -584,6 +590,7 @@ func (pc *lockOrderContext) analyzePackage(fns []*ssa.Function) {
 		pc.analyzeFunction(fn, summaries[fn], true)
 	}
 	pc.shadowCompare()
+	pc.summaryDump(fns, summaries)
 }
 
 // maxFixpointRounds bounds the fixpoint. The summaries grow monotonically over a finite set

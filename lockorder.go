@@ -118,6 +118,9 @@ type lockOrderContext struct {
 	// shadow is what the tagged build records and compares against the engine; see shadow_parity.go.
 	shadow lockOrderShadow
 
+	// records is the sites the record-based walk state found no record at; see lockorder_records.go.
+	records recordCounts
+
 	// entries caches what the engine entered each function with; see engineEntry.
 	entries map[*ssa.Function]map[pathKey]string
 
