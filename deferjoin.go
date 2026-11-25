@@ -153,16 +153,18 @@ func (pc *passContext) through(block *ssa.BasicBlock, s deferStack) deferStack {
 	return s
 }
 
-// runDefers unwinds ls's defers. A no-op run as a may entry answers unknown to query at its site, and so does
-// every site of an unwind in which a relevant call failed, a relevant deferred literal ran, or a relevant defer
-// is in a cycle.
-func (pc *passContext) runDefers(wc *walkContext, ls *lockState) {
+// runDefers unwinds ls's defers for the return run, nil outside a return. A no-op run as a may entry answers unknown
+// to query at its site, and so does every site of an unwind in which a relevant call failed, a relevant deferred
+// literal ran, or a relevant defer is in a cycle.
+func (pc *passContext) runDefers(run *ssa.RunDefers, wc *walkContext, ls *lockState) {
 	st := ls.deferStack
 	var ran []*ssa.Defer
 	failed := false
 	n := unwindDefers(ls, func(d *ssa.Defer, at *lockState) {
 		pc.opFailed = false
-		pc.checkCall(newCallSite(d), wc, at)
+		site := newCallSite(d)
+		site.run = run
+		pc.checkCall(site, wc, at)
 		failed = failed || pc.opFailed && slices.Contains(st.defers, d)
 		ran = append(ran, d)
 	})

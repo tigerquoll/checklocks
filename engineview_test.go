@@ -16,6 +16,8 @@ package checklocks
 
 import (
 	"testing"
+
+	"golang.org/x/tools/go/ssa"
 )
 
 // TestEngineViewJoin pins how states join at a site: assumed only if every state assumes it,
@@ -44,6 +46,55 @@ func TestEngineViewJoin(t *testing.T) {
 	}
 	if got, ok := e.heldAt(other); !ok || len(got) != 0 {
 		t.Errorf("empty state = %v, %v; want a record with no locks", got, ok)
+	}
+}
+
+// TestEngineViewDeferPair pins that a deferred call is recorded per return that runs it, beside its union record.
+func TestEngineViewDeferPair(t *testing.T) {
+	pkg := buildTestPackage(t, "pair", "package pair\n\nfunc g() {}\n\nfunc f(b bool) {\n\tdefer g()\n\tif b {\n\t\treturn\n\t}\n}\n")
+	var d *ssa.Defer
+	var runs []*ssa.RunDefers
+	for _, b := range pkg.Func("f").Blocks {
+		for _, inst := range b.Instrs {
+			switch x := inst.(type) {
+			case *ssa.Defer:
+				d = x
+			case *ssa.RunDefers:
+				runs = append(runs, x)
+			}
+		}
+	}
+	if d == nil || len(runs) != 2 {
+		t.Fatalf("fixture has a defer %v and %d RunDefers, want a defer and two", d, len(runs))
+	}
+
+	p := newLockPath(pathRootValue, nil, nil, "mu")
+	q := newLockPath(pathRootValue, nil, nil, "other")
+	state := func(paths ...lockPath) *lockState {
+		ls := newLockState()
+		for _, path := range paths {
+			ls.lockedMutexes[path.Key()] = lockInfo{path: path}
+		}
+		return ls
+	}
+	var e engineView
+	for i, ls := range []*lockState{state(p), state(q)} {
+		e.add(d, ls, nil)
+		e.addPair(deferPair{runs[i], d}, ls, nil)
+	}
+
+	for i, want := range []lockPath{p, q} {
+		got, ok := e.deferHeldSet(runs[i], d)
+		if _, held := got[want.Key()]; !ok || len(got) != 1 || !held {
+			t.Errorf("return %d record = %v, %v; want only its own lock", i, got, ok)
+		}
+	}
+	if got, _ := e.heldSet(d); len(got) != 2 {
+		t.Errorf("the defer's union record = %v, want both locks", got)
+	}
+	e.giveUp(pkg.Func("f"), "test")
+	if _, ok := e.deferHeldSet(runs[0], d); ok {
+		t.Error("function given up on still has a pair record")
 	}
 }
 

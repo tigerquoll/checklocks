@@ -54,6 +54,9 @@ type engineView struct {
 	// releases is the real locks each call's release annotations dropped, in some state.
 	releases map[ssa.Instruction]map[pathKey]bool
 
+	// deferHeld is held for a deferred call as run by one return; the Defer's own record is the union over its returns.
+	deferHeld map[deferPair]map[pathKey]heldLock
+
 	// sites is what query reads, kept beside held.
 	sites map[ssa.Instruction]*siteView
 
@@ -62,6 +65,12 @@ type engineView struct {
 
 	// callOnly caches recordable.
 	callOnly map[*ssa.Function]bool
+}
+
+// deferPair is a deferred call as run by one return.
+type deferPair struct {
+	run *ssa.RunDefers
+	d   *ssa.Defer
 }
 
 // siteView is the joined states of one site, as flags that adding a state twice does not change.
@@ -136,10 +145,24 @@ func (e *engineView) add(inst ssa.Instruction, ls *lockState, entry map[pathKey]
 	if e.held == nil {
 		e.held = make(map[ssa.Instruction]map[pathKey]heldLock)
 	}
-	rec := e.held[inst]
+	e.held[inst] = joinHeld(e.held[inst], locks, entry)
+}
+
+// addPair joins the locks held at one return's run of a deferred call, as add does for a site.
+func (e *engineView) addPair(p deferPair, ls *lockState, entry map[pathKey]lockInfo) {
+	if e == nil {
+		return
+	}
+	if e.deferHeld == nil {
+		e.deferHeld = make(map[deferPair]map[pathKey]heldLock)
+	}
+	e.deferHeld[p] = joinHeld(e.deferHeld[p], ls.lockedMutexes, entry)
+}
+
+// joinHeld joins one state's locks into rec, which is nil for the first state.
+func joinHeld(rec map[pathKey]heldLock, locks, entry map[pathKey]lockInfo) map[pathKey]heldLock {
 	if rec == nil {
 		rec = make(map[pathKey]heldLock)
-		e.held[inst] = rec
 	}
 	for key, info := range locks {
 		_, atEntry := entry[key]
@@ -149,6 +172,7 @@ func (e *engineView) add(inst ssa.Instruction, ls *lockState, entry map[pathKey]
 		}
 		rec[key] = heldLock{path: info.path, assumed: info.assumed, entry: atEntry}
 	}
+	return rec
 }
 
 // addSite joins a state into the site's flags; a key first seen after the site had a record
@@ -295,6 +319,15 @@ func (e *engineView) heldSet(inst ssa.Instruction) (map[pathKey]heldLock, bool) 
 	return rec, ok
 }
 
+// deferHeldSet is heldSet for the deferred call d as run by run.
+func (e *engineView) deferHeldSet(run *ssa.RunDefers, d *ssa.Defer) (map[pathKey]heldLock, bool) {
+	if !e.usable(d) {
+		return nil, false
+	}
+	rec, ok := e.deferHeld[deferPair{run, d}]
+	return rec, ok
+}
+
 // gainsOf returns the locks the call's acquire annotations took, or nil.
 func (e *engineView) gainsOf(inst ssa.Instruction) map[pathKey]lockPath {
 	if !e.usable(inst) {
@@ -415,7 +448,7 @@ func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
 
 // recordHeld records the locks held at inst, a call or channel operation of the function being replayed, of a
 // recordable literal inside it, or of a synthetic wrapper walked inline under any top.
-func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *lockState) {
+func (pc *passContext) recordHeld(inst ssa.Instruction, run *ssa.RunDefers, wc *walkContext, ls *lockState) {
 	fn := wc.fn
 	if pc.engine == nil || pc.emit != emitReplay || inst == nil || inst.Parent() != fn || len(pc.records) == 0 {
 		return
@@ -428,7 +461,11 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *loc
 	if d, ok := inst.(*ssa.Defer); ok && fn != top && !pc.deferRelevant(d) && pc.unjoined[fn] {
 		return
 	}
-	pc.engine.add(inst, ls, pc.records[0].parent.lockedMutexes)
+	entry := pc.records[0].parent.lockedMutexes
+	pc.engine.add(inst, ls, entry)
+	if d, ok := inst.(*ssa.Defer); ok && run != nil {
+		pc.engine.addPair(deferPair{run, d}, ls, entry)
+	}
 }
 
 // recordGain records a lock the annotations of the call at inst took, or made real.

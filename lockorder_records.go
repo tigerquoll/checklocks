@@ -68,6 +68,9 @@ type recordLocks struct {
 	site ssa.Instruction
 	top  *ssa.Function
 
+	// run is the return whose deferred calls are being visited, nil elsewhere.
+	run *ssa.RunDefers
+
 	released map[string]bool
 }
 
@@ -83,8 +86,13 @@ func (r *recordLocks) record() (map[pathKey]heldLock, bool) {
 	if view == nil {
 		return nil, false
 	}
+	if d, ok := r.site.(*ssa.Defer); ok && r.run != nil {
+		return view.deferHeldSet(r.run, d)
+	}
 	return view.heldSet(r.site)
 }
+
+func (r *recordLocks) atReturn(run *ssa.RunDefers) { r.run = run }
 
 func (r *recordLocks) at(fn *ssa.Function, inst ssa.Instruction) {
 	r.site, r.top = inst, topOf(fn)
@@ -98,11 +106,13 @@ func (r *recordLocks) at(fn *ssa.Function, inst ssa.Instruction) {
 	c.reason[inst] = r.pc.noRecordReason(inst)
 }
 
-// noRecordReason says why the engine has no record at inst.
 func (pc *lockOrderContext) noRecordReason(inst ssa.Instruction) string {
 	view := pc.engineView()
 	if view == nil {
 		return "nil view"
+	}
+	if _, ok := view.heldSet(inst); ok {
+		return "return not run"
 	}
 	fn := inst.Parent()
 	if why := view.whyNone(fn); why != "" {
@@ -150,7 +160,7 @@ func (r *recordLocks) acquire(class string) {
 
 func (r *recordLocks) release(class string, receiverOwned bool) {
 	call, ok := r.site.(ssa.CallInstruction)
-	if class == "" || !receiverOwned || !ok || r.pc.engineView() == nil {
+	if class == "" || !receiverOwned || !ok {
 		return
 	}
 	if r.pc.callerOwned(r.top, call, class) {
@@ -159,7 +169,7 @@ func (r *recordLocks) release(class string, receiverOwned bool) {
 }
 
 func (r *recordLocks) fork() siteLocks {
-	return &recordLocks{pc: r.pc, site: r.site, top: r.top, released: maps.Clone(r.released)}
+	return &recordLocks{pc: r.pc, site: r.site, top: r.top, run: r.run, released: maps.Clone(r.released)}
 }
 
 func (r *recordLocks) merge(other siteLocks) {
@@ -171,14 +181,14 @@ func (r *recordLocks) merge(other siteLocks) {
 	}
 }
 
-func (r *recordLocks) after(fn *ssa.Function, call ssa.CallInstruction, _ bool) {
+func (r *recordLocks) after(_ *ssa.Function, call ssa.CallInstruction, _ bool) {
 	if len(r.released) == 0 {
 		return
 	}
 	view := r.pc.engineView()
 	for _, gained := range []map[pathKey]lockPath{view.gainsOf(call), view.opGainsOf(call)} {
 		for _, p := range gained {
-			classes, _ := r.pc.engineClasses(topOf(fn), heldLock{path: p})
+			classes, _ := r.pc.engineClasses(r.top, heldLock{path: p})
 			for _, c := range classes {
 				delete(r.released, c)
 			}
@@ -202,7 +212,7 @@ func (pc *lockOrderContext) summaryDump(fns []*ssa.Function, summaries map[*ssa.
 		return strings.Compare(relFuncName(a), relFuncName(b))
 	}) {
 		s := summaries[fn]
-		if s == nil || (s.String() == "acquires:" && len(s.ParamCalls) == 0 && len(s.Witnesses) == 0) {
+		if s == nil || (len(s.Acquires) == 0 && len(s.Pairs) == 0 && !s.Blocking && !s.BlockingNamed && len(s.BlockingReleased) == 0 && len(s.ParamCalls) == 0 && len(s.Witnesses) == 0) {
 			continue
 		}
 		var params, witnesses []string

@@ -17,6 +17,10 @@
 package checklocks_test
 
 import (
+	"bytes"
+	"errors"
+	"flag"
+	"fmt"
 	"maps"
 	"net/url"
 	"os"
@@ -28,7 +32,10 @@ import (
 	"testing"
 )
 
-const recordsLockorder = "github.com/tigerquoll/checklocks/test/lockorder"
+const (
+	recordsModule    = "github.com/tigerquoll/checklocks"
+	recordsLockorder = recordsModule + "/test/lockorder"
+)
 
 // recordRows is what the engine state prints in the corpora of lockorder and lockblocking, per case.
 var recordRows = map[string][]string{
@@ -48,18 +55,15 @@ var recordRows = map[string][]string{
 		"test/lockorder/records.go:61:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
 		"test/lockorder/records.go:72:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
 		"test/lockorder/records.go:81:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
-		"test/lockorder/records.go:90:2: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
-		"test/lockorder/records.go:90:2: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
 	},
 	"lockblocking": {
-		"test/lockblocking/records.go:27:2: calling Sleep, which blocks while holding App, ZZOther: a wait under a lock stalls every other user of it",
-		"test/lockblocking/records.go:27:2: calling Sleep, which blocks while holding App, ZZOther: a wait under a lock stalls every other user of it",
-		"test/lockblocking/records.go:27:37: missing expected failure \"while holding App:\"",
-		"test/lockblocking/records.go:27:37: missing expected failure \"while holding ZZOther:\"",
 		"test/lockblocking/records.go:39:7: missing expected failure \"a channel receive\"",
 		"test/lockblocking/records.go:48:3: a channel receive while holding App: a wait under a lock stalls every other user of it",
 	},
 }
+
+// recordNotWalked is the sites the engine state's dump counts as not walked, per case: lock-primitive bodies.
+var recordNotWalked = map[string]int{"checklocks": 5, "fresh": 2, "lockgap": 2, "lockorder": 6, "locktype": 6}
 
 // recordDumpDiffs is the functions whose summary line differs between the states.
 var recordDumpDiffs = []string{
@@ -88,10 +92,17 @@ func recordsVet(t *testing.T, bin string, args []string, state, order string) re
 	t.Helper()
 	dumpDir := t.TempDir()
 	cmd := exec.Command("go", append([]string{"vet", "-vettool=" + bin}, args...)...)
-	cmd.Env = append(os.Environ(), "GOCACHE="+t.TempDir(), "CHECKLOCKS_LOCKORDER_STATE="+state,
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "CHECKLOCKS_SHADOW_LOG=") || strings.HasPrefix(kv, "CHECKLOCKS_DECISION_LOG=")
+	})
+	cmd.Env = append(env, "GOCACHE="+t.TempDir(), "CHECKLOCKS_LOCKORDER_STATE="+state,
 		"CHECKLOCKS_SUMMARY_DUMP="+dumpDir, "CHECKLOCKS_WALK_ORDER="+order)
+	out, err := cmd.CombinedOutput()
 	// Vet exits non-zero when it prints.
-	out, _ := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || len(bytes.TrimSpace(out)) == 0) {
+		t.Fatalf("vet failed: %v\n%s", err, out)
+	}
 	run := recordsRun{dump: make(map[string]string)}
 	if s := strings.TrimSpace(string(out)); s != "" {
 		run.rows = strings.Split(s, "\n")
@@ -149,6 +160,14 @@ func TestLockOrderRecords(t *testing.T) {
 				if !slices.Equal(slices.Sorted(maps.Keys(walk.dump)), slices.Sorted(maps.Keys(engine.dump))) {
 					t.Errorf("the states wrote different dump files: %q and %q", slices.Sorted(maps.Keys(walk.dump)), slices.Sorted(maps.Keys(engine.dump)))
 				}
+				for _, unit := range corpusUnits(tc.args, tc.fileList) {
+					for arm, run := range map[string]recordsRun{"walk": walk, "engine": engine} {
+						if _, ok := run.dump[url.PathEscape(unit)+".summary"]; !ok {
+							t.Errorf("%s state wrote no summary dump for %s", arm, unit)
+						}
+					}
+				}
+				notWalked := 0
 				for name, text := range engine.dump {
 					unit, err := url.PathUnescape(strings.TrimSuffix(name, ".summary"))
 					if err != nil {
@@ -162,8 +181,12 @@ func TestLockOrderRecords(t *testing.T) {
 						t.Errorf("%s: header does not name the walk state:\n%.200s", name, walk.dump[name])
 					}
 					for _, line := range strings.Split(text, "\n") {
-						if strings.HasPrefix(line, "# norecord walked, site unrecorded") || strings.HasPrefix(line, "# norecord nil view") {
+						if strings.HasPrefix(line, "# norecord walked, site unrecorded") || strings.HasPrefix(line, "# norecord nil view") || strings.HasPrefix(line, "# norecord return not run") {
 							t.Errorf("%s: %s", name, line)
+						}
+						var n int
+						if _, err := fmt.Sscanf(line, "# norecord not walked sites=%d", &n); err == nil {
+							notWalked += n
 						}
 					}
 					w, e := summaryLines(walk.dump[name]), summaryLines(text)
@@ -180,15 +203,34 @@ func TestLockOrderRecords(t *testing.T) {
 					}
 					mu.Unlock()
 				}
+				if notWalked != recordNotWalked[tc.name] {
+					t.Errorf("%d sites not walked, want %d", notWalked, recordNotWalked[tc.name])
+				}
 			})
 		}
 	})
+	if strings.Contains(flag.Lookup("test.run").Value.String(), "/") {
+		return
+	}
 	if got := slices.Sorted(maps.Keys(diffs)); !slices.Equal(got, recordDumpDiffs) {
 		t.Errorf("summaries that differ between the states:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(recordDumpDiffs, "\n"))
 	}
 }
 
-// summaryLines maps each function of a dump to its line.
+// corpusUnits is the units a case vets, named as the dump files name them.
+func corpusUnits(args []string, fileList bool) []string {
+	if fileList {
+		return []string{"command-line-arguments"}
+	}
+	var units []string
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			units = append(units, recordsModule+strings.TrimPrefix(arg, "."))
+		}
+	}
+	return units
+}
+
 func summaryLines(dump string) map[string]string {
 	out := make(map[string]string)
 	for _, line := range strings.Split(dump, "\n") {

@@ -467,7 +467,7 @@ func (pc *passContext) checkGlobalAccess(wc *walkContext, inst ssa.Instruction, 
 }
 
 func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) {
-	pc.recordHeld(site.instr, wc, ls)
+	pc.recordHeld(site.instr, site.run, wc, ls)
 	lff := wc.lff
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#CallCommon
 	//
@@ -1192,6 +1192,9 @@ const (
 type callSite struct {
 	kind  siteKind
 	instr ssa.CallInstruction
+
+	// run is the return that runs a deferred call; nil elsewhere.
+	run *ssa.RunDefers
 }
 
 // newCallSite returns the site of a call, defer or go statement.
@@ -1303,17 +1306,17 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		pc.substituteGlobalAccessor(x, ls)
 		pc.checkCall(newCallSite(x), wc, ls)
 	case *ssa.Send, *ssa.Select:
-		pc.recordHeld(x, wc, ls)
+		pc.recordHeld(x, nil, wc, ls)
 	case *ssa.UnOp:
 		if x.Op == token.ARROW {
-			pc.recordHeld(x, wc, ls)
+			pc.recordHeld(x, nil, wc, ls)
 		}
 	case *ssa.Go:
 		pc.checkGoCall(newCallSite(x), wc, ls)
 	case *ssa.Defer:
 		ls.pushDefer(x, pc.deferRelevant(x))
 	case *ssa.RunDefers:
-		pc.runDefers(wc, ls)
+		pc.runDefers(x, wc, ls)
 	case *ssa.MakeClosure:
 		if refs := x.Referrers(); refs != nil {
 			var (

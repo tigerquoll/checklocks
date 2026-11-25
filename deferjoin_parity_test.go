@@ -68,13 +68,13 @@ func TestRunDefersCountsMay(t *testing.T) {
 	}
 	wc := &walkContext{fn: fn, lff: &lockFunctionFacts{Ignore: true}}
 	stack := ls.deferStack
-	pc.runDefers(wc, ls)
+	pc.runDefers(nil, wc, ls)
 	if pc.stats.deferMay != 1 {
 		t.Errorf("deferMay is %d after one may entry ran, want 1", pc.stats.deferMay)
 	}
 	pc.emit = emitReplay
 	ls.deferStack = stack
-	pc.runDefers(wc, ls)
+	pc.runDefers(nil, wc, ls)
 	if pc.stats.deferMay != 1 {
 		t.Errorf("deferMay is %d after a replay, want it unchanged", pc.stats.deferMay)
 	}

@@ -117,6 +117,13 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		// which is the idiom for notifying listeners safely.
 		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn {
 			exit := cur.fork()
+			var run *ssa.RunDefers
+			for _, instr := range b.Instrs {
+				if r, ok := instr.(*ssa.RunDefers); ok {
+					run = r
+				}
+			}
+			exit.atReturn(run)
 			exitInst := curInst.fork()
 			for i := len(state.deferred) - 1; i >= 0; i-- {
 				pc.visitCall(fn, state.deferred[i], exit, exitInst, summary, report && !ignored)

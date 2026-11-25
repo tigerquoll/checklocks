@@ -30,6 +30,8 @@ type siteLocks interface {
 	release(class string, receiverOwned bool)
 	fork() siteLocks
 	merge(other siteLocks)
+	// atReturn tells a fork that visits the deferred calls of the return's RunDefers, nil if it has none.
+	atReturn(run *ssa.RunDefers)
 	// at runs before the walk visits inst.
 	at(fn *ssa.Function, inst ssa.Instruction)
 	// after runs on every exit from a visited call; consumed says the call was a lock operation.
@@ -240,6 +242,8 @@ func (cs *classSet) String() string {
 	}
 	return strings.Join(h, ", ")
 }
+
+func (*classSet) atReturn(*ssa.RunDefers) {}
 
 func (cs *classSet) merge(other siteLocks) {
 	cs.mergeChanged(other.(*classSet))

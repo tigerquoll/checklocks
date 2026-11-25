@@ -487,7 +487,7 @@ func (u unwindFixture) run(push func(ls *lockState, sites []*ssa.Defer)) pathKey
 		key = p.Key()
 	}
 	push(ls, u.sites)
-	u.pc.runDefers(u.wc, ls)
+	u.pc.runDefers(nil, u.wc, ls)
 	return key
 }
 
