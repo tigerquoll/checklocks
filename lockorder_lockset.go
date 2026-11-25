@@ -30,7 +30,7 @@ type siteLocks interface {
 	release(class string, receiverOwned bool)
 	fork() siteLocks
 	merge(other siteLocks)
-	// atReturn tells a fork that visits the deferred calls of the return's RunDefers, nil if it has none.
+	// atReturn gives a return's exit fork that return's RunDefers, nil if it has none.
 	atReturn(run *ssa.RunDefers)
 	// at runs before the walk visits inst.
 	at(fn *ssa.Function, inst ssa.Instruction)
