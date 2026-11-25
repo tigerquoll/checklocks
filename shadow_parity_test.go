@@ -200,6 +200,28 @@ func TestShadowEntryClass(t *testing.T) {
 	}
 }
 
+// TestShadowReleased pins that the record-based released set holds App in seamDropBoth where the count rule does not.
+func TestShadowReleased(t *testing.T) {
+	log, first, last := corpusLog(t, lockorderPkg, "test/lockorder/lockorder.go", "(a *App) seamDropBoth")
+	found := false
+	for _, l := range log {
+		f := strings.Split(l, "\t")
+		if f[0] != "R" || len(f) != 7 {
+			continue
+		}
+		for n := first; n <= last; n++ {
+			if strings.Contains(f[2], fmt.Sprintf("lockorder.go:%d:", n)) &&
+				slices.Contains(strings.Split(strings.TrimPrefix(f[5], "d2="), ","), "App") &&
+				!slices.Contains(strings.Split(strings.TrimPrefix(f[4], "old="), ","), "App") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("want an R line in seamDropBoth with d2 holding App and old not, got %q", log)
+	}
+}
+
 func TestShadowView(t *testing.T) {
 	shadow, decision := shadowLogs(t)
 	var names []string

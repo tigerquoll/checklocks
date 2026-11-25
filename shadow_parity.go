@@ -59,6 +59,10 @@ type lockOrderShadow struct {
 	compared, diff, lonly, eonly, noengine, unmapped, unrecorded int
 	noview                                                       bool
 	panicked                                                     string
+
+	// rdiff counts the R lines; rseen holds the site and reader of each.
+	rdiff int
+	rseen map[string]bool
 }
 
 func (pc *lockOrderContext) shadowCall(call ssa.CallInstruction, cur *classSet, report bool) {
@@ -190,6 +194,7 @@ func (pc *lockOrderContext) shadowFlush(cycle bool) {
 	case s.noview:
 		out.WriteString(" noview")
 	}
+	fmt.Fprintf(&out, "\trdiff=%d", s.rdiff)
 	out.WriteString("\n")
 
 	name := url.PathEscape(pkg)

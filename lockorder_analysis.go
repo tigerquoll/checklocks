@@ -219,6 +219,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// The engine's additions apply on every exit, except for a call consumed as a lock operation.
 	consumed := false
 	defer func() {
+		pc.shadowGains(fn, call, cur, report)
 		if !consumed {
 			pc.applyEffect(fn, call, cur)
 		}
@@ -248,14 +249,17 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 					if class != "" {
 						pc.checkAcquire(call.Pos(), class, displayName(callee), cur.held(), summary, report)
 						pc.checkHierarchy(call.Pos(), recv, class, displayName(callee), curInst, report)
+						pc.shadowReleased(fn, call, cur, report, "acquire")
 						// What has been released is recorded as it stands BEFORE the
 						// acquisition: taking the lock back closes the gap.
 						summary.addAcquire(class, cur.releasedClasses())
 						cur.acquire(class)
+						delete(cur.d2, class)
 						curInst.acquire(recv, class)
 					}
 				case opRelease:
 					cur.release(class, isReceiver(fn, recv))
+					pc.shadowRelease(fn, call, recv, class, cur, report)
 					curInst.release(recv)
 				}
 				consumed = true
@@ -269,6 +273,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// enough to recognise a client library's round trip.
 	name, sinkKey, isSink := blockingCallee(call, callee)
 	if isSink {
+		pc.shadowReleased(fn, call, cur, report, "sink")
 		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", sinkKey, nil, cur.held(), cur.releasedClasses(), true /* named */, summary, report)
 		pc.recordWitnessWait(fn, "calling "+name, call.Pos(), cur.releasedClasses(), true /* named */, false /* annotated */)
 	}
@@ -313,6 +318,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	if recv, ok := receiverOf(call); ok {
 		onReceiver = isReceiver(fn, recv)
 	}
+	pc.shadowReleased(fn, call, cur, report, "call")
 	released := cur.releasedClasses()
 	ownBlocking, ownWitnesses := cs.Blocking, cs.Witnesses
 	var resolved []witnessPath

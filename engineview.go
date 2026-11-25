@@ -69,8 +69,8 @@ type siteView struct {
 	// every says a key was held in every state added; exclusive that each state holding it did so exclusively.
 	every, exclusive map[pathKey]bool
 
-	// marker is the union of the states' marker keys; top says some state's marker was top.
-	marker map[pathKey]bool
+	// marker is the union of the states' marker keys and their paths; top says some state's marker was top.
+	marker map[pathKey]lockPath
 	top    bool
 }
 
@@ -107,7 +107,7 @@ func (e *engineView) query(inst ssa.Instruction, k pathKey) viewAnswer {
 		}
 		return viewAnswer{kind: kind, exclusive: sv.exclusive[k], assumed: e.held[inst][k].assumed}
 	}
-	if sv.top || sv.marker[k] {
+	if _, marked := sv.marker[k]; sv.top || marked {
 		return viewAnswer{}
 	}
 	return viewAnswer{kind: viewNone}
@@ -160,7 +160,7 @@ func (e *engineView) addSite(inst ssa.Instruction, ls *lockState) {
 	sv := e.sites[inst]
 	first := sv == nil
 	if first {
-		sv = &siteView{every: make(map[pathKey]bool), exclusive: make(map[pathKey]bool), marker: make(map[pathKey]bool)}
+		sv = &siteView{every: make(map[pathKey]bool), exclusive: make(map[pathKey]bool), marker: make(map[pathKey]lockPath)}
 		e.sites[inst] = sv
 	}
 	for k := range sv.every {
@@ -174,8 +174,8 @@ func (e *engineView) addSite(inst ssa.Instruction, ls *lockState) {
 		}
 		sv.exclusive[k] = sv.exclusive[k] && info.exclusive
 	}
-	for k := range ls.marker {
-		sv.marker[k] = true
+	for k, m := range ls.marker {
+		sv.marker[k] = m.path
 	}
 	sv.top = sv.top || ls.markerTop
 }

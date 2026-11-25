@@ -23,3 +23,9 @@ type lockOrderShadow struct{}
 func (*lockOrderContext) shadowCall(ssa.CallInstruction, *classSet, bool) {}
 func (*lockOrderContext) shadowCompare()                                  {}
 func (*lockOrderContext) shadowFlush(bool)                                {}
+
+func (*lockOrderContext) shadowRelease(*ssa.Function, ssa.CallInstruction, ssa.Value, string, *classSet, bool) {
+}
+func (*lockOrderContext) shadowGains(*ssa.Function, ssa.CallInstruction, *classSet, bool) {}
+func (*lockOrderContext) shadowReleased(*ssa.Function, ssa.CallInstruction, *classSet, bool, string) {
+}

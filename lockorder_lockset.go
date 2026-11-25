@@ -15,6 +15,7 @@
 package checklocks
 
 import (
+	"maps"
 	"sort"
 	"strings"
 )
@@ -38,6 +39,9 @@ type classSet struct {
 	// released is the classes released out of the caller's locks, and not taken back. A
 	// summary exports it so a call site can subtract it from its own held set.
 	released map[string]bool
+
+	// d2 is released as the engine's records would set it; the tagged build logs where it differs.
+	d2 map[string]bool
 
 	// site is the classes of the entry locks only the engine has, as it held them at the current site;
 	// it is replaced at every call and channel operation, cleared where the engine has no record, and never counted down.
@@ -82,6 +86,9 @@ func (cs *classSet) fork() *classSet {
 	}
 	for k := range cs.released {
 		out.released[k] = true
+	}
+	if cs.d2 != nil {
+		out.d2 = maps.Clone(cs.d2)
 	}
 	return out
 }
@@ -250,6 +257,12 @@ func (cs *classSet) merge(other *classSet) bool {
 	for k := range cs.released {
 		if !other.released[k] {
 			delete(cs.released, k)
+			changed = true
+		}
+	}
+	for k := range cs.d2 {
+		if !other.d2[k] {
+			delete(cs.d2, k)
 			changed = true
 		}
 	}
