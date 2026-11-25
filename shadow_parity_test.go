@@ -84,7 +84,7 @@ func shadowCorpus(t *testing.T, fn string) (lines []string, first, last int) {
 	return corpusLog(t, shadowPkg, "test/shadow/shadow.go", fn)
 }
 
-// corpusLog is shadowCorpus for the function fn of the file src of package pkg.
+// corpusLog is shadowCorpus for the function fn of file in package pkg.
 func corpusLog(t *testing.T, pkg, file, fn string) (lines []string, first, last int) {
 	t.Helper()
 	logs, _ := shadowLogs(t)
