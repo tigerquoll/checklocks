@@ -70,7 +70,7 @@ type classSet struct {
 	// lo is this analysis's own count of each class, without the engine's gains. Counts never fall below it.
 	lo map[string]int
 
-	// pc is the context at and after run their overlay and effect in; a fork shares it.
+	// pc is the context at and after need; entryLocks and emptyLocks set it and a fork shares it.
 	pc *lockOrderContext
 }
 
@@ -245,8 +245,7 @@ func (cs *classSet) merge(other siteLocks) {
 	cs.mergeChanged(other.(*classSet))
 }
 
-// mergeChanged folds another set into this one, keeping the larger count of each class, and
-// reports whether this one changed.
+// mergeChanged folds another set into this one, keeping the larger count of each class.
 //
 // Merging at a join point is a deliberate over approximation: if a class is held on one
 // path into a block it is treated as held afterwards. That errs towards reporting rather
