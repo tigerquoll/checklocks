@@ -288,3 +288,249 @@ func lfResult(t *oneGuardStruct) {
 	t.guardedField = r
 	t.mu.Unlock()
 }
+
+type lfA struct {
+	mu sync.Mutex
+	pm *sync.Mutex
+}
+
+type lfB struct{ mu sync.Mutex }
+
+type lfC struct{ mu sync.Mutex }
+
+type lfH struct{ p *sync.Mutex }
+
+var lfG1, lfG4, lfG7, lfGF, lfGS *sync.Mutex
+
+// +checklocksacquire:lfG1
+func lfLockG1() { lfG1.Lock() }
+
+// +checklocksrelease:lfG1
+func lfUnlockG1() { lfG1.Unlock() }
+
+// +checklocksacquire:lfGF
+func lfLockGF() { lfGF.Lock() }
+
+// +checklocksrelease:lfGF
+func lfUnlockGF() { lfGF.Unlock() }
+
+// A lock handed over between two names with no store is not folded.
+func lfAliasNoStore(y *lfB) {
+	lfLockG1()
+	func() {
+		lfUnlockG1()
+		y.mu.Lock()
+	}() // +checklocksfail=return with unexpected locks held
+	lfUnlockG1()
+}
+
+// A lock handed over to another object is not folded.
+func lfHandOverDiff(x *lfA, y *lfB) {
+	x.mu.Lock()
+	func() {
+		y.mu.Lock()
+		x.mu.Unlock()
+	}() // +checklocksfail=return with unexpected locks held
+	y.mu.Unlock() // +checklocksfail=already unlocked
+} // +checklocksfail=return with unexpected locks held
+
+// A store to a captured variable the caller reads refuses the fold.
+func lfSwapCaptured(x *lfA, y *lfB) {
+	p := &y.mu
+	x.mu.Lock()
+	y.mu.Lock()
+	func() {
+		y.mu.Unlock()
+		p = &x.mu
+	}()
+	p.Unlock()
+} // +checklocksfail=return with unexpected locks held
+
+// A store to a global, from a nested literal, refuses the fold.
+func lfSwapSibling(x *lfA, y *lfB) {
+	lfG7 = &y.mu
+	x.mu.Lock()
+	y.mu.Lock()
+	func(x *lfA, y *lfB) {
+		func(x *lfA, y *lfB) {
+			y.mu.Unlock()
+			lfG7 = &x.mu
+		}(x, y)
+		func() {
+			lfG7.Unlock()
+		}()
+	}(x, y)
+} // +checklocksfail=return with unexpected locks held
+
+// A store to a field refuses the fold.
+func lfSwapField(h *lfH, x *lfA, y *lfB) {
+	h.p = &y.mu
+	x.mu.Lock()
+	h.p.Lock()
+	func() {
+		h.p.Unlock()
+		h.p = &x.mu
+	}()
+	h.p.Unlock()
+} // +checklocksfail=return with unexpected locks held
+
+// A store through a captured pointer refuses the fold.
+func lfSwapCapPtr(x *lfA, y *lfB) {
+	p := &y.mu
+	pp := &p
+	x.mu.Lock()
+	y.mu.Lock()
+	func() {
+		y.mu.Unlock()
+		*pp = &x.mu
+	}()
+	p.Unlock()
+} // +checklocksfail=return with unexpected locks held
+
+// A store through a pointer argument refuses the fold.
+func lfSwapPtr(x *lfA, y *lfB) {
+	p := &y.mu
+	x.mu.Lock()
+	y.mu.Lock()
+	func(pp **sync.Mutex, x *lfA, y *lfB) {
+		y.mu.Unlock()
+		*pp = &x.mu
+	}(&p, x, y)
+	p.Unlock()
+} // +checklocksfail=return with unexpected locks held
+
+// A store of a value that holds no pointer does not refuse the fold.
+func lfCountStore(c *lfC, n *int) {
+	c.mu.Lock()
+	defer func() {
+		*n++
+		c.mu.Unlock()
+	}()
+}
+
+// A store to a composite local of the literal does not refuse the fold.
+func lfLocalComposite(x *lfA, y *lfB) {
+	x.mu.Lock()
+	func() {
+		h := lfH{p: &y.mu}
+		_ = h
+		x.mu.Unlock()
+	}()
+	x.mu.Lock()
+	x.mu.Unlock()
+}
+
+// A store to a free variable the caller does not read does not refuse the fold.
+func lfErrStore(x *lfA, f func() error) (err error) {
+	x.mu.Lock()
+	func() {
+		defer x.mu.Unlock()
+		err = f()
+	}()
+	x.mu.Lock()
+	x.mu.Unlock()
+	return err
+}
+
+// A global re-pointed under a lock fact is not folded.
+func lfGlobalFacts(x *lfA, y *lfB) {
+	lfLockGF()
+	func() {
+		lfGF.Unlock() // +lockgapfail=taken again
+		lfGF = &y.mu
+		lfGF.Lock()
+	}() // +checklocksfail=return with unexpected locks held
+	lfUnlockGF()
+}
+
+// A global re-pointed in one literal and read in a sibling is not folded.
+func lfGlobalSibling(x *lfA, y *lfB) {
+	lfGS = &x.mu
+	lfGS.Lock()
+	func() {
+		func() {
+			lfGS.Unlock() // +lockgapfail=taken again
+			lfGS = &y.mu
+			lfGS.Lock()
+		}() // +checklocksfail=return with unexpected locks held
+		func() {
+			lfGS.Unlock()
+		}()
+	}()
+} // +checklocksfail=return with unexpected locks held
+
+// The same, with the sibling releasing under defer.
+func lfGlobalSiblingDefer(x *lfA, y *lfB) {
+	lfG4 = &x.mu
+	lfG4.Lock()
+	func() {
+		func() {
+			lfG4.Unlock() // +lockgapfail=taken again
+			lfG4 = &y.mu
+			lfG4.Lock()
+		}() // +checklocksfail=return with unexpected locks held
+		func() {
+			defer lfG4.Unlock()
+		}()
+	}()
+} // +checklocksfail=return with unexpected locks held
+
+// A pointer stored through a field is not folded.
+func lfFieldPtr(x *lfA, y *lfB) {
+	x.pm.Lock()
+	func(x *lfA) {
+		q := &x.pm
+		(*q).Unlock() // +lockgapfail=taken again
+		*q = &y.mu
+		(*q).Lock()
+	}(x) // +checklocksfail=return with unexpected locks held
+	x.pm.Unlock()
+}
+
+func lfSetPtr(pp **sync.Mutex, m *sync.Mutex) { *pp = m }
+
+// Known gap: a store made by a callee of the literal is not seen.
+func lfSwapViaCallee(x *lfA, y *lfB) {
+	p := &y.mu
+	x.mu.Lock()
+	y.mu.Lock()
+	func() {
+		y.mu.Unlock()
+		lfSetPtr(&p, &x.mu)
+	}()
+	p.Unlock() // +checklocksfail=already unlocked
+} // +checklocksfail=return with unexpected locks held
+
+// Known gap: a lock freed in one literal and taken again in another gives two rows.
+func lfRelPair(x *lfA) {
+	x.mu.Lock()
+	func() { x.mu.Unlock() }()
+	func() { x.mu.Lock() }() // +checklocksfail=return with unexpected locks held
+	x.mu.Unlock()            // +checklocksfail=already unlocked
+}
+
+type lfRelocker interface{ relock() }
+
+// Known gap: a lock freed in a literal and taken again by a call the engine cannot see into.
+func lfRelIface(c *lfC, r lfRelocker) {
+	c.mu.Lock()
+	func() { c.mu.Unlock() }()
+	r.relock()
+	c.mu.Unlock() // +checklocksfail=already unlocked
+}
+
+// Known gap: the same, through a function value.
+func lfRelFunc(c *lfC, f func()) {
+	c.mu.Lock()
+	func() { c.mu.Unlock() }()
+	f()
+	c.mu.Unlock() // +checklocksfail=already unlocked
+}
+
+// The same without the literal.
+func lfRelIfacePlain(c *lfC, r lfRelocker) {
+	c.mu.Lock()
+	c.mu.Unlock()
+	r.relock()
+	c.mu.Unlock() // +checklocksfail=already unlocked
+}

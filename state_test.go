@@ -293,7 +293,7 @@ func TestFoldExit(t *testing.T) {
 	}
 }
 
-// TestRetaken pins that a lock released and one of the same object taken under another key is a retake.
+// TestRetaken pins that a lock released and another taken is a retake.
 func TestRetaken(t *testing.T) {
 	obj := types.NewVar(token.NoPos, nil, "mu", types.Typ[types.Int])
 	put := func(ls *lockState, name string, o types.Object) {
@@ -312,7 +312,11 @@ func TestRetaken(t *testing.T) {
 	}
 	exit = newLockState()
 	put(exit, "b", types.NewVar(token.NoPos, nil, "other", types.Typ[types.Int]))
+	if !retaken(pre, exit) {
+		t.Error("a lock released and one of another object taken is not a retake")
+	}
+	pre.lockedMutexes[newLockPath(pathRootValue, nil, nil, "a").Key()] = lockInfo{exclusive: true, assumed: true, object: obj}
 	if retaken(pre, exit) {
-		t.Error("a lock of another object is a retake")
+		t.Error("an assumed lock missing from the exit is a retake")
 	}
 }

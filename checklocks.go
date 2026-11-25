@@ -157,6 +157,9 @@ type passContext struct {
 	// unjoined holds the literals walked, in the top function being analyzed, without joining their defer stacks.
 	unjoined map[*ssa.Function]bool
 
+	// storeScans holds the storesTracked result per (caller, literal), for the top function being analyzed.
+	storeScans map[[2]*ssa.Function]bool
+
 	// opFailed is set when a lock operation's transfer fails, whether or not a report follows.
 	opFailed bool
 }
@@ -234,7 +237,7 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 			return
 		}
 		pc.fnHints = nil
-		pc.current, pc.emit, pc.records, pc.unjoined = nil, emitDirect, nil, nil
+		pc.current, pc.emit, pc.records, pc.unjoined, pc.storeScans = nil, emitDirect, nil, nil, nil
 		pc.engine.giveUp(fn, "analysis panicked")
 		// Loop B must not analyze the closures of a failed function out of context.
 		for work := []*ssa.Function{fn}; len(work) > 0; {

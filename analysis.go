@@ -1004,8 +1004,9 @@ func (pc *passContext) litExit(outer *ssa.Function, wc *walkContext, pre *lockSt
 	return exit, ""
 }
 
-// storesTracked reports whether lit, or a literal in it, stores to a captured variable or global that fn reads lock
-// paths through, while pre holds a lock that is not assumed.
+// storesTracked reports whether lit, or a literal in it, stores to a captured variable that fn reads lock paths
+// through, or stores a value that can hold a pointer to memory it does not own, while pre holds a lock that is not
+// assumed. The result is kept per (fn, lit).
 func (pc *passContext) storesTracked(fn, lit *ssa.Function, pre *lockState) bool {
 	held := false
 	for _, info := range pre.lockedMutexes {
@@ -1014,6 +1015,10 @@ func (pc *passContext) storesTracked(fn, lit *ssa.Function, pre *lockState) bool
 	si := pc.slotPass(fn)
 	if !held || si == nil {
 		return held
+	}
+	key := [2]*ssa.Function{fn, lit}
+	if r, ok := pc.storeScans[key]; ok {
+		return r
 	}
 	var tracked func(v ssa.Value) bool
 	tracked = func(v ssa.Value) bool {
@@ -1032,30 +1037,79 @@ func (pc *passContext) storesTracked(fn, lit *ssa.Function, pre *lockState) bool
 		}
 		return false
 	}
-	for work := []*ssa.Function{lit}; len(work) > 0; {
+	found := false
+	for work := []*ssa.Function{lit}; len(work) > 0 && !found; {
 		f := work[len(work)-1]
 		work = append(work[:len(work)-1], f.AnonFuncs...)
 		for _, b := range f.Blocks {
 			for _, instr := range b.Instrs {
-				if st, ok := instr.(*ssa.Store); ok && tracked(st.Addr) {
-					return true
+				if st, ok := instr.(*ssa.Store); ok && (tracked(st.Addr) || carries(st.Val.Type()) && !isFreeVar(st.Addr) && !ownLocal(st.Addr)) {
+					found = true
 				}
 			}
 		}
 	}
-	return false
+	if pc.storeScans == nil {
+		pc.storeScans = make(map[[2]*ssa.Function]bool)
+	}
+	pc.storeScans[key] = found
+	return found
 }
 
-// retaken reports whether exit lacks a lock held in pre and holds another of the same object.
-func retaken(pre, exit *lockState) bool {
-	for key, info := range pre.lockedMutexes {
-		if _, ok := exit.lockedMutexes[key]; ok {
-			continue
-		}
-		for k, e := range exit.lockedMutexes {
-			if _, ok := pre.lockedMutexes[k]; !ok && e.object == info.object {
+// carries reports whether a value of type t can hold a pointer.
+func carries(t types.Type) bool {
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		return u.Kind() == types.UnsafePointer
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if carries(u.Field(i).Type()) {
 				return true
 			}
+		}
+		return false
+	case *types.Array:
+		return carries(u.Elem())
+	}
+	return true
+}
+
+// ownLocal reports whether addr is a local of the storing function, or a field or element of one with no load on the way.
+func ownLocal(v ssa.Value) bool {
+	for {
+		switch x := v.(type) {
+		case *ssa.Alloc:
+			return true
+		case *ssa.FieldAddr:
+			v = x.X
+		case *ssa.IndexAddr:
+			v = x.X
+		default:
+			return false
+		}
+	}
+}
+
+func isFreeVar(v ssa.Value) bool {
+	_, ok := v.(*ssa.FreeVar)
+	return ok
+}
+
+// retaken reports whether exit lacks a lock held in pre, other than an assumed one, and holds a lock pre does not.
+func retaken(pre, exit *lockState) bool {
+	released := false
+	for key, info := range pre.lockedMutexes {
+		if _, ok := exit.lockedMutexes[key]; !ok && !info.assumed {
+			released = true
+			break
+		}
+	}
+	if !released {
+		return false
+	}
+	for k := range exit.lockedMutexes {
+		if _, ok := pre.lockedMutexes[k]; !ok {
+			return true
 		}
 	}
 	return false
@@ -1456,7 +1510,7 @@ func (pc *passContext) replay() {
 			r.parity.replayed(pc, r, ls, len(pc.records) != n)
 		}
 	}
-	pc.current, pc.emit, pc.records, pc.unjoined = nil, outerEmit, nil, nil
+	pc.current, pc.emit, pc.records, pc.unjoined, pc.storeScans = nil, outerEmit, nil, nil, nil
 }
 
 // maxCycleStates bounds the lock-state classes (elements with the marker cleared) that reach one block in a cycle.
@@ -1489,7 +1543,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	pc.emit = emitDirect
 	defer func() { pc.emit, pc.opFailed = outerEmit, outerFailed }()
 	if outer == nil {
-		pc.walks, pc.overBudget, pc.unjoined = 0, false, nil
+		pc.walks, pc.overBudget, pc.unjoined, pc.storeScans = 0, false, nil, nil
 		pc.entryGuards = nil
 		pc.marked, pc.givenUp = pc.marked[:0], pc.givenUp[:0]
 		clear(pc.givenUpSet)
