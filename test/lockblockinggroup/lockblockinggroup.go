@@ -27,10 +27,10 @@ type Grouped struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:g.mu
 func (g *Grouped) Lock() { g.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:g.mu
 func (g *Grouped) Unlock() { g.mu.Unlock() }
 
 func waits(c chan int) {

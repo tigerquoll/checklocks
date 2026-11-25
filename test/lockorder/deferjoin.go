@@ -114,10 +114,10 @@ func (g *DjGuard) Unlock() { g.mu.Unlock() }
 // +lockclass:DjPool
 type DjPool struct{ mu sync.Mutex }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:p.mu
 func (p *DjPool) Lock() { p.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:p.mu
 func (p *DjPool) Unlock() { p.mu.Unlock() }
 
 // +checklockslocktype

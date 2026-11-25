@@ -115,8 +115,8 @@ var analyzerCases = []struct {
 	{
 		// The corpus declares its own lock taxonomy, so only this
 		// analyzer has anything to say about it. The forwarders in it
-		// carry checklocks ignores, as the wrappers in a real code base
-		// do, so the guard analysis stays quiet either way.
+		// carry checklocks ignores and acquire or release annotations, as
+		// the wrappers in a real code base do.
 		name: "lockorder",
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "./test/lockorder"},
 	},
@@ -149,6 +149,16 @@ var analyzerCases = []struct {
 		// Grouped blocking reports: a group names a path only when all its sites share it.
 		name: "lockblocking-grouped",
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "-lockblocking.group=true", "./test/lockblockinggroup"},
+	},
+	{
+		// A lock method known by its class alone, with and without the
+		// annotations the held set is taken from. Each analyzer reports it.
+		name: "wrapperwarning-lockorder",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "./test/wrapperwarning"},
+	},
+	{
+		name: "wrapperwarning-lockblocking",
+		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "./test/wrapperwarning"},
 	},
 	{
 		// Derived exclusions. The corpus carries no exclusion

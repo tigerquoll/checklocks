@@ -36,10 +36,10 @@ type Context struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:c.mu
 func (c *Context) Lock() { c.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:c.mu
 func (c *Context) Unlock() { c.mu.Unlock() }
 
 // +lockclass:Partition
@@ -47,10 +47,10 @@ type Partition struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:p.mu
 func (p *Partition) Lock() { p.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:p.mu
 func (p *Partition) Unlock() { p.mu.Unlock() }
 
 // +lockclass:App
@@ -59,28 +59,28 @@ type App struct {
 	queue *Queue
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:a.mu
 func (a *App) Lock() { a.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:a.mu
 func (a *App) Unlock() { a.mu.Unlock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquireread:a.mu
 func (a *App) RLock() { a.mu.RLock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksreleaseread:a.mu
 func (a *App) RUnlock() { a.mu.RUnlock() }
 
 // +lockclass:Queue
 type Queue struct {
 	mu     sync.Mutex
-	parent *Queue
+	parent *Queue // +checklocksfail=may require checklocks annotation for mu, used with lock held 100% of the time
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:q.mu
 func (q *Queue) Lock() { q.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:q.mu
 func (q *Queue) Unlock() { q.mu.Unlock() }
 
 // +lockclass:Node
@@ -88,10 +88,10 @@ type Node struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:n.mu
 func (n *Node) Lock() { n.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:n.mu
 func (n *Node) Unlock() { n.mu.Unlock() }
 
 // +lockclass:Manager
@@ -99,10 +99,10 @@ type Manager struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:m.mu
 func (m *Manager) Lock() { m.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:m.mu
 func (m *Manager) Unlock() { m.mu.Unlock() }
 
 // +lockclass:Tracker
@@ -110,10 +110,10 @@ type Tracker struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:t.mu
 func (t *Tracker) Lock() { t.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:t.mu
 func (t *Tracker) Unlock() { t.mu.Unlock() }
 
 // Unclassed carries a lock that takes no part in the order.
@@ -121,10 +121,10 @@ type Unclassed struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:u.mu
 func (u *Unclassed) Lock() { u.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:u.mu
 func (u *Unclassed) Unlock() { u.mu.Unlock() }
 
 // --- the declared order is allowed downward -------------------------------------------
@@ -478,10 +478,10 @@ type plainNode struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:n.mu
 func (n *plainNode) Lock() { n.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:n.mu
 func (n *plainNode) Unlock() { n.mu.Unlock() }
 
 func (n *plainNode) visit(o *plainNode) {
@@ -495,10 +495,10 @@ type genNode[T any] struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:n.mu
 func (n *genNode[T]) Lock() { n.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:n.mu
 func (n *genNode[T]) Unlock() { n.mu.Unlock() }
 
 func (n *genNode[T]) visit(o *genNode[int]) {

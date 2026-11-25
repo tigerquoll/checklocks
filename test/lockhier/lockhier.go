@@ -35,20 +35,20 @@ type Queue struct {
 	// +lockhierarchyedge
 	parent *Queue
 
-	children []*Queue
+	children []*Queue // +checklocksfail=may require checklocks annotation for mu, used with lock held 100% of the time
 	name     string
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:q.mu
 func (q *Queue) Lock() { q.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:q.mu
 func (q *Queue) Unlock() { q.mu.Unlock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquireread:q.mu
 func (q *Queue) RLock() { q.mu.RLock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksreleaseread:q.mu
 func (q *Queue) RUnlock() { q.mu.RUnlock() }
 
 // childThenParent is the violation: the parent is taken while the child is held.
@@ -77,8 +77,9 @@ func (q *Queue) childThenParentDeferred() {
 }
 
 // childThenParentBranch reaches the acquisition through a branch, so the child is held on
-// only one path into the block.
-func (q *Queue) childThenParentBranch(cond bool) {
+// only one path into the block. checklocks does not correlate the two branches on cond, so it
+// reports the two lines it marks.
+func (q *Queue) childThenParentBranch(cond bool) { // +checklocksfail=incompatible return states
 	if cond {
 		q.Lock()
 	}
@@ -87,7 +88,7 @@ func (q *Queue) childThenParentBranch(cond bool) {
 	if cond {
 		q.Unlock()
 	}
-}
+} // +checklocksfail=return with unexpected locks held
 
 // parentThenChild is the sanctioned direction and must be silent.
 func (q *Queue) parentThenChild() {
@@ -160,13 +161,13 @@ type Node struct {
 	mu sync.Mutex
 
 	// +lockhierarchyedge
-	parent *Node
+	parent *Node // +checklocksfail=may require checklocks annotation for mu, used with lock held 100% of the time
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:n.mu
 func (n *Node) Lock() { n.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:n.mu
 func (n *Node) Unlock() { n.mu.Unlock() }
 
 func (n *Node) childThenParent() {

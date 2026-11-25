@@ -27,8 +27,10 @@ type Scoped struct {
 	mu sync.Mutex
 }
 
+// +checklocksacquire:s.mu
 func (s *Scoped) Lock() { s.mu.Lock() }
 
+// +checklocksrelease:s.mu
 func (s *Scoped) Unlock() { s.mu.Unlock() }
 
 // SleepsThenSends sleeps with its caller's lock dropped and sends with it held.

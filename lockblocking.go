@@ -171,6 +171,7 @@ func runLockBlocking(pass *analysis.Pass) (any, error) {
 		pc.analyzeFunction(fn, &summaryFact{}, true)
 	}
 
+	pc.reportWrappers()
 	pc.flushGroups()
 	pc.checkFailures()
 	return nil, nil

@@ -120,6 +120,9 @@ type lockOrderContext struct {
 
 	// entries caches what the engine entered each function with; see engineEntry.
 	entries map[*ssa.Function]map[pathKey]string
+
+	// wrappers holds the lock methods known by class alone that carry no annotation.
+	wrappers map[*types.Func]*wrapperSite
 }
 
 // run is the main entrypoint.
@@ -160,6 +163,7 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	pc.analyzePackage(state.SrcFuncs)
 
+	pc.reportWrappers()
 	pc.flushGroups()
 	pc.checkFailures()
 	pc.shadowFlush(false)

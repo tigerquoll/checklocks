@@ -36,10 +36,10 @@ type App struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:a.mu
 func (a *App) Lock() { a.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:a.mu
 func (a *App) Unlock() { a.mu.Unlock() }
 
 // Unclassed carries a lock that takes no part in the analysis.
@@ -47,10 +47,10 @@ type Unclassed struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:u.mu
 func (u *Unclassed) Lock() { u.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:u.mu
 func (u *Unclassed) Unlock() { u.mu.Unlock() }
 
 // --- channels: a send or a receive waits --------------------------------------------------
@@ -517,10 +517,10 @@ type Side struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:s.mu
 func (s *Side) Lock() { s.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:s.mu
 func (s *Side) Unlock() { s.mu.Unlock() }
 
 // Both declaration orders of one chain; every path releases a.mu by the call, so the named wait wins.
@@ -632,13 +632,13 @@ func (t *twoClasses) waitsUnderTwoClasses(wg *sync.WaitGroup, cond bool) {
 
 func (t *twoClasses) callsTwoClassesHoldingApp(wg *sync.WaitGroup, cond bool) {
 	t.app.Lock()
-	t.waitsUnderTwoClasses(wg, cond) // +checklocksfail=must hold t.app.mu|must hold t.side.mu +lockblockingfail=which may block (calling Sleep at lockblocking/lockblocking.go:629) while holding App
+	t.waitsUnderTwoClasses(wg, cond) // +checklocksfail=must hold t.side.mu +lockblockingfail=which may block (calling Sleep at lockblocking/lockblocking.go:629) while holding App
 	t.app.Unlock()
 }
 
 func (t *twoClasses) callsTwoClassesHoldingSide(wg *sync.WaitGroup, cond bool) {
 	t.side.Lock()
-	t.waitsUnderTwoClasses(wg, cond) // +checklocksfail=must hold t.app.mu|must hold t.side.mu +lockblockingfail=which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:624) while holding Side
+	t.waitsUnderTwoClasses(wg, cond) // +checklocksfail=must hold t.app.mu +lockblockingfail=which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:624) while holding Side
 	t.side.Unlock()
 }
 
@@ -653,7 +653,7 @@ func reachesThroughTwoPackagesUnderLock(a *App, i *inner.Inner, c chan int) {
 func (t *twoClasses) callsTwoClassesHoldingBoth(wg *sync.WaitGroup, cond bool) {
 	t.app.Lock()
 	t.side.Lock()
-	t.waitsUnderTwoClasses(wg, cond) // +checklocksfail=must hold t.app.mu|must hold t.side.mu +lockblockingfail=which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:624) while holding App, Side
+	t.waitsUnderTwoClasses(wg, cond) // +lockblockingfail=which may block (calling (*WaitGroup).Wait at lockblocking/lockblocking.go:624) while holding App, Side
 	t.side.Unlock()
 	t.app.Unlock()
 }
@@ -670,7 +670,7 @@ func (a *App) sleepsThenSends(c chan int) {
 
 func callsSleepsThenSends(a *App, c chan int) {
 	a.Lock()
-	a.sleepsThenSends(c) // +checklocksfail=must hold a.mu exclusively +lockblockingfail=which may block (a channel send at lockblocking/lockblocking.go:668) while holding App
+	a.sleepsThenSends(c) // +lockblockingfail=which may block (a channel send at lockblocking/lockblocking.go:668) while holding App
 	a.Unlock()
 }
 
@@ -782,7 +782,7 @@ func callsCrossPackageGenericUnderLock(a *App, b *dep.Box[int]) {
 var downgradeWait chan int
 
 // +checklocksignore
-func (a *App) DowngradeLock() { <-downgradeWait }
+func (a *App) DowngradeLock() { <-downgradeWait } // +lockorderfail=(*App).DowngradeLock is a lock method of class App +lockblockingfail=(*App).DowngradeLock is a lock method of class App
 
 func callsDowngradeUnderLock(a *App) {
 	a.Lock()

@@ -27,7 +27,7 @@ type holder struct {
 // The only wait that crosses the boundary released the class reported, so no path is named.
 func (h *holder) waitsOutOfScope(c chan int) {
 	h.s.Lock()
-	h.s.SleepsThenSends(c) // +checklocksfail=must hold s.mu exclusively +lockblockingfail=which may block while holding Scoped
+	h.s.SleepsThenSends(c) // +lockblockingfail=which may block while holding Scoped
 	h.s.Unlock()
 }
 

@@ -29,10 +29,10 @@ type App struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:a.mu
 func (a *App) Lock() { a.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:a.mu
 func (a *App) Unlock() { a.mu.Unlock() }
 
 // +lockclass:Queue
@@ -40,10 +40,10 @@ type Queue struct {
 	mu sync.Mutex
 }
 
-// +checklocksignore
+// +checklocksignore +checklocksacquire:q.mu
 func (q *Queue) Lock() { q.mu.Lock() }
 
-// +checklocksignore
+// +checklocksignore +checklocksrelease:q.mu
 func (q *Queue) Unlock() { q.mu.Unlock() }
 
 // takesQueue is the one defect: it acquires Queue, and every caller that holds

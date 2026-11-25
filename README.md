@@ -200,12 +200,15 @@ func (g *Guard) Unlock() { g.mu.Unlock() }
 Whether the type behaves as a `Mutex` or an `RWMutex` is taken from the type
 itself: it has an `RLock` method or it does not.
 
-Without the declaration a wrapper needs `+checklocksignore` on each forwarder,
-to silence the balance error a method that takes a lock and does not release it
-would otherwise produce. That ignore is read at every call site, not only in
-the forwarder, so it also suppresses the "already locked" and "unlock while not
-held" diagnostics for every user of the lock. Declaring the type is what gets
-those back.
+A forwarder on a type with a lock class must carry `+checklocksacquire:x.mu` or
+`+checklocksrelease:x.mu` (`+checklocksacquireread` and `+checklocksreleaseread`
+for the read side) to count as a lock operation for lockorder and lockblocking.
+A bare `+checklocksignore` hides the lock from them, and both analyzers warn once
+per package: at the forwarder's declaration, or at the first call when it is
+declared in another package. `+lockorderignore` and
+`+lockblockingignore` silence that warning on the line they are written on.
+Declaring the type with `+checklockslocktype` is the alternative for a lock type
+with no guarded fields.
 
 The locks must be resolvable within the scope of the declaration. This means the
 lock must refer to one of:
