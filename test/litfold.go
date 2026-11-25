@@ -509,6 +509,16 @@ func lfRelPair(x *lfA) {
 	x.mu.Unlock()            // +checklocksfail=already unlocked
 }
 
+// Known gap: the same through named closures.
+func lfRelPairNamed(x *lfA) {
+	x.mu.Lock()
+	unlock := func() { x.mu.Unlock() }
+	relock := func() { x.mu.Lock() } // +checklocksfail=return with unexpected locks held
+	unlock()
+	relock()
+	x.mu.Unlock() // +checklocksfail=already unlocked
+}
+
 type lfRelocker interface{ relock() }
 
 // Known gap: a lock freed in a literal and taken again by a call the engine cannot see into.
