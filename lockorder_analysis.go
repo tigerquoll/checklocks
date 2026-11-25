@@ -214,8 +214,8 @@ func blockOrder(fn *ssa.Function) []*ssa.BasicBlock {
 // visitCall handles one call: the lock operations it performs, and the classes it may
 // acquire through its callee.
 func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, curInst *instanceSet, summary *summaryFact, report bool) {
-	pc.shadowCall(call, cur, report)
 	pc.entryOverlay(fn, call, cur)
+	pc.shadowCall(call, cur, report)
 	// The engine's additions apply on every exit, except for a call consumed as a lock operation.
 	consumed := false
 	defer func() {

@@ -50,8 +50,8 @@ type shadowLine struct {
 }
 
 // lockOrderShadow is what lockorder records per pass: the classes held at each call of the report walk,
-// and the comparison with the engine. The classes are lockorder's state before the engine's additions
-// at the site.
+// and the comparison with the engine. The classes are lockorder's state at the site, with the entry
+// overlay applied and the call's own effect not.
 type lockOrderShadow struct {
 	held  map[ssa.Instruction]map[string]struct{}
 	lines []shadowLine

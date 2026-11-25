@@ -122,7 +122,7 @@ func linesIn(log []string, first, last int) []string {
 }
 
 func TestShadowAgree(t *testing.T) {
-	for _, fn := range []string{"straight", "twoStates", "commaOK"} {
+	for _, fn := range []string{"straight", "twoStates", "commaOK", "entryOnly"} {
 		log, first, last := shadowCorpus(t, fn)
 		if got := linesIn(log, first, last); len(got) > 0 {
 			t.Errorf("%s: want no difference at its calls, got %q", fn, got)
@@ -162,14 +162,14 @@ func TestShadowAgree(t *testing.T) {
 }
 
 func TestShadowEngineOnly(t *testing.T) {
-	log, first, last := shadowCorpus(t, "entryOnly")
+	log, first, last := shadowCorpus(t, "inLiteral")
 	got := linesIn(log, first, last)
 	if len(got) != 1 {
-		t.Fatalf("want one line in entryOnly, got %q", got)
+		t.Fatalf("want one line in inLiteral, got %q", got)
 	}
 	f := strings.Split(got[0], "\t")
-	if f[0] != "D" || f[4] != "call" || f[5] != "Lonly=" || f[6] != "Eonly=G" || len(f) != 8 || f[7] != "G=entry/T" {
-		t.Errorf("want a D call line with Eonly G from entry by the type rule, got %q", got[0])
+	if f[0] != "D" || f[4] != "call" || f[5] != "Lonly=" || f[6] != "Eonly=G" || len(f) != 8 || f[7] != "G=body/T" {
+		t.Errorf("want a D call line with Eonly G from the body by the type rule, got %q", got[0])
 	}
 }
 
