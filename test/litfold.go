@@ -245,3 +245,46 @@ func lfRepointSame(x *oneGuardStruct) {
 	}() // +checklocksfail=return with unexpected locks held
 	p.Unlock()
 }
+
+var lfGlobalMu *sync.Mutex
+
+// The same, through a global.
+func lfRepointGlobal(x *oneGuardStruct, y *lfStruct) {
+	lfGlobalMu = &x.mu
+	lfGlobalMu.Lock()
+	func() {
+		lfGlobalMu.Unlock() // +lockgapfail=taken again
+		lfGlobalMu = &y.mu
+		lfGlobalMu.Lock()
+	}() // +checklocksfail=return with unexpected locks held
+	lfGlobalMu.Unlock()
+}
+
+// The same, from a literal inside the literal.
+func lfRepointNested(x *oneGuardStruct, y *lfStruct) {
+	p := &x.mu
+	p.Lock()
+	func() {
+		p.Unlock()
+		func() {
+			p = &y.mu
+			p.Lock()
+		}() // +checklocksfail=return with unexpected locks held
+	}()
+	p.Unlock()
+}
+
+func lfCompute() int { return 1 }
+
+// A literal that writes a captured result does not keep the caller from folding.
+func lfResult(t *oneGuardStruct) {
+	var r int
+	t.mu.Lock()
+	func() {
+		defer t.mu.Unlock()
+		r = lfCompute()
+	}()
+	t.mu.Lock()
+	t.guardedField = r
+	t.mu.Unlock()
+}

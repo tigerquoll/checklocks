@@ -399,8 +399,7 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *loc
 		return
 	}
 	// A no-op defer entry of a literal with a walk whose defer stacks were not joined is whichever arrived first.
-	if d, ok := inst.(*ssa.Defer); ok && fn != top && !pc.deferRelevant(d) &&
-		slices.ContainsFunc(pc.records, func(r *blockRecord) bool { return r.wc.fn == fn && !r.wc.joined }) {
+	if d, ok := inst.(*ssa.Defer); ok && fn != top && !pc.deferRelevant(d) && pc.unjoined[fn] {
 		return
 	}
 	pc.engine.add(inst, ls, pc.records[0].parent.lockedMutexes)

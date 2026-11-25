@@ -908,8 +908,8 @@ func (pc *passContext) checkClosure(site callSite, wc *walkContext, fn *ssa.Make
 }
 
 // walkLiteral walks the directly called literal fn inline, on a fork of ls with no pending defers, and
-// continues ls with its end state. Where that is not one state, ls is left as it was, and a walk that ran
-// without the caller's pending defers is made again with them.
+// continues ls with its end state. Where that is not one state, ls is left as it was, and if a relevant
+// defer is pending the literal is walked again with it.
 func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, ls *lockState, bind func(*lockState)) {
 	if pc.emit == emitReplay {
 		if exit := pc.current.foldOf(site.instr); exit != nil {
@@ -925,21 +925,23 @@ func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Fu
 		}
 		return pc.checkFunction(site, outer, fn, lff, fnls, true /* force */)
 	}
+	recordsAt, pendingAt, decisionsAt, markedAt, givenUpAt := len(pc.records), len(pc.pending), pc.decisionMark(), len(pc.marked), len(pc.givenUp)
 	if pc.legacyLits {
 		walk(true)
+		pc.markUnjoined(fn, recordsAt)
 		return
 	}
 	inherits := len(ls.defers) > 0
-	recordsAt, pendingAt, decisionsAt, markedAt, givenUpAt := len(pc.records), len(pc.pending), pc.decisionMark(), len(pc.marked), len(pc.givenUp)
 	var gaveUp map[*ssa.Function]string
 	if inherits && pc.engine != nil {
 		gaveUp = maps.Clone(pc.engine.gaveUp)
 	}
 	wc := walk(false)
-	exit, reason := pc.litExit(wc, ls)
+	exit, reason := pc.litExit(outer.fn, wc, ls)
 	pc.statLitNoFold(reason)
 	switch {
 	case reason == "gaveup":
+		pc.markUnjoined(fn, recordsAt)
 		return
 	case exit == nil && inherits:
 		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
@@ -958,18 +960,29 @@ func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Fu
 		pc.legacyLits = true
 		defer func() { pc.legacyLits = false }()
 		walk(true)
+		pc.markUnjoined(fn, recordsAt)
 		return
 	}
 	pc.joinDefers(wc, recordsAt)
-	wc.joined = true
 	if exit != nil {
 		ls.foldExit(exit)
 		pc.current.setFold(site.instr, exit)
 	}
 }
 
+// markUnjoined notes that fn was walked, leaving records since recordsAt, without joining its defer stacks.
+func (pc *passContext) markUnjoined(fn *ssa.Function, recordsAt int) {
+	if len(pc.records) == recordsAt {
+		return
+	}
+	if pc.unjoined == nil {
+		pc.unjoined = make(map[*ssa.Function]bool)
+	}
+	pc.unjoined[fn] = true
+}
+
 // litExit returns the end state of the walk of a literal called in pre, or the reason there is none.
-func (pc *passContext) litExit(wc *walkContext, pre *lockState) (*lockState, string) {
+func (pc *passContext) litExit(outer *ssa.Function, wc *walkContext, pre *lockState) (*lockState, string) {
 	switch {
 	case wc.gaveUp || pc.overBudget:
 		return nil, "gaveup"
@@ -982,25 +995,49 @@ func (pc *passContext) litExit(wc *walkContext, pre *lockState) (*lockState, str
 			return nil, "disagree"
 		}
 	}
-	if retaken(pre, exit) || storesCaptured(wc.fn, pre) {
+	if retaken(pre, exit) {
 		return nil, "retake"
+	}
+	if pc.storesTracked(outer, wc.fn, pre) {
+		return nil, "stores"
 	}
 	return exit, ""
 }
 
-// storesCaptured reports whether fn stores to a captured variable while pre holds a lock that is not assumed.
-func storesCaptured(fn *ssa.Function, pre *lockState) bool {
+// storesTracked reports whether lit, or a literal in it, stores to a captured variable or global that fn reads lock
+// paths through, while pre holds a lock that is not assumed.
+func (pc *passContext) storesTracked(fn, lit *ssa.Function, pre *lockState) bool {
 	held := false
 	for _, info := range pre.lockedMutexes {
 		held = held || !info.assumed
 	}
-	if !held {
+	si := pc.slotPass(fn)
+	if !held || si == nil {
+		return held
+	}
+	var tracked func(v ssa.Value) bool
+	tracked = func(v ssa.Value) bool {
+		fv, ok := v.(*ssa.FreeVar)
+		if !ok || fv.Parent() == fn {
+			return si.loaded[v]
+		}
+		parent := fv.Parent().Parent()
+		i := slices.Index(fv.Parent().FreeVars, fv)
+		for _, b := range parent.Blocks {
+			for _, instr := range b.Instrs {
+				if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == ssa.Value(fv.Parent()) && tracked(mc.Bindings[i]) {
+					return true
+				}
+			}
+		}
 		return false
 	}
-	for _, b := range fn.Blocks {
-		for _, instr := range b.Instrs {
-			if st, ok := instr.(*ssa.Store); ok {
-				if _, ok := st.Addr.(*ssa.FreeVar); ok {
+	for work := []*ssa.Function{lit}; len(work) > 0; {
+		f := work[len(work)-1]
+		work = append(work[:len(work)-1], f.AnonFuncs...)
+		for _, b := range f.Blocks {
+			for _, instr := range b.Instrs {
+				if st, ok := instr.(*ssa.Store); ok && tracked(st.Addr) {
 					return true
 				}
 			}
@@ -1151,9 +1188,6 @@ type walkContext struct {
 
 	// exits holds the lock state at each return, after its deferred calls.
 	exits []*lockState
-
-	// joined is set when the walk's records hold the joined defer stacks.
-	joined bool
 
 	// context names the walk in the decision log; see inlineContext.
 	context string
@@ -1422,7 +1456,7 @@ func (pc *passContext) replay() {
 			r.parity.replayed(pc, r, ls, len(pc.records) != n)
 		}
 	}
-	pc.current, pc.emit, pc.records = nil, outerEmit, nil
+	pc.current, pc.emit, pc.records, pc.unjoined = nil, outerEmit, nil, nil
 }
 
 // maxCycleStates bounds the lock-state classes (elements with the marker cleared) that reach one block in a cycle.
@@ -1455,7 +1489,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	pc.emit = emitDirect
 	defer func() { pc.emit, pc.opFailed = outerEmit, outerFailed }()
 	if outer == nil {
-		pc.walks, pc.overBudget = 0, false
+		pc.walks, pc.overBudget, pc.unjoined = 0, false, nil
 		pc.entryGuards = nil
 		pc.marked, pc.givenUp = pc.marked[:0], pc.givenUp[:0]
 		clear(pc.givenUpSet)

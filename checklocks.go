@@ -151,9 +151,11 @@ type passContext struct {
 	// entryGuards names the guards each entry lock of the function being walked came from.
 	entryGuards map[pathKey][]string
 
-	// legacyLits is set while a literal is walked again with its caller's pending defers, and
-	// every literal inside it is walked that way too.
+	// legacyLits is set while a literal is walked again with its caller's pending defers, and every literal it calls inline is walked that way too.
 	legacyLits bool
+
+	// unjoined holds the literals walked, in the top function being analyzed, without joining their defer stacks.
+	unjoined map[*ssa.Function]bool
 
 	// opFailed is set when a lock operation's transfer fails, whether or not a report follows.
 	opFailed bool
@@ -232,7 +234,7 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 			return
 		}
 		pc.fnHints = nil
-		pc.current, pc.emit, pc.records = nil, emitDirect, nil
+		pc.current, pc.emit, pc.records, pc.unjoined = nil, emitDirect, nil, nil
 		pc.engine.giveUp(fn, "analysis panicked")
 		// Loop B must not analyze the closures of a failed function out of context.
 		for work := []*ssa.Function{fn}; len(work) > 0; {
