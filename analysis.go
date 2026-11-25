@@ -1005,8 +1005,8 @@ func (pc *passContext) litExit(outer *ssa.Function, wc *walkContext, pre *lockSt
 }
 
 // storesTracked reports whether lit, or a literal in it, stores to a captured variable that fn reads lock paths
-// through, or stores a value that can hold a pointer to memory it does not own, while pre holds a lock that is not
-// assumed. The result is kept per (fn, lit).
+// through, or stores a value that can hold a pointer anywhere but a free variable or its own local, while pre
+// holds a lock that is not assumed. The result is kept per (fn, lit).
 func (pc *passContext) storesTracked(fn, lit *ssa.Function, pre *lockState) bool {
 	held := false
 	for _, info := range pre.lockedMutexes {
@@ -1074,7 +1074,8 @@ func carries(t types.Type) bool {
 	return true
 }
 
-// ownLocal reports whether addr is a local of the storing function, or a field or element of one with no load on the way.
+// ownLocal reports whether v is a local of the storing function, or a field or element of one with no load
+// on the way.
 func ownLocal(v ssa.Value) bool {
 	for {
 		switch x := v.(type) {
@@ -1090,6 +1091,7 @@ func ownLocal(v ssa.Value) bool {
 	}
 }
 
+// isFreeVar reports whether v is a free variable of its function.
 func isFreeVar(v ssa.Value) bool {
 	_, ok := v.(*ssa.FreeVar)
 	return ok

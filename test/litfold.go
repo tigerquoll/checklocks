@@ -420,7 +420,7 @@ func lfLocalComposite(x *lfA, y *lfB) {
 	x.mu.Unlock()
 }
 
-// A store to a free variable the caller does not read does not refuse the fold.
+// A store to a captured variable no lock path reads does not refuse the fold.
 func lfErrStore(x *lfA, f func() error) (err error) {
 	x.mu.Lock()
 	func() {
