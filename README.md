@@ -204,12 +204,12 @@ A forwarder on a type with a lock class must carry `+checklocksacquire:x.mu` or
 `+checklocksrelease:x.mu` (`+checklocksacquireread` and `+checklocksreleaseread`
 for the read side) to count as a lock operation for lockorder and lockblocking.
 A bare `+checklocksignore` hides the lock from them, and both analyzers warn once
-per package: at the forwarder's declaration, or at the first call when it is
-declared in another package. `+lockorderignore` and
+per package: at the forwarder's declaration, or at its first call in source
+order when it is declared in another package. `+lockorderignore` and
 `+lockblockingignore` silence that warning on the line they are written on.
 Declaring the type with `+checklockslocktype` is the alternative for a lock type
-with no guarded fields. The ignore is read at every call site, so it also
-suppresses the "already held" and "not held" diagnostics for every user of the
+with no guarded fields. A `+checklocksignore` on a forwarder is read at every
+call site, so it also suppresses the "already held" and "not held" diagnostics for every user of the
 lock; declaring the type gets those back.
 
 The locks must be resolvable within the scope of the declaration. This means the
