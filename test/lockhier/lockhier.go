@@ -77,8 +77,7 @@ func (q *Queue) childThenParentDeferred() {
 }
 
 // childThenParentBranch reaches the acquisition through a branch, so the child is held on
-// only one path into the block. checklocks does not correlate the two branches on cond, so it
-// reports the two lines it marks.
+// only one path into the block; checklocks does not correlate the branches on cond.
 func (q *Queue) childThenParentBranch(cond bool) { // +checklocksfail=incompatible return states
 	if cond {
 		q.Lock()

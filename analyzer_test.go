@@ -151,8 +151,8 @@ var analyzerCases = []struct {
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockorder=false", "-lockblocking.group=true", "./test/lockblockinggroup"},
 	},
 	{
-		// A lock method known by its class alone, with and without the
-		// annotations the held set is taken from. Each analyzer reports it.
+		// Lock methods known by their class alone, with and without acquire or
+		// release annotations. Each analyzer reports a missing one.
 		name: "wrapperwarning-lockorder",
 		args: []string{"-checklocks=false", "-lockstringer=false", "-lockblocking=false", "./test/wrapperwarning"},
 	},

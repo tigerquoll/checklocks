@@ -208,7 +208,9 @@ per package: at the forwarder's declaration, or at the first call when it is
 declared in another package. `+lockorderignore` and
 `+lockblockingignore` silence that warning on the line they are written on.
 Declaring the type with `+checklockslocktype` is the alternative for a lock type
-with no guarded fields.
+with no guarded fields. The ignore is read at every call site, so it also
+suppresses the "already held" and "not held" diagnostics for every user of the
+lock; declaring the type gets those back.
 
 The locks must be resolvable within the scope of the declaration. This means the
 lock must refer to one of:

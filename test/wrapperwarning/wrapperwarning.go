@@ -34,6 +34,13 @@ func (p *Plain) Lock() { p.mu.Lock() } // +lockorderfail=checklocksacquire annot
 // +checklocksignore
 func (p *Plain) RUnlock() { p.mu.RUnlock() } // +lockorderfail=checklocksreleaseread annotation: lockorder and lockblocking do not see the lock it drops +lockblockingfail=checklocksreleaseread annotation: lockorder and lockblocking do not see the lock it drops
 
+// +checklocksignore
+func (p *Plain) DowngradeLock() {}
+
+func plainDowngrade(p *Plain) {
+	p.DowngradeLock()
+}
+
 func plainFirst(p *Plain) {
 	p.Lock()
 	p.RUnlock()
@@ -109,8 +116,17 @@ func classedStandard(p *Plain) {
 	p.mu.Unlock()
 }
 
+func crossBranch(b *dep.Bare, cond bool) {
+	if cond {
+		b.Lock() // +lockorderfail=checklocksacquire annotation: lockorder and lockblocking do not see the lock it takes +lockblockingfail=checklocksacquire annotation: lockorder and lockblocking do not see the lock it takes
+	} else {
+		b.Lock()
+	}
+	b.Unlock()
+}
+
 func crossFirst(b *dep.Bare) {
-	b.Lock() // +lockorderfail=checklocksacquire annotation: lockorder and lockblocking do not see the lock it takes +lockblockingfail=checklocksacquire annotation: lockorder and lockblocking do not see the lock it takes
+	b.Lock()
 	b.Unlock()
 }
 

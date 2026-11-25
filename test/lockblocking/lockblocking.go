@@ -782,7 +782,7 @@ func callsCrossPackageGenericUnderLock(a *App, b *dep.Box[int]) {
 var downgradeWait chan int
 
 // +checklocksignore
-func (a *App) DowngradeLock() { <-downgradeWait } // +lockorderfail=(*App).DowngradeLock is a lock method of class App +lockblockingfail=(*App).DowngradeLock is a lock method of class App
+func (a *App) DowngradeLock() { <-downgradeWait }
 
 func callsDowngradeUnderLock(a *App) {
 	a.Lock()

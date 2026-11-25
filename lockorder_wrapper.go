@@ -38,7 +38,7 @@ type wrapperSite struct {
 // lock operation, when the method carries no acquire or release annotation.
 func (pc *lockOrderContext) checkWrapper(call ssa.CallInstruction, callee *ssa.Function, obj *types.Func) {
 	op := lockOpName(obj.Name())
-	if op == opNone || isStandardLock(pc.pass, obj) {
+	if (op != opAcquire && op != opRelease) || isStandardLock(pc.pass, obj) {
 		return
 	}
 	recv, ok := receiverOf(call)
@@ -68,21 +68,15 @@ func (pc *lockOrderContext) checkWrapper(call ssa.CallInstruction, callee *ssa.F
 }
 
 // lockAnnotated reports whether the method's facts take or drop a lock, as its name says.
-// DowngradeLock counts either.
 func (pc *lockOrderContext) lockAnnotated(obj *types.Func) bool {
 	var lff lockFunctionFacts
 	if !pc.pass.ImportObjectFact(obj.Origin(), &lff) {
 		return false
 	}
-	takes := onlyIn(lff.HeldOnExit, lff.HeldOnEntry)
-	drops := onlyIn(lff.HeldOnEntry, lff.HeldOnExit)
-	switch lockOpName(obj.Name()) {
-	case opAcquire:
-		return takes
-	case opRelease:
-		return drops
+	if lockOpName(obj.Name()) == opAcquire {
+		return onlyIn(lff.HeldOnExit, lff.HeldOnEntry)
 	}
-	return takes || drops
+	return onlyIn(lff.HeldOnEntry, lff.HeldOnExit)
 }
 
 // onlyIn reports whether a guard is in a and not in b.
