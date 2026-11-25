@@ -379,9 +379,8 @@ func (l *lockState) countOnReturn(entry map[pathKey]bool) int {
 	return n
 }
 
-// foldExit sets the held locks to those the call of fn left: of the locks held now, an assumed one stays,
-// and another takes exit's entry or goes if exit has none. A lock exit holds that was not held before is dropped.
-func (l *lockState) foldExit(exit *lockState, fn *ssa.Function) {
+// foldExit continues l after a call that ended in exit: an assumed lock stays, another keeps exit's entry if exit holds it, and every other lock goes.
+func (l *lockState) foldExit(exit *lockState) {
 	l.modify()
 	held := make(map[pathKey]lockInfo, len(l.lockedMutexes))
 	for key, info := range l.lockedMutexes {
@@ -389,7 +388,7 @@ func (l *lockState) foldExit(exit *lockState, fn *ssa.Function) {
 		switch {
 		case info.assumed:
 			held[key] = info
-		case ok && (e.path.root.value == nil || e.path.root.value.Parent() != fn):
+		case ok:
 			held[key] = e
 		}
 	}

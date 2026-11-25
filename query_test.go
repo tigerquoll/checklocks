@@ -416,8 +416,8 @@ func TestViewLiteralSites(t *testing.T) {
 		{"bothHeld", "", "[all]", ""},
 		{"escapeFree", "", "-", "not called directly"},
 		{"escapeClosure", "", "-", "not called directly"},
-		{"phantom", "", "[]", ""},
-		{"phantomPanic", "", "-", "not reached"},
+		{"phantom", "", "-", "not called directly"},
+		{"phantomPanic", "", "-", "not called directly"},
 		{"gaveUp", "[all]", "-", "gave up: more than 64 lock states reach one block in a loop"},
 	} {
 		top, e, answers := litAnswers(t, src, tc.fn)

@@ -184,7 +184,7 @@ func (pc *passContext) runDefers(wc *walkContext, ls *lockState) {
 	}
 }
 
-// runsLiteral says d calls a function literal, whose body replay does not walk.
+// runsLiteral says d calls a function literal; replay applies the fold stored for it, not a walk of its body.
 func runsLiteral(d *ssa.Defer) bool {
 	switch v := d.Common().Value.(type) {
 	case *ssa.MakeClosure:

@@ -186,3 +186,59 @@ func litGapTop(s *litGuarded) {
 	defer s.mu.Unlock()
 	defer djNoop2()
 }
+
+// litInherits defers a no-op in one arm, and calls a literal that calls another with the lock released.
+//
+// +checklocksignore
+func litInherits(t *litGuarded, c, d bool) {
+	t.mu.Lock()
+	if c {
+		defer djNoop()
+	} else {
+		litSink()
+	}
+	func(t *litGuarded) {
+		func(t *litGuarded) { t.mu.Unlock() }(t)
+		litSink()
+		if d {
+			t.mu.Lock()
+		}
+	}(t)
+}
+
+// litNoopSites calls a literal with a no-op defer once with a lock held and once under a relevant defer.
+//
+// +checklocksignore
+func litNoopSites(t, u, w *litGuarded, c, d bool) {
+	if c {
+		t.mu.Lock()
+	} else {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+	}
+	func(w *litGuarded) {
+		defer djNoop()
+		if d {
+			w.mu.Lock()
+		}
+	}(w)
+	if c {
+		t.mu.Unlock()
+	}
+}
+
+// litRewalkPanic defers a literal that runs only at the panic, and calls a literal walked again.
+//
+// +checklocksignore
+func litRewalkPanic(s, t *litGuarded, c bool) {
+	defer func() { litSink() }()
+	s.mu.Lock()
+	func() {
+		defer djNoop()
+		if c {
+			t.mu.Lock()
+		}
+	}()
+	s.mu.Unlock()
+	panic("x")
+}

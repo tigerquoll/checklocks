@@ -281,12 +281,12 @@ func TestFoldExit(t *testing.T) {
 		k, info := entry(e.name, e.exclusive, e.assume)
 		e.to.lockedMutexes[k] = info
 	}
-	pre.foldExit(exit, nil)
+	pre.foldExit(exit)
 	if len(pre.lockedMutexes) != 2 {
 		t.Fatalf("the fold holds %d locks, want 2: %s", len(pre.lockedMutexes), pre)
 	}
 	if k, _ := entry("kept", true, false); !pre.lockedMutexes[k].exclusive {
-		t.Errorf("a lock the exit holds keeps the caller's mode: %s", pre)
+		t.Errorf("a lock the exit holds takes the exit's mode: %s", pre)
 	}
 	if k, _ := entry("assumed", true, true); !pre.lockedMutexes[k].assumed {
 		t.Errorf("an assumed lock is not kept: %s", pre)

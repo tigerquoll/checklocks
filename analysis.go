@@ -913,7 +913,7 @@ func (pc *passContext) checkClosure(site callSite, wc *walkContext, fn *ssa.Make
 func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, ls *lockState, bind func(*lockState)) {
 	if pc.emit == emitReplay {
 		if exit := pc.current.foldOf(site.instr); exit != nil {
-			ls.foldExit(exit, fn)
+			ls.foldExit(exit)
 		}
 		return
 	}
@@ -929,7 +929,7 @@ func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Fu
 		walk(true)
 		return
 	}
-	inherits := len(ls.defers) > 0 || len(ls.noops) > 0
+	inherits := len(ls.defers) > 0
 	recordsAt, pendingAt, decisionsAt, markedAt, givenUpAt := len(pc.records), len(pc.pending), pc.decisionMark(), len(pc.marked), len(pc.givenUp)
 	var gaveUp map[*ssa.Function]string
 	if inherits && pc.engine != nil {
@@ -963,7 +963,7 @@ func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Fu
 	pc.joinDefers(wc, recordsAt)
 	wc.joined = true
 	if exit != nil {
-		ls.foldExit(exit, fn)
+		ls.foldExit(exit)
 		pc.current.setFold(site.instr, exit)
 	}
 }
@@ -982,10 +982,31 @@ func (pc *passContext) litExit(wc *walkContext, pre *lockState) (*lockState, str
 			return nil, "disagree"
 		}
 	}
-	if retaken(pre, exit) {
+	if retaken(pre, exit) || storesCaptured(wc.fn, pre) {
 		return nil, "retake"
 	}
 	return exit, ""
+}
+
+// storesCaptured reports whether fn stores to a captured variable while pre holds a lock that is not assumed.
+func storesCaptured(fn *ssa.Function, pre *lockState) bool {
+	held := false
+	for _, info := range pre.lockedMutexes {
+		held = held || !info.assumed
+	}
+	if !held {
+		return false
+	}
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			if st, ok := instr.(*ssa.Store); ok {
+				if _, ok := st.Addr.(*ssa.FreeVar); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // retaken reports whether exit lacks a lock held in pre and holds another of the same object.
@@ -1237,7 +1258,10 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		nlff := lockFunctionFacts{
 			Ignore: wc.lff.Ignore || pc.literalIgnored(clfn),
 		}
+		legacy := pc.legacyLits
+		pc.legacyLits = false
 		pc.checkFunction(callSite{kind: siteEntry}, wc, clfn, &nlff, nil, false /* force */)
+		pc.legacyLits = legacy
 	case *ssa.Return:
 		return x, ls // Valid return state.
 	}

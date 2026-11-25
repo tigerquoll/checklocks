@@ -44,7 +44,7 @@ func lfReleases(t *oneGuardStruct) {
 	}()
 }
 
-// Without a defer, the caller no longer holds what the literal released.
+// Without a defer, a lock the literal released is not held by the caller after it.
 func lfReleased(t *oneGuardStruct) {
 	t.mu.Lock()
 	func() { t.mu.Unlock() }()
@@ -161,4 +161,87 @@ func lfRewalkClosure(t *oneGuardStruct, c bool) {
 			t.guardedField = 1 // +checklocksfail
 		}
 	}()
+}
+
+// A literal inside a literal folds the same way whichever arm of the caller arrived first.
+func lfInherits(t *oneGuardStruct, c, d bool) {
+	t.mu.Lock()
+	if c {
+		defer lfNoop()
+	} else {
+		lfNoop()
+	}
+	func(t *oneGuardStruct) { // +checklocksfail=incompatible return states
+		func(t *oneGuardStruct) { t.mu.Unlock() }(t)
+		t.guardedField = 1 // +checklocksfail
+		if d {
+			t.mu.Lock()
+		}
+	}(t)
+} // +checklocksfail=return with unexpected locks held
+
+var lfKeep func(*oneGuardStruct)
+
+// A closure that escapes from a literal walked again is not walked the old way.
+func lfEscapeRewalk(u, w *oneGuardStruct, d bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	func(w *oneGuardStruct) { // +checklocksfail=incompatible return states
+		lfKeep = func(t *oneGuardStruct) {
+			lfSinkT(w)
+			t.mu.Lock()
+			func(t *oneGuardStruct) { t.mu.Unlock() }(t)
+			t.mu.Lock()
+			t.mu.Unlock()
+		}
+		if d {
+			w.mu.Lock()
+		}
+	}(w) // +checklocksfail=return with unexpected locks held
+}
+
+// The same, with the caller's lock and defer taken in one arm.
+func lfEscapeRewalkArm(u, w *oneGuardStruct, c, d bool) {
+	if c {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+	}
+	func(w *oneGuardStruct) { // +checklocksfail=incompatible return states|incompatible return states
+		lfKeep = func(t *oneGuardStruct) {
+			lfSinkT(w)
+			t.mu.Lock()
+			func(t *oneGuardStruct) { t.mu.Unlock() }(t)
+			t.mu.Lock()
+			t.mu.Unlock()
+		}
+		if d {
+			w.mu.Lock()
+		}
+	}(w) // +checklocksfail=return with unexpected locks held|return with unexpected locks held
+}
+
+func lfSinkT(*oneGuardStruct) {}
+
+// A literal that points a captured variable at another lock does not fold.
+func lfRepoint(x *oneGuardStruct, y *lfStruct) {
+	p := &x.mu
+	p.Lock()
+	func() {
+		p.Unlock() // +lockgapfail=taken again
+		p = &y.mu
+		p.Lock()
+	}() // +checklocksfail=return with unexpected locks held
+	p.Unlock()
+}
+
+// The same, pointing it at the same lock.
+func lfRepointSame(x *oneGuardStruct) {
+	p := &x.mu
+	p.Lock()
+	func() {
+		p.Unlock() // +lockgapfail=taken again
+		p = &x.mu
+		p.Lock()
+	}() // +checklocksfail=return with unexpected locks held
+	p.Unlock()
 }

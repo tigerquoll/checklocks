@@ -364,16 +364,8 @@ func calledOnly(fn *ssa.Function) bool {
 
 // isCallee says whether inst calls v and uses it nowhere else.
 func isCallee(inst ssa.Instruction, v ssa.Value) bool {
-	var c *ssa.CallCommon
-	switch i := inst.(type) {
-	case *ssa.Call:
-		c = &i.Call
-	case *ssa.Defer:
-		c = &i.Call
-	default:
-		return false
-	}
-	if c.IsInvoke() || c.Value != v {
+	c, ok := inst.(*ssa.Call)
+	if !ok || c.Call.IsInvoke() || c.Call.Value != v {
 		return false
 	}
 	uses := 0
@@ -406,8 +398,9 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *loc
 	if fn.Parent() != nil && (top.Parent() != nil || !pc.engine.recordable(fn)) {
 		return
 	}
-	// A no-op defer entry of a walk whose defer stacks were not joined is whichever arrived first.
-	if d, ok := inst.(*ssa.Defer); ok && fn != top && !wc.joined && !pc.deferRelevant(d) {
+	// A no-op defer entry of a literal with a walk whose defer stacks were not joined is whichever arrived first.
+	if d, ok := inst.(*ssa.Defer); ok && fn != top && !pc.deferRelevant(d) &&
+		slices.ContainsFunc(pc.records, func(r *blockRecord) bool { return r.wc.fn == fn && !r.wc.joined }) {
 		return
 	}
 	pc.engine.add(inst, ls, pc.records[0].parent.lockedMutexes)
