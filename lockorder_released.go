@@ -86,7 +86,7 @@ func (pc *lockOrderContext) shadowGains(fn *ssa.Function, call ssa.CallInstructi
 }
 
 // shadowReleased logs where the released set a reader sees differs from d2.
-func (pc *lockOrderContext) shadowReleased(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, report bool, reader string) {
+func (pc *lockOrderContext) shadowReleased(fn *ssa.Function, call ssa.Instruction, cur *classSet, report bool, reader string) {
 	if !pc.releasedShadowOn(report) {
 		return
 	}

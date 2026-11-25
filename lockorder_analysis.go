@@ -287,6 +287,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 				for i := range fn.TypeParams().Len() {
 					if fn.TypeParams().At(i) == tp {
 						at := strings.TrimPrefix(pc.witnessHop("", call.Pos()), " at ")
+						pc.shadowReleased(fn, call, cur, report, "param")
 						summary.addParamCall(i, common.Method.Name(), isReceiver(fn, common.Value), cur.releasedClasses(), at)
 					}
 				}
@@ -527,6 +528,7 @@ func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instructi
 	pc.entryOverlay(fn, instr, cur)
 	// A channel operation is a wait this analysis inferred rather than one it can name, so
 	// it does not travel out of the package it occurs in unless the module says otherwise.
+	pc.shadowReleased(fn, instr, cur, report, "chan")
 	pc.noteBlocking(instr.Pos(), what, what /* waitKey: its kind is all that identifies it */, nil, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
 	pc.recordWitnessWait(fn, what, instr.Pos(), cur.releasedClasses(), false /* named */, false /* annotated */)
 }
