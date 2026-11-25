@@ -404,7 +404,7 @@ func f(c chan int) {
 		order:        newOrder(),
 		check:        checkBlocking,
 	}
-	cur := newClassSet()
+	cur := pc.emptyLocks()
 	cur.acquire("Grouped")
 	var summary summaryFact
 	for _, block := range fn.Blocks {

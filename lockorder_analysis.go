@@ -66,7 +66,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	// Entry state: the classes the function is annotated as already holding. This is what
 	// makes an annotated callback work, where the caller took the lock and handed control
 	// over through machinery this analysis cannot follow.
-	entry := pc.entryClasses(fn)
+	entry := pc.entryLocks(fn)
 
 	// The state reaching each block, built up as the blocks are walked.
 	in := make([]*walkState, len(fn.Blocks))
@@ -85,7 +85,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		if state == nil {
 			// Unreachable from the entry as far as this walk is concerned; start clean
 			// rather than skipping, so its calls are still checked.
-			state = newWalkState(newClassSet())
+			state = newWalkState(pc.emptyLocks())
 		}
 		state = state.fork()
 		cur := state.locks
@@ -142,7 +142,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 // function is exactly where that matters: treating every defer written anywhere in the body
 // as pending at every return puts a lock back that the early path never dropped.
 type walkState struct {
-	locks     *classSet
+	locks     siteLocks
 	instances *instanceSet
 	deferred  []ssa.CallInstruction
 }
@@ -150,7 +150,7 @@ type walkState struct {
 // newWalkState returns the state a block starts from, holding the given classes. Nothing is
 // carried in for the instances: an annotation names a class, not the instance it was taken
 // on.
-func newWalkState(locks *classSet) *walkState {
+func newWalkState(locks siteLocks) *walkState {
 	return &walkState{locks: locks, instances: newInstanceSet()}
 }
 
@@ -213,16 +213,14 @@ func blockOrder(fn *ssa.Function) []*ssa.BasicBlock {
 
 // visitCall handles one call: the lock operations it performs, and the classes it may
 // acquire through its callee.
-func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, curInst *instanceSet, summary *summaryFact, report bool) {
-	pc.entryOverlay(fn, call, cur)
+func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur siteLocks, curInst *instanceSet, summary *summaryFact, report bool) {
+	cur.at(fn, call)
 	pc.shadowCall(call, cur, report)
 	// The engine's additions apply on every exit, except for a call consumed as a lock operation.
 	consumed := false
 	defer func() {
 		pc.shadowGains(fn, call, cur, report)
-		if !consumed {
-			pc.applyEffect(fn, call, cur)
-		}
+		cur.after(fn, call, consumed)
 	}()
 	callee := staticCallee(call)
 
@@ -254,7 +252,7 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 						// acquisition: taking the lock back closes the gap.
 						summary.addAcquire(class, cur.releasedClasses())
 						cur.acquire(class)
-						delete(cur.d2, class)
+						pc.shadowAcquire(cur, class)
 						curInst.acquire(recv, class)
 					}
 				case opRelease:
@@ -404,13 +402,14 @@ func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, he
 	}
 }
 
-// entryClasses returns the classes a function is annotated as holding on entry.
+// entryLocks returns the classes a function is annotated as holding on entry.
 //
 // The annotations are the ones the checklocks analyzer already reads, so a code base that
 // has been annotated for guarded fields gets the ordering check for free: a function
 // declared to run with a lock held starts with that lock's class held here.
-func (pc *lockOrderContext) entryClasses(fn *ssa.Function) *classSet {
+func (pc *lockOrderContext) entryLocks(fn *ssa.Function) siteLocks {
 	cs := newClassSet()
+	cs.pc = pc
 	obj := funcObject(fn)
 	if obj == nil {
 		return cs
@@ -421,6 +420,12 @@ func (pc *lockOrderContext) entryClasses(fn *ssa.Function) *classSet {
 	for k, class := range pc.engineEntry(fn) {
 		cs.eng[k] = class
 	}
+	return cs
+}
+
+func (pc *lockOrderContext) emptyLocks() siteLocks {
+	cs := newClassSet()
+	cs.pc = pc
 	return cs
 }
 
@@ -507,7 +512,7 @@ func (pc *lockOrderContext) noteBlocking(pos token.Pos, what, waitKey string, wi
 // A send or a receive waits for the other side. A select waits too, unless it has a default
 // case, which is what makes the non blocking dispatch idiom safe under a lock; the SSA form
 // records exactly that distinction, so it does not have to be inferred from the syntax.
-func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instruction, cur *classSet, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instruction, cur siteLocks, summary *summaryFact, report bool) {
 	var what string
 	switch t := instr.(type) {
 	case *ssa.Send:
@@ -525,7 +530,7 @@ func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instructi
 	default:
 		return
 	}
-	pc.entryOverlay(fn, instr, cur)
+	cur.at(fn, instr)
 	// A channel operation is a wait this analysis inferred rather than one it can name, so
 	// it does not travel out of the package it occurs in unless the module says otherwise.
 	pc.shadowReleased(fn, instr, cur, report, "chan")

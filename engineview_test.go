@@ -121,7 +121,7 @@ func TestClassSetFloor(t *testing.T) {
 	checkFloor(t, "undo after release", cs, own)
 
 	cs.gain("B")
-	cf, ownF := cs.fork(), own.fork()
+	cf, ownF := cs.fork().(*classSet), own.fork().(*classSet)
 	cf.gain("B")
 	for _, c := range []*classSet{cf, ownF} {
 		c.acquire("C")

@@ -32,14 +32,22 @@ func (pc *lockOrderContext) releasedShadowOn(report bool) bool {
 
 // shadowRelease sets d2 for a release of class on the function's own receiver when the record at the call
 // shows the lock is the caller's.
-func (pc *lockOrderContext) shadowRelease(fn *ssa.Function, call ssa.CallInstruction, recv ssa.Value, class string, cur *classSet, report bool) {
-	if class == "" || !isReceiver(fn, recv) || !pc.releasedShadowOn(report) || !pc.callerOwned(fn, call, class) {
+func (pc *lockOrderContext) shadowRelease(fn *ssa.Function, call ssa.CallInstruction, recv ssa.Value, class string, cur siteLocks, report bool) {
+	cs, ok := cur.(*classSet)
+	if !ok || class == "" || !isReceiver(fn, recv) || !pc.releasedShadowOn(report) || !pc.callerOwned(fn, call, class) {
 		return
 	}
-	if cur.d2 == nil {
-		cur.d2 = make(map[string]bool)
+	if cs.d2 == nil {
+		cs.d2 = make(map[string]bool)
 	}
-	cur.d2[class] = true
+	cs.d2[class] = true
+}
+
+// shadowAcquire clears d2 of class: taking the lock back closes the gap.
+func (pc *lockOrderContext) shadowAcquire(cur siteLocks, class string) {
+	if cs, ok := cur.(*classSet); ok {
+		delete(cs.d2, class)
+	}
 }
 
 // callerOwned says whether the record at call, taken before it, leaves class known and held by no lock the body took.
@@ -70,8 +78,9 @@ func (pc *lockOrderContext) callerOwned(fn *ssa.Function, call ssa.CallInstructi
 }
 
 // shadowGains clears d2 of the classes of the locks the call took.
-func (pc *lockOrderContext) shadowGains(fn *ssa.Function, call ssa.CallInstruction, cur *classSet, report bool) {
-	if len(cur.d2) == 0 || !pc.releasedShadowOn(report) {
+func (pc *lockOrderContext) shadowGains(fn *ssa.Function, call ssa.CallInstruction, cur siteLocks, report bool) {
+	cs, ok := cur.(*classSet)
+	if !ok || len(cs.d2) == 0 || !pc.releasedShadowOn(report) {
 		return
 	}
 	view := pc.engineView()
@@ -79,18 +88,19 @@ func (pc *lockOrderContext) shadowGains(fn *ssa.Function, call ssa.CallInstructi
 		for _, p := range gained {
 			classes, _ := pc.engineClasses(fn, heldLock{path: p})
 			for _, c := range classes {
-				delete(cur.d2, c)
+				delete(cs.d2, c)
 			}
 		}
 	}
 }
 
 // shadowReleased logs where the released set a reader sees differs from d2.
-func (pc *lockOrderContext) shadowReleased(fn *ssa.Function, call ssa.Instruction, cur *classSet, report bool, reader string) {
-	if !pc.releasedShadowOn(report) {
+func (pc *lockOrderContext) shadowReleased(fn *ssa.Function, call ssa.Instruction, cur siteLocks, report bool, reader string) {
+	cs, ok := cur.(*classSet)
+	if !ok || !pc.releasedShadowOn(report) {
 		return
 	}
-	old, d2 := cur.releasedClasses(), slices.Sorted(maps.Keys(cur.d2))
+	old, d2 := cur.releasedClasses(), slices.Sorted(maps.Keys(cs.d2))
 	if slices.Equal(old, d2) {
 		return
 	}

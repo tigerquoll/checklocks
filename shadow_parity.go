@@ -65,7 +65,7 @@ type lockOrderShadow struct {
 	rseen map[string]bool
 }
 
-func (pc *lockOrderContext) shadowCall(call ssa.CallInstruction, cur *classSet, report bool) {
+func (pc *lockOrderContext) shadowCall(call ssa.CallInstruction, cur siteLocks, report bool) {
 	if shadowLogDir == "" || !report || pc.check != checkOrder || pc.witness != nil {
 		return
 	}

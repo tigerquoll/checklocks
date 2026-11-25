@@ -18,7 +18,23 @@ import (
 	"maps"
 	"sort"
 	"strings"
+
+	"golang.org/x/tools/go/ssa"
 )
+
+// siteLocks is what the walk reads and updates of the locks held at a point in a function.
+type siteLocks interface {
+	held() []string
+	releasedClasses() []string
+	acquire(class string)
+	release(class string, receiverOwned bool)
+	fork() siteLocks
+	merge(other siteLocks)
+	// at runs before the walk visits inst.
+	at(fn *ssa.Function, inst ssa.Instruction)
+	// after runs on every exit from a visited call; consumed says the call was a lock operation.
+	after(fn *ssa.Function, call ssa.CallInstruction, consumed bool)
+}
 
 // classSet is the set of lock classes held at a point in a function.
 //
@@ -53,6 +69,9 @@ type classSet struct {
 
 	// lo is this analysis's own count of each class, without the engine's gains. Counts never fall below it.
 	lo map[string]int
+
+	// pc is the context at and after run their overlay and effect in; a fork shares it.
+	pc *lockOrderContext
 }
 
 func newClassSet() *classSet {
@@ -66,8 +85,9 @@ func newClassSet() *classSet {
 }
 
 // fork copies the set, for the separate paths of a branch.
-func (cs *classSet) fork() *classSet {
+func (cs *classSet) fork() siteLocks {
 	out := &classSet{
+		pc:       cs.pc,
 		counts:   make(map[string]int, len(cs.counts)),
 		entry:    cs.entry,
 		released: make(map[string]bool, len(cs.released)),
@@ -91,6 +111,16 @@ func (cs *classSet) fork() *classSet {
 		out.d2 = maps.Clone(cs.d2)
 	}
 	return out
+}
+
+func (cs *classSet) at(fn *ssa.Function, inst ssa.Instruction) {
+	cs.pc.entryOverlay(fn, inst, cs)
+}
+
+func (cs *classSet) after(fn *ssa.Function, call ssa.CallInstruction, consumed bool) {
+	if !consumed {
+		cs.pc.applyEffect(fn, call, cs)
+	}
 }
 
 // enter records a class the function is called with held.
@@ -211,7 +241,12 @@ func (cs *classSet) String() string {
 	return strings.Join(h, ", ")
 }
 
-// merge folds another set into this one, keeping the larger count of each class.
+func (cs *classSet) merge(other siteLocks) {
+	cs.mergeChanged(other.(*classSet))
+}
+
+// mergeChanged folds another set into this one, keeping the larger count of each class, and
+// reports whether this one changed.
 //
 // Merging at a join point is a deliberate over approximation: if a class is held on one
 // path into a block it is treated as held afterwards. That errs towards reporting rather
@@ -221,7 +256,7 @@ func (cs *classSet) String() string {
 // The released set goes the other way, for the same reason: a lock counts as released only
 // where every path into the block released it, so a gap on one path alone does not excuse
 // the path that still holds the lock.
-func (cs *classSet) merge(other *classSet) bool {
+func (cs *classSet) mergeChanged(other *classSet) bool {
 	changed := false
 	for k, v := range other.lo {
 		if cs.lo[k] < v {

@@ -262,7 +262,7 @@ func TestClassSetMergeIntersectsReleases(t *testing.T) {
 	direct := newClassSet()
 	direct.enter("Task")
 
-	if !gap.merge(direct) {
+	if !gap.mergeChanged(direct) {
 		t.Error("dropping a release at a join point is a change")
 	}
 	if got := gap.releasedClasses(); len(got) != 0 {

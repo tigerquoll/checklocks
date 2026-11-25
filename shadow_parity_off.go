@@ -20,12 +20,13 @@ import "golang.org/x/tools/go/ssa"
 
 type lockOrderShadow struct{}
 
-func (*lockOrderContext) shadowCall(ssa.CallInstruction, *classSet, bool) {}
+func (*lockOrderContext) shadowCall(ssa.CallInstruction, siteLocks, bool) {}
 func (*lockOrderContext) shadowCompare()                                  {}
 func (*lockOrderContext) shadowFlush(bool)                                {}
 
-func (*lockOrderContext) shadowRelease(*ssa.Function, ssa.CallInstruction, ssa.Value, string, *classSet, bool) {
+func (*lockOrderContext) shadowRelease(*ssa.Function, ssa.CallInstruction, ssa.Value, string, siteLocks, bool) {
 }
-func (*lockOrderContext) shadowGains(*ssa.Function, ssa.CallInstruction, *classSet, bool) {}
-func (*lockOrderContext) shadowReleased(*ssa.Function, ssa.Instruction, *classSet, bool, string) {
+func (*lockOrderContext) shadowAcquire(siteLocks, string)                                 {}
+func (*lockOrderContext) shadowGains(*ssa.Function, ssa.CallInstruction, siteLocks, bool) {}
+func (*lockOrderContext) shadowReleased(*ssa.Function, ssa.Instruction, siteLocks, bool, string) {
 }
