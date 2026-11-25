@@ -511,11 +511,11 @@ func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) 
 			// A literal's lock annotations are not checked here: the caller's lock
 			// state is known, so the body is analyzed afresh with that state.
 			nlff.Ignore = nlff.Ignore || pc.literalIgnored(fn)
-			fnls := ls.fork()
-			for i, arg := range site.Common().Args {
-				fnls.bind(fn.Params[i], arg)
-			}
-			pc.checkFunction(site, wc, fn, &nlff, fnls, true /* force */)
+			pc.walkLiteral(site, wc, fn, &nlff, ls, func(fnls *lockState) {
+				for i, arg := range site.Common().Args {
+					fnls.bind(fn.Params[i], arg)
+				}
+			})
 		}
 	case *ssa.MakeClosure:
 		// Note that creating and then invoking closures locally is
@@ -879,18 +879,10 @@ func (pc *passContext) checkFunctionCall(site callSite, wc *walkContext, fn *typ
 	}
 }
 
-// checkClosure forks the lock state and binds the closure's free variables and
-// parameters. This allows the analysis to resolve the closure.
+// checkClosure walks the closure with its free variables and parameters bound, which
+// allows the analysis to resolve it.
 func (pc *passContext) checkClosure(site callSite, wc *walkContext, fn *ssa.MakeClosure, ls *lockState) {
-	clls := ls.fork()
 	clfn := fn.Fn.(*ssa.Function)
-	for i, fv := range clfn.FreeVars {
-		clls.store(fv, fn.Bindings[i])
-	}
-	for i, arg := range site.Common().Args {
-		clls.bind(clfn.Params[i], arg)
-	}
-
 	// Note that this is *not* a call to check function call, which checks
 	// against the function preconditions. Instead, this does a fresh
 	// analysis of the function from source code with a different state.
@@ -905,7 +897,129 @@ func (pc *passContext) checkClosure(site callSite, wc *walkContext, fn *ssa.Make
 	if annotated, ok := pc.closureFactsFor(clfn.Syntax()); ok && annotated.Ignore {
 		nlff.Ignore = true
 	}
-	pc.checkFunction(site, wc, clfn, &nlff, clls, true /* force */)
+	pc.walkLiteral(site, wc, clfn, &nlff, ls, func(clls *lockState) {
+		for i, fv := range clfn.FreeVars {
+			clls.store(fv, fn.Bindings[i])
+		}
+		for i, arg := range site.Common().Args {
+			clls.bind(clfn.Params[i], arg)
+		}
+	})
+}
+
+// walkLiteral walks the directly called literal fn inline, on a fork of ls with no pending defers, and
+// continues ls with its end state. Where that is not one state, ls is left as it was, and a walk that ran
+// without the caller's pending defers is made again with them.
+func (pc *passContext) walkLiteral(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, ls *lockState, bind func(*lockState)) {
+	if pc.emit == emitReplay {
+		if exit := pc.current.foldOf(site.instr); exit != nil {
+			ls.foldExit(exit, fn)
+		}
+		return
+	}
+	walk := func(inherit bool) *walkContext {
+		fnls := ls.fork()
+		bind(fnls)
+		if !inherit {
+			fnls.deferStack = deferStack{}
+		}
+		return pc.checkFunction(site, outer, fn, lff, fnls, true /* force */)
+	}
+	if pc.legacyLits {
+		walk(true)
+		return
+	}
+	inherits := len(ls.defers) > 0 || len(ls.noops) > 0
+	recordsAt, pendingAt, decisionsAt, markedAt, givenUpAt := len(pc.records), len(pc.pending), pc.decisionMark(), len(pc.marked), len(pc.givenUp)
+	var gaveUp map[*ssa.Function]string
+	if inherits && pc.engine != nil {
+		gaveUp = maps.Clone(pc.engine.gaveUp)
+	}
+	wc := walk(false)
+	exit, reason := pc.litExit(wc, ls)
+	pc.statLitNoFold(reason)
+	switch {
+	case reason == "gaveup":
+		return
+	case exit == nil && inherits:
+		pc.records, pc.pending = pc.records[:recordsAt], pc.pending[:pendingAt]
+		pc.withdrawDecisions(decisionsAt)
+		for _, f := range pc.marked[markedAt:] {
+			delete(pc.functions, f)
+		}
+		pc.marked = pc.marked[:markedAt]
+		for _, f := range pc.givenUp[givenUpAt:] {
+			delete(pc.givenUpSet, f)
+		}
+		pc.givenUp = pc.givenUp[:givenUpAt]
+		if pc.engine != nil {
+			pc.engine.gaveUp = gaveUp
+		}
+		pc.legacyLits = true
+		defer func() { pc.legacyLits = false }()
+		walk(true)
+		return
+	}
+	pc.joinDefers(wc, recordsAt)
+	wc.joined = true
+	if exit != nil {
+		ls.foldExit(exit, fn)
+		pc.current.setFold(site.instr, exit)
+	}
+}
+
+// litExit returns the end state of the walk of a literal called in pre, or the reason there is none.
+func (pc *passContext) litExit(wc *walkContext, pre *lockState) (*lockState, string) {
+	switch {
+	case wc.gaveUp || pc.overBudget:
+		return nil, "gaveup"
+	case len(wc.exits) == 0:
+		return nil, "noexit"
+	}
+	exit := wc.exits[0]
+	for _, e := range wc.exits[1:] {
+		if !exit.isCompatible(e) {
+			return nil, "disagree"
+		}
+	}
+	if retaken(pre, exit) {
+		return nil, "retake"
+	}
+	return exit, ""
+}
+
+// retaken reports whether exit lacks a lock held in pre and holds another of the same object.
+func retaken(pre, exit *lockState) bool {
+	for key, info := range pre.lockedMutexes {
+		if _, ok := exit.lockedMutexes[key]; ok {
+			continue
+		}
+		for k, e := range exit.lockedMutexes {
+			if _, ok := pre.lockedMutexes[k]; !ok && e.object == info.object {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// foldOf returns the exit stored for the call, or nil.
+func (r *blockRecord) foldOf(call ssa.CallInstruction) *lockState {
+	if r == nil {
+		return nil
+	}
+	return r.folds[call]
+}
+
+// setFold stores the exit the caller continues with after the call.
+func (r *blockRecord) setFold(call ssa.CallInstruction, exit *lockState) {
+	if r == nil {
+		return
+	}
+	if r.folds == nil {
+		r.folds = make(map[ssa.CallInstruction]*lockState)
+	}
+	r.folds[call] = exit
 }
 
 // freshAlloc indicates that v has been allocated within the local scope. There
@@ -1013,6 +1127,12 @@ type walkContext struct {
 
 	// returnStates holds, by identity summary, the text of each lock state the walk returned in.
 	returnStates map[string]string
+
+	// exits holds the lock state at each return, after its deferred calls.
+	exits []*lockState
+
+	// joined is set when the walk's records hold the joined defer stacks.
+	joined bool
 
 	// context names the walk in the decision log; see inlineContext.
 	context string
@@ -1182,6 +1302,9 @@ type blockRecord struct {
 	// pair is the block and element key the record entered under; outs are the pairs its edges reached.
 	pair pairID
 	outs []pairID
+
+	// folds holds, per call of a literal the block makes, the exit its caller continues with.
+	folds map[ssa.CallInstruction]*lockState
 }
 
 // returnPos is where a report at ret is printed. A fall-off-the-end return has no
@@ -1300,9 +1423,9 @@ func loopBody(head, latch *ssa.BasicBlock) map[*ssa.BasicBlock]bool {
 }
 
 // checkFunction checks a function invocation, typically starting with nil lockState.
-func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, parent *lockState, force bool) {
+func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.Function, lff *lockFunctionFacts, parent *lockState, force bool) (wc *walkContext) {
 	if pc.emit == emitReplay {
-		return
+		return nil
 	}
 	outerEmit, outerFailed := pc.emit, pc.opFailed
 	pc.emit = emitDirect
@@ -1332,7 +1455,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 		// That's all we permit for each function, although this may
 		// cause some anonymous functions to be analyzed in only one
 		// context.
-		return
+		return nil
 	}
 
 	// Initialize ls with any preconditions that require locks to be held
@@ -1396,7 +1519,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if outer != nil {
 		outerFresh = outer.fresh
 	}
-	wc := &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh), context: context}
+	wc = &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh), context: context}
 
 	// An inline body is entered with the caller's locks held; only what it takes
 	// itself is its own to release, and a lock merely assumed is no cover.
@@ -1438,7 +1561,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	}
 
 	if pc.overBudget && outer != nil {
-		return
+		return wc
 	}
 	if wc.gaveUp || pc.overBudget {
 		pc.recordGaveUp(fn)
@@ -1493,6 +1616,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if parent != nil {
 		pc.postFunctionCallUpdate(site, lff, parent, outer.context)
 	}
+	return wc
 }
 
 // checkInferred checks for any inferred lock annotations.

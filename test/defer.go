@@ -26,8 +26,7 @@ func testDeferValidAccess(tc *oneGuardStruct) {
 		tc.guardedField = 1
 		tc.mu.Unlock()
 	}()
-	// A deferred literal's unlock does not reach the caller.
-} // +checklocksfail=return with unexpected locks held
+}
 
 func testDeferInvalidAccess(tc *oneGuardStruct) {
 	tc.mu.Lock()

@@ -59,6 +59,9 @@ type walkStats struct {
 
 	// maxTopRegions is the most regions a top marker held.
 	maxTopRegions int
+
+	// litNoFold counts, by reason, the literal calls whose end state did not reach the caller.
+	litNoFold map[string]int
 }
 
 // oracleRef gives a lockState the pass whose walk reads it.
@@ -178,6 +181,17 @@ func (pc *passContext) statTopSilenced(at token.Pos, p lockPath) {
 	st.silenced[fmt.Sprintf("topSilenced %s %s", pc.pass.Fset.Position(at), p.String())] = true
 }
 
+// statLitNoFold counts a literal call that folded nothing, for reason.
+func (pc *passContext) statLitNoFold(reason string) {
+	if reason == "" {
+		return
+	}
+	if pc.stats.litNoFold == nil {
+		pc.stats.litNoFold = map[string]int{}
+	}
+	pc.stats.litNoFold[reason]++
+}
+
 // statOverflow counts a give-up.
 func (pc *passContext) statOverflow() { pc.stats.overflow++ }
 
@@ -240,6 +254,9 @@ func (pc *passContext) writeWalkStats() {
 	var out strings.Builder
 	fmt.Fprintf(&out, "walks %d\nnested %d\nmaxDistinct %d\t%s\nover16 %d\nover64 %d\noverflow %d\noracleReads %d\noracleMisses 0\ndeferMay %d\ndeferUnknown %d\n",
 		st.walks, st.nested, maxDistinct, where, over16, over64, st.overflow, st.reads, st.deferMay, st.deferUnknown)
+	for _, reason := range slices.Sorted(maps.Keys(st.litNoFold)) {
+		fmt.Fprintf(&out, "litNoFold %s %d\n", reason, st.litNoFold[reason])
+	}
 	for _, bucket := range slices.Sorted(maps.Keys(hist)) {
 		fmt.Fprintf(&out, "hist<=%d %d\n", bucket, hist[bucket])
 	}

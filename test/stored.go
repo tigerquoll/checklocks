@@ -115,7 +115,7 @@ func storedReturn(a, b *stT, c bool) (r *stT) {
 }
 
 // storedReceiver: a captured slot reassigned on one arm, then the receiver of a deferred unlock in a closure.
-func storedReceiver(a, b *stT, c bool) {
+func storedReceiver(a, b *stT, c bool) { // +checklocksfail=incompatible return states
 	a.mu.Lock()
 	p := &b.mu
 	if c {

@@ -379,6 +379,23 @@ func (l *lockState) countOnReturn(entry map[pathKey]bool) int {
 	return n
 }
 
+// foldExit sets the held locks to those the call of fn left: of the locks held now, an assumed one stays,
+// and another takes exit's entry or goes if exit has none. A lock exit holds that was not held before is dropped.
+func (l *lockState) foldExit(exit *lockState, fn *ssa.Function) {
+	l.modify()
+	held := make(map[pathKey]lockInfo, len(l.lockedMutexes))
+	for key, info := range l.lockedMutexes {
+		e, ok := exit.lockedMutexes[key]
+		switch {
+		case info.assumed:
+			held[key] = info
+		case ok && (e.path.root.value == nil || e.path.root.value.Parent() != fn):
+			held[key] = e
+		}
+	}
+	l.lockedMutexes = held
+}
+
 // isCompatible returns true if the states are compatible.
 func (l *lockState) isCompatible(other *lockState) bool {
 	return l.isSubset(other) && other.isSubset(l)

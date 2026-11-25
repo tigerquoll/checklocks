@@ -181,8 +181,8 @@ func testAssumedInlineRetake(t *oneReadGuardStruct) {
 		t.guardedField = 1
 		return // +checklocksfail=return with unexpected locks held
 	}()
-	t.mu.RUnlock()
-}
+	t.mu.RUnlock() // +checklocksfail=already unlocked or locked differently
+} // +checklocksfail=return with unexpected locks held
 
 // A lock released and taken again in the same mode is still that lock.
 func testAssumedInlineRelock(t *oneGuardStruct) {

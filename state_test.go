@@ -260,3 +260,59 @@ func TestWithClause(t *testing.T) {
 		t.Errorf("no clause reads %q", got)
 	}
 }
+
+// TestFoldExit pins which locks a literal's exit leaves the caller holding.
+func TestFoldExit(t *testing.T) {
+	entry := func(name string, exclusive, assumed bool) (pathKey, lockInfo) {
+		p := newLockPath(pathRootValue, nil, nil, name)
+		return p.Key(), lockInfo{exclusive: exclusive, assumed: assumed, path: p}
+	}
+	pre, exit := newLockState(), newLockState()
+	for _, e := range []struct {
+		to                *lockState
+		name              string
+		exclusive, assume bool
+	}{
+		{pre, "kept", false, false}, {exit, "kept", true, false},
+		{pre, "released", true, false},
+		{pre, "assumed", true, true},
+		{exit, "taken", true, false},
+	} {
+		k, info := entry(e.name, e.exclusive, e.assume)
+		e.to.lockedMutexes[k] = info
+	}
+	pre.foldExit(exit, nil)
+	if len(pre.lockedMutexes) != 2 {
+		t.Fatalf("the fold holds %d locks, want 2: %s", len(pre.lockedMutexes), pre)
+	}
+	if k, _ := entry("kept", true, false); !pre.lockedMutexes[k].exclusive {
+		t.Errorf("a lock the exit holds keeps the caller's mode: %s", pre)
+	}
+	if k, _ := entry("assumed", true, true); !pre.lockedMutexes[k].assumed {
+		t.Errorf("an assumed lock is not kept: %s", pre)
+	}
+}
+
+// TestRetaken pins that a lock released and one of the same object taken under another key is a retake.
+func TestRetaken(t *testing.T) {
+	obj := types.NewVar(token.NoPos, nil, "mu", types.Typ[types.Int])
+	put := func(ls *lockState, name string, o types.Object) {
+		p := newLockPath(pathRootValue, nil, nil, name)
+		ls.lockedMutexes[p.Key()] = lockInfo{exclusive: true, object: o, path: p}
+	}
+	pre, exit := newLockState(), newLockState()
+	put(pre, "a", obj)
+	put(exit, "b", obj)
+	if !retaken(pre, exit) {
+		t.Error("a lock released and another of the same object taken is not a retake")
+	}
+	put(exit, "a", obj)
+	if retaken(pre, exit) {
+		t.Error("a lock still held is a retake")
+	}
+	exit = newLockState()
+	put(exit, "b", types.NewVar(token.NoPos, nil, "other", types.Typ[types.Int]))
+	if retaken(pre, exit) {
+		t.Error("a lock of another object is a retake")
+	}
+}

@@ -151,6 +151,10 @@ type passContext struct {
 	// entryGuards names the guards each entry lock of the function being walked came from.
 	entryGuards map[pathKey][]string
 
+	// legacyLits is set while a literal is walked again with its caller's pending defers, and
+	// every literal inside it is walked that way too.
+	legacyLits bool
+
 	// opFailed is set when a lock operation's transfer fails, whether or not a report follows.
 	opFailed bool
 }

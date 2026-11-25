@@ -403,3 +403,23 @@ func djForcedPrecondition(s *djGuarded) {
 	defer djNoop()
 	defer djTouch(s) // +checklocksforce
 }
+
+// djLiteralReleases calls a literal that releases the lock under a pending unlock; the unlock finds it released.
+func djLiteralReleases(s *djGuarded) {
+	s.mu.Lock()
+	defer s.mu.Unlock() // +checklocksfail=already unlocked
+	func() {
+		defer djNoop()
+		s.mu.Unlock()
+	}()
+}
+
+// djLiteralArgReleases releases the lock in a literal that captures nothing and takes it as an argument.
+func djLiteralArgReleases(s *djGuarded) {
+	s.mu.Lock()
+	defer s.mu.Unlock() // +checklocksfail=already unlocked
+	func(m *sync.Mutex) {
+		defer djNoop()
+		m.Unlock()
+	}(&s.mu)
+}

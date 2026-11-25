@@ -144,14 +144,14 @@ func checkUnwindAnswers(t *testing.T, lines []string) {
 // litCells are the functions of test/lockorder/litsites.go and how many dump site lines each has.
 var litCells = map[string]int{
 	"litTwoStates$1":     1,
-	"litArms$1":          0,
-	"litGap$1":           2,
+	"litArms$1":          2,
+	"litGap$1":           4,
 	"litEscapeFree$1":    0,
 	"litEscapeClosure$1": 0,
 	"litNested$1":        0,
 	"litNested$1$1":      0,
-	"litDeferred$1":      0,
-	"litDeferred$2":      0,
+	"litDeferred$1":      1,
+	"litDeferred$2":      1,
 	"litNestGiveUp$1":    0,
 	"litNestGiveUp$1$1":  0,
 	"litGaveUp$1":        0,
@@ -181,6 +181,61 @@ func checkLitCells(t *testing.T, lines []string) {
 	}
 	if count["gaveup"] != 1 {
 		t.Errorf("want one give-up line for litGaveUp$1, got %d", count["gaveup"])
+	}
+}
+
+// twinCells pair a function of test/lockorder that wraps its body in a literal with the same body written at the top level.
+var twinCells = [][2]string{{"litArms$1", "djArms"}, {"litGap$1", "litGapTop"}}
+
+// checkTwins checks each pair has the same dump lines but for the position.
+func checkTwins(t *testing.T, lines []string) {
+	t.Helper()
+	body := func(fn string) []string {
+		var out []string
+		for _, l := range lines {
+			if f := strings.Split(l, "\t"); len(f) == 5 && f[0] == fn {
+				out = append(out, strings.Join(f[2:], "\t"))
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	for _, p := range twinCells {
+		if got, want := body(p[0]), body(p[1]); len(want) == 0 || !slices.Equal(got, want) {
+			t.Errorf("%s has the dump lines %q, want those of %s: %q", p[0], got, p[1], want)
+		}
+	}
+}
+
+// checkLiteralReleases checks the deferred unlock of each function that calls a literal releasing its lock finds the lock not held.
+func checkLiteralReleases(t *testing.T, lines []string) {
+	t.Helper()
+	src, err := os.ReadFile("test/lockorder/deferjoin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Split(string(src), "\n")
+	for _, fn := range []string{"djLiteralReleases", "djLiteralArgReleases"} {
+		at := slices.IndexFunc(text, func(l string) bool { return strings.HasPrefix(l, "func "+fn+"(") })
+		off := slices.IndexFunc(text[max(at, 0):], func(l string) bool { return strings.Contains(l, "defer s.mu.Unlock()") })
+		if at < 0 || off < 0 {
+			t.Errorf("%s: no deferred unlock in the corpus", fn)
+			continue
+		}
+		prefix := fmt.Sprintf("%s\tdeferjoin.go:%d:", fn, at+off+1)
+		found := false
+		for _, l := range lines {
+			if !strings.HasPrefix(l, prefix) {
+				continue
+			}
+			found = true
+			if f := strings.Split(l, "\t"); len(f) != 5 || f[3] != "-" {
+				t.Errorf("%s: dump line %q, want the lock not held", fn, l)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no dump line for its deferred unlock", fn)
+		}
 	}
 }
 
@@ -225,6 +280,8 @@ func TestSiteDump(t *testing.T) {
 	checkTakePoolHeld(t, lines)
 	checkUnwindAnswers(t, lines)
 	checkLitCells(t, lines)
+	checkTwins(t, lines)
+	checkLiteralReleases(t, lines)
 	for _, order := range []string{"reverse", "7"} {
 		if got := siteDumpOf(t, bin, order); got != forward {
 			t.Errorf("the dump differs between forward and order %q", order)

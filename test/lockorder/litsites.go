@@ -178,3 +178,11 @@ func litGaveUp(s *litGuarded, f *litSeven, c func() bool) {
 	litSink()
 	s.mu.Unlock()
 }
+
+// litGapTop is litGap without the literal.
+func litGapTop(s *litGuarded) {
+	s.mu.Lock()
+	defer djNoop()
+	defer s.mu.Unlock()
+	defer djNoop2()
+}

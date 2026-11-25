@@ -298,6 +298,7 @@ func (sv *solver) transfer(item workItem) {
 	if rls != nil {
 		text, summary := rls.acquiredString(wc.entryLocks)
 		wc.returnStates[summary] = text
+		wc.exits = append(wc.exits, rls)
 	}
 	for _, succ := range succOrder(wc.fn, block) {
 		if wc.gaveUp || pc.overBudget {

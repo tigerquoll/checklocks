@@ -109,8 +109,7 @@ func testClosureParamDefer(t *oneGuardStruct, n int) {
 		_ = n
 		x.mu.Unlock()
 	}(t)
-	// A deferred literal's unlock does not reach the caller.
-} // +checklocksfail=return with unexpected locks held
+}
 
 // +checklocksignore
 func testClosureIgnore(tc *oneGuardStruct) {
