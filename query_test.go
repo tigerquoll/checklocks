@@ -255,8 +255,11 @@ func TestViewQueryInexact(t *testing.T) {
 }
 
 func litSource() string {
-	var b strings.Builder
-	b.WriteString(`package p
+	var loop strings.Builder
+	for _, f := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		loop.WriteString("\t\t\tif c() {\n\t\t\t\tl." + f + ".Lock()\n\t\t\t}\n")
+	}
+	return strings.ReplaceAll(`package p
 
 type Mutex struct{}
 
@@ -268,6 +271,7 @@ type Locks struct {
 }
 
 func sink()         {}
+func other()        {}
 func keep(f func()) {}
 
 func twoStates(m *Mutex, c bool) {
@@ -316,22 +320,46 @@ func nested(m *Mutex) {
 	keep(outer)
 }
 
+func phantom(m *Mutex) {
+	defer func() { sink() }()
+	m.Lock()
+	func() { defer other() }()
+	m.Unlock()
+}
+
+func phantomPanic(m *Mutex) {
+	defer func() { sink() }()
+	m.Lock()
+	func() { defer other() }()
+	panic("x")
+}
+
+func nestGiveUp(l *Locks, c func() bool) {
+	outer := func() {
+		inner := func() { sink() }
+		for c() {
+@LOOP@		}
+		inner()
+	}
+	l.a.Lock()
+	l.b.Lock()
+	outer()
+	l.b.Unlock()
+	l.a.Unlock()
+	outer()
+}
+
 func gaveUp(m *Mutex, l *Locks, c func() bool) {
 	m.Lock()
 	func() {
 		for c() {
-`)
-	for _, f := range []string{"a", "b", "c", "d", "e", "f", "g"} {
-		b.WriteString("\t\t\tif c() {\n\t\t\t\tl." + f + ".Lock()\n\t\t\t}\n")
-	}
-	b.WriteString(`		}
+@LOOP@		}
 		sink()
 	}()
 	sink()
 	m.Unlock()
 }
-`)
-	return b.String()
+`, "@LOOP@", loop.String())
 }
 
 // litAnswers walks fn of src and returns it, the view, and a renderer of the answers at a function's sink calls.
@@ -388,6 +416,8 @@ func TestViewLiteralSites(t *testing.T) {
 		{"bothHeld", "", "[all]", ""},
 		{"escapeFree", "", "-", "not called directly"},
 		{"escapeClosure", "", "-", "not called directly"},
+		{"phantom", "", "-", "not called directly"},
+		{"phantomPanic", "", "-", "not called directly"},
 		{"gaveUp", "[all]", "-", "gave up: more than 64 lock states reach one block in a loop"},
 	} {
 		top, e, answers := litAnswers(t, src, tc.fn)
@@ -406,6 +436,12 @@ func TestViewLiteralSites(t *testing.T) {
 	inner := top.AnonFuncs[0].AnonFuncs[0]
 	if got, why := answers(inner), e.whyNone(inner); got != "-" || why != "not called directly" {
 		t.Errorf("nested: inner literal answers %q, whyNone %q, want no record because the literal around it escapes", got, why)
+	}
+	top, e, answers = litAnswers(t, src, "nestGiveUp")
+	outer := top.AnonFuncs[0]
+	inner = outer.AnonFuncs[0]
+	if got, why := answers(inner), e.whyNone(inner); got != "-" || !strings.HasPrefix(why, "gave up: ") {
+		t.Errorf("nestGiveUp: inner literal answers %q, whyNone %q, want no record because the literal around it gave up", got, why)
 	}
 }
 

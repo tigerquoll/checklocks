@@ -97,6 +97,53 @@ func litNested(s *litGuarded) {
 	litKeep(outer)
 }
 
+// litDeferred defers a literal, and calls another literal that defers a no-op, under mu.
+func litDeferred(s *litGuarded) {
+	defer func() { litSink() }()
+	s.mu.Lock()
+	func() { defer djNoop() }()
+	s.mu.Unlock()
+}
+
+// litNestGiveUp calls a literal twice, and the second call takes it over the cycle cap.
+//
+// +checklocksignore
+func litNestGiveUp(f *litSeven, c func() bool) {
+	outer := func() {
+		inner := func() { litSink() }
+		for c() {
+			if c() {
+				f.a.Lock()
+			}
+			if c() {
+				f.b.Lock()
+			}
+			if c() {
+				f.c.Lock()
+			}
+			if c() {
+				f.d.Lock()
+			}
+			if c() {
+				f.e.Lock()
+			}
+			if c() {
+				f.f.Lock()
+			}
+			if c() {
+				f.g.Lock()
+			}
+		}
+		inner()
+	}
+	f.a.Lock()
+	f.b.Lock()
+	outer()
+	f.b.Unlock()
+	f.a.Unlock()
+	outer()
+}
+
 // litGaveUp calls a literal that is over the cycle cap, under a lock its caller holds.
 //
 // +checklocksignore

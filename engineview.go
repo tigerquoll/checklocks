@@ -233,7 +233,7 @@ func sortedHeld(locks map[pathKey]heldLock) []heldLock {
 	return out
 }
 
-// giveUp marks fn as having no records.
+// giveUp marks fn, and the literals inside it, as having no usable records.
 func (e *engineView) giveUp(fn *ssa.Function, reason string) {
 	if e == nil {
 		return
@@ -246,7 +246,17 @@ func (e *engineView) giveUp(fn *ssa.Function, reason string) {
 
 // usable says whether the engine has records for inst's function.
 func (e *engineView) usable(inst ssa.Instruction) bool {
-	return e != nil && e.gaveUp[inst.Parent()] == ""
+	return e != nil && e.gaveUpIn(inst.Parent()) == ""
+}
+
+// gaveUpIn returns the reason of the nearest function, from fn outward, that gave up.
+func (e *engineView) gaveUpIn(fn *ssa.Function) string {
+	for ; fn != nil; fn = fn.Parent() {
+		if reason := e.gaveUp[fn]; reason != "" {
+			return reason
+		}
+	}
+	return ""
 }
 
 // heldAt returns the locks the engine held at inst in key order, and false when it recorded none or gave up on inst's function.
@@ -295,13 +305,13 @@ func (e *engineView) entryOf(fn *ssa.Function) ([]heldLock, bool) {
 	return locks, true
 }
 
-// whyNone says why the engine has no record in fn: "gave up: <reason>", "not called directly" (the literal or one
-// around it is used otherwise) or "not reached" for a literal, or "".
+// whyNone says why the engine has no record in fn: "gave up: <reason>", or for a literal "not called directly"
+// or "not reached"; "" otherwise.
 func (e *engineView) whyNone(fn *ssa.Function) string {
 	if e == nil {
 		return ""
 	}
-	if reason := e.gaveUp[fn]; reason != "" {
+	if reason := e.gaveUpIn(fn); reason != "" {
 		return "gave up: " + reason
 	}
 	if fn.Parent() == nil {
@@ -332,7 +342,7 @@ func (e *engineView) recordable(fn *ssa.Function) bool {
 }
 
 // calledOnly says whether every use of the literal fn in its parent, through its closure if it has
-// one, is as the callee of a call or defer.
+// one, is as the callee of a call.
 func calledOnly(fn *ssa.Function) bool {
 	for _, b := range fn.Parent().Blocks {
 		for _, inst := range b.Instrs {
@@ -354,16 +364,8 @@ func calledOnly(fn *ssa.Function) bool {
 
 // isCallee says whether inst calls v and uses it nowhere else.
 func isCallee(inst ssa.Instruction, v ssa.Value) bool {
-	var c *ssa.CallCommon
-	switch x := inst.(type) {
-	case *ssa.Call:
-		c = &x.Call
-	case *ssa.Defer:
-		c = &x.Call
-	default:
-		return false
-	}
-	if c.IsInvoke() || c.Value != v {
+	c, ok := inst.(*ssa.Call)
+	if !ok || c.Call.IsInvoke() || c.Call.Value != v {
 		return false
 	}
 	uses := 0
@@ -393,7 +395,7 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *loc
 		return
 	}
 	top := pc.records[0].wc.fn
-	if top.Parent() != nil || !pc.engine.recordable(fn) {
+	if fn.Parent() != nil && (top.Parent() != nil || !pc.engine.recordable(fn)) {
 		return
 	}
 	// A literal's no-op defer entries are whichever arrived first, so their sites have no record.

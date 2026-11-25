@@ -150,6 +150,10 @@ var litCells = map[string]int{
 	"litEscapeClosure$1": 0,
 	"litNested$1":        0,
 	"litNested$1$1":      0,
+	"litDeferred$1":      0,
+	"litDeferred$2":      0,
+	"litNestGiveUp$1":    0,
+	"litNestGiveUp$1$1":  0,
 	"litGaveUp$1":        0,
 	"litGaveUp":          5,
 }

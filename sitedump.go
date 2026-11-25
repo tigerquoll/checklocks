@@ -122,13 +122,15 @@ func (pc *passContext) writeSiteDump() {
 	e := pc.engine
 	var lines []string
 	for inst := range e.held {
+		if !e.usable(inst) {
+			continue
+		}
 		pos := "?"
 		if p := inst.Pos(); p.IsValid() {
 			at := pc.pass.Fset.Position(p)
 			pos = fmt.Sprintf("%s:%d:%d", filepath.Base(at.Filename), at.Line, at.Column)
 		}
-		held, _ := e.heldSet(inst)
-		locks := sortedHeld(held)
+		locks := sortedHeld(e.held[inst])
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s", relFuncName(inst.Parent()), pos, dumpKind(inst), heldString(locks), e.answersString(inst, locks)))
 	}
 	for fn, locks := range e.entry {
