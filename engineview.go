@@ -387,8 +387,8 @@ func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
 	return pc.engine, fn.Parent() == nil && inst.Parent() == fn
 }
 
-// recordHeld records the locks held at inst, a call or channel operation of the function being replayed or of a
-// recordable literal inside it.
+// recordHeld records the locks held at inst, a call or channel operation of the function being replayed, of a
+// recordable literal inside it, or of a synthetic wrapper walked inline under any top.
 func (pc *passContext) recordHeld(inst ssa.Instruction, wc *walkContext, ls *lockState) {
 	fn := wc.fn
 	if pc.engine == nil || pc.emit != emitReplay || inst == nil || inst.Parent() != fn || len(pc.records) == 0 {
