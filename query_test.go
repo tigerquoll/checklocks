@@ -406,7 +406,7 @@ func litAnswers(t *testing.T, src, fn string) (top *ssa.Function, e *engineView,
 	return top, pc.engine, answers
 }
 
-// TestViewLiteralSites checks a literal only called directly is answered over its walks, any other has no record.
+// TestViewLiteralSites checks a literal only called directly is answered over its walks, any other answers unknown.
 func TestViewLiteralSites(t *testing.T) {
 	src := litSource()
 	for _, tc := range []struct {
@@ -414,9 +414,9 @@ func TestViewLiteralSites(t *testing.T) {
 	}{
 		{"twoStates", "", "[some]", ""},
 		{"bothHeld", "", "[all]", ""},
-		{"escapeFree", "", "-", "not called directly"},
-		{"escapeClosure", "", "-", "not called directly"},
-		{"phantom", "", "-", "not called directly"},
+		{"escapeFree", "", "[unknown]", "not called directly"},
+		{"escapeClosure", "", "[unknown]", "not called directly"},
+		{"phantom", "", "[]", "not called directly"},
 		{"phantomPanic", "", "-", "not called directly"},
 		{"gaveUp", "[all]", "-", "gave up: more than 64 lock states reach one block in a loop"},
 	} {
@@ -434,8 +434,8 @@ func TestViewLiteralSites(t *testing.T) {
 	}
 	top, e, answers := litAnswers(t, src, "nested")
 	inner := top.AnonFuncs[0].AnonFuncs[0]
-	if got, why := answers(inner), e.whyNone(inner); got != "-" || why != "not called directly" {
-		t.Errorf("nested: inner literal answers %q, whyNone %q, want no record because the literal around it escapes", got, why)
+	if got, why := answers(inner), e.whyNone(inner); got != "[unknown]" || why != "not called directly" {
+		t.Errorf("nested: inner literal answers %q, whyNone %q, want unknown because the literal around it escapes", got, why)
 	}
 	top, e, answers = litAnswers(t, src, "nestGiveUp")
 	outer := top.AnonFuncs[0]

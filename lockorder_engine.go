@@ -84,7 +84,8 @@ func (pc *lockOrderContext) acquiredClass(call ssa.CallInstruction) string {
 	return ""
 }
 
-// labels returns, for each engine lock a call of fn took, the classes lockorder acquired at those calls.
+// labels returns, for each engine lock a call of fn or of a literal inside it took, the classes lockorder
+// acquired at those calls.
 func (pc *lockOrderContext) labels(fn *ssa.Function) map[pathKey]map[string]struct{} {
 	if own, ok := pc.labelSets[fn]; ok {
 		return own
@@ -95,22 +96,26 @@ func (pc *lockOrderContext) labels(fn *ssa.Function) map[pathKey]map[string]stru
 	}
 	pc.labelSets[fn] = own
 	view := pc.engineView()
-	for _, b := range fn.Blocks {
-		for _, inst := range b.Instrs {
-			call, ok := inst.(ssa.CallInstruction)
-			if !ok {
-				continue
-			}
-			class := pc.acquiredClass(call)
-			if class == "" {
-				continue
-			}
-			for _, gained := range []map[pathKey]lockPath{view.gainsOf(call), view.opGainsOf(call)} {
-				for k := range gained {
-					if own[k] == nil {
-						own[k] = make(map[string]struct{})
+	fns := []*ssa.Function{fn}
+	for i := 0; i < len(fns); i++ {
+		fns = append(fns, fns[i].AnonFuncs...)
+		for _, b := range fns[i].Blocks {
+			for _, inst := range b.Instrs {
+				call, ok := inst.(ssa.CallInstruction)
+				if !ok {
+					continue
+				}
+				class := pc.acquiredClass(call)
+				if class == "" {
+					continue
+				}
+				for _, gained := range []map[pathKey]lockPath{view.gainsOf(call), view.opGainsOf(call)} {
+					for k := range gained {
+						if own[k] == nil {
+							own[k] = make(map[string]struct{})
+						}
+						own[k][class] = struct{}{}
 					}
-					own[k][class] = struct{}{}
 				}
 			}
 		}
@@ -206,6 +211,10 @@ func pathOwner(p lockPath) (owner *types.Named, field string, final types.Type) 
 		return t
 	}
 	t := p.root.value.Type()
+	// A free variable is a pointer to the captured variable; a bound wrapper's receiver classes the same one level down.
+	if p.root.kind == pathRootFreeVar {
+		t = deref(t)
+	}
 	for i, s := range p.steps {
 		switch s.kind {
 		case stepDeref:

@@ -437,24 +437,30 @@ func isCallee(inst ssa.Instruction, v ssa.Value) bool {
 }
 
 // replaying returns the engine, and whether inst is a site of the top-level function whose
-// replay is running.
+// replay is running, or of a literal inside it.
 func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
 	if pc.engine == nil || pc.emit != emitReplay || inst == nil || len(pc.records) == 0 {
 		return nil, false
 	}
 	fn := pc.records[0].wc.fn
-	return pc.engine, fn.Parent() == nil && inst.Parent() == fn
+	outer := inst.Parent()
+	for outer != nil && outer.Parent() != nil {
+		outer = outer.Parent()
+	}
+	return pc.engine, fn.Parent() == nil && outer == fn
 }
 
 // recordHeld records the locks held at inst, a call or channel operation of the function being replayed, of a
-// recordable literal inside it, or of a synthetic wrapper walked inline under any top.
+// recordable literal inside it, or of a synthetic wrapper walked inline under any top. A site of a literal
+// that is not recordable is recorded under any top and answers unknown to query.
 func (pc *passContext) recordHeld(inst ssa.Instruction, run *ssa.RunDefers, wc *walkContext, ls *lockState) {
 	fn := wc.fn
 	if pc.engine == nil || pc.emit != emitReplay || inst == nil || inst.Parent() != fn || len(pc.records) == 0 {
 		return
 	}
 	top := pc.records[0].wc.fn
-	if fn.Parent() != nil && (top.Parent() != nil || !pc.engine.recordable(fn)) {
+	approx := fn.Parent() != nil && !pc.engine.recordable(fn)
+	if fn.Parent() != nil && !approx && top.Parent() != nil {
 		return
 	}
 	// A no-op defer entry of a literal with a walk whose defer stacks were not joined is whichever arrived first.
@@ -463,6 +469,9 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, run *ssa.RunDefers, wc *
 	}
 	entry := pc.records[0].parent.lockedMutexes
 	pc.engine.add(inst, ls, entry)
+	if approx {
+		pc.engine.markInexact(inst)
+	}
 	if d, ok := inst.(*ssa.Defer); ok && run != nil {
 		pc.engine.addPair(deferPair{run, d}, ls, entry)
 	}

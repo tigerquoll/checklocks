@@ -135,3 +135,83 @@ func (a *App) zzReleaseOnOnePath(p *Partition, c bool) { // +checklocksfail=inco
 	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 	p.Unlock()
 } // +checklocksfail=not held exclusively
+
+// An aliased lock taken inside an annotated literal that is passed away.
+func zzAliasInAnnotatedLiteral(run func(func(*Context, *seamOuter, *Partition))) {
+	// +checklocks:c.mu
+	run(func(c *Context, o *seamOuter, p *Partition) {
+		o.inner.mu.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition
+		p.Unlock()
+		o.inner.mu.Unlock()
+	})
+}
+
+// An aliased lock taken inside a go literal.
+func zzAliasInGoLiteral(o *seamOuter, p *Partition) {
+	go func() {
+		o.inner.mu.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition
+		p.Unlock()
+		o.inner.mu.Unlock()
+	}()
+}
+
+// An aliased lock taken inside a deferred literal.
+func zzAliasInDeferredLiteral(o *seamOuter, p *Partition) {
+	defer func() {
+		o.inner.mu.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition
+		p.Unlock()
+		o.inner.mu.Unlock()
+	}()
+}
+
+// An aliased lock taken inside a returned literal.
+func zzAliasInReturnedLiteral(o *seamOuter, p *Partition) func() {
+	return func() {
+		o.inner.mu.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition
+		p.Unlock()
+		o.inner.mu.Unlock()
+	}
+}
+
+// A plain lock taken inside a literal nested in a go literal.
+func zzPlainInNestedLiteral(a *App, p *Partition) {
+	go func() {
+		func() {
+			a.Lock()
+			p.Lock() // +lockorderfail=acquiring Partition
+			p.Unlock()
+			a.Unlock()
+		}()
+	}()
+}
+
+// An annotated literal passed away that takes a lock of the class it holds on entry.
+func zzAnnotatedLiteralSameClass(run func(func(*App, *App))) {
+	// +checklocks:a.mu
+	run(func(a, b *App) {
+		b.Lock()
+		b.Unlock()
+	})
+}
+
+// A deferred literal run at two returns that hold different locks.
+func zzTwoReturnsLiteral(a *App, o *seamOuter, p *Partition, c bool) { // +checklocksfail=incompatible return states
+	defer func() {
+		p.Lock()
+		p.Unlock()
+	}()
+	if c {
+		a.Lock()
+		return // +checklocksfail=return with unexpected locks held
+	}
+	o.inner.mu.Lock()
+} // +checklocksfail=return with unexpected locks held
+
+// A method value of a lock method, passed away.
+func zzBoundLockPassedAway(a *App, run func(func())) {
+	run(a.Lock)
+}

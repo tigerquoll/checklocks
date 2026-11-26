@@ -143,10 +143,10 @@ func TestShadowAgree(t *testing.T) {
 			t.Errorf("%s: want an N line with compared > 0, got %q", fn, n)
 		}
 	}
-	// The sites without a record: the literal litEscapes hands away, and Guard's primitive bodies.
+	// The sites without a record: Guard's primitive bodies.
 	log, _, _ := shadowCorpus(t, "straight")
-	if n := log[len(log)-1]; !strings.Contains(n, "\tnoengine=5\t") || !strings.Contains(n, "\tunrecorded=0") {
-		t.Errorf("want noengine=5 so that every other site is counted, and unrecorded=0, got %q", n)
+	if n := log[len(log)-1]; !strings.Contains(n, "\tnoengine=2\t") || !strings.Contains(n, "\tunrecorded=0") {
+		t.Errorf("want noengine=2 so that every other site is counted, and unrecorded=0, got %q", n)
 	}
 
 	// A literal called directly has records; lockorder holds nothing there.
@@ -159,16 +159,10 @@ func TestShadowAgree(t *testing.T) {
 		t.Errorf("want a D line with Eonly G in the literal, got %q", got[0])
 	}
 
-	// A literal handed away has no records, and the line says why.
+	// A literal handed away is recorded as unknown, so there is nothing to compare.
 	log, first, last = shadowCorpus(t, "litEscapes")
-	got = linesIn(log, first, last)
-	if len(got) != 2 {
-		t.Fatalf("want two lines in litEscapes, got %q", got)
-	}
-	for _, l := range got {
-		if f := strings.Split(l, "\t"); f[0] != "X" || f[3] != "litEscapes$1" || f[4] != "L=G" || f[5] != "not called directly" {
-			t.Errorf("want an X line in the literal that is not called directly, got %q", l)
-		}
+	if got = linesIn(log, first, last); len(got) != 0 {
+		t.Errorf("want no line in litEscapes, got %q", got)
 	}
 }
 
