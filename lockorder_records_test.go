@@ -58,8 +58,6 @@ var recordRows = map[string][]string{
 	},
 	"lockblocking": {
 		"test/lockblocking/records.go:48:3: a channel receive while holding App: a wait under a lock stalls every other user of it",
-		"test/lockblocking/records.go:58:19: missing expected failure \"while holding App\"",
-		"test/lockblocking/records.go:58:19: missing expected failure \"while holding App\"",
 	},
 }
 

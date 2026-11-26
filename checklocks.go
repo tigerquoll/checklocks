@@ -241,6 +241,7 @@ func (pc *passContext) contained(fn *ssa.Function, check func()) {
 		}
 		pc.fnHints = nil
 		pc.current, pc.emit, pc.records, pc.unjoined, pc.storeScans = nil, emitDirect, nil, nil, nil
+		pc.foreign, pc.legacyLits = false, false
 		pc.engine.giveUp(fn, "analysis panicked")
 		// Loop B must not analyze the closures of a failed function out of context.
 		for work := []*ssa.Function{fn}; len(work) > 0; {

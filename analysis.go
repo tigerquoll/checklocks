@@ -1359,8 +1359,13 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		legacy := pc.legacyLits
 		pc.legacyLits = false
 		recordsAt := len(pc.records)
-		pc.checkFunction(callSite{kind: siteEntry}, wc, clfn, &nlff, nil, false /* force */)
-		pc.markUnjoined(clfn, recordsAt)
+		if lwc := pc.checkFunction(callSite{kind: siteEntry}, wc, clfn, &nlff, nil, false /* force */); lwc != nil {
+			if lwc.gaveUp || pc.overBudget {
+				pc.markUnjoined(clfn, recordsAt)
+			} else {
+				pc.joinDefers(lwc, recordsAt)
+			}
+		}
 		pc.legacyLits = legacy
 	case *ssa.Return:
 		return x, ls // Valid return state.

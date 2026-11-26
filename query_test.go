@@ -320,6 +320,14 @@ func nested(m *Mutex) {
 	keep(outer)
 }
 
+func deferInEscaped(m *Mutex) {
+	f := func() { defer other(); sink() }
+	m.Lock()
+	f()
+	m.Unlock()
+	keep(f)
+}
+
 func phantom(m *Mutex) {
 	defer func() { sink() }()
 	m.Lock()
@@ -416,6 +424,7 @@ func TestViewLiteralSites(t *testing.T) {
 		{"bothHeld", "", "[all]", ""},
 		{"escapeFree", "", "[unknown]", "not called directly"},
 		{"escapeClosure", "", "[unknown]", "not called directly"},
+		{"deferInEscaped", "", "[unknown]", "not called directly"},
 		{"phantom", "", "[]", "not called directly"},
 		{"phantomPanic", "", "-", "not called directly"},
 		{"gaveUp", "[all]", "-", "gave up: more than 64 lock states reach one block in a loop"},

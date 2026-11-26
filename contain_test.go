@@ -69,6 +69,7 @@ func other() {}
 	pc.records = []*blockRecord{{}}
 	pc.current = &blockRecord{}
 	pc.emit = emitWalk
+	pc.foreign, pc.legacyLits = true, true
 	pc.contained(fn, func() { panic("boom") })
 
 	want := []string{fmt.Sprintf("%v: analysis of %s failed with an internal error; its diagnostics may be incomplete", fn.Pos(), fn)}
@@ -77,6 +78,9 @@ func other() {}
 	}
 	if pc.fnHints != nil {
 		t.Error("fnHints not cleared")
+	}
+	if pc.foreign || pc.legacyLits {
+		t.Error("foreign or legacyLits still set")
 	}
 	if pc.records != nil || pc.current != nil || pc.emit != emitDirect {
 		t.Errorf("walk state not reset: %v %v %v", pc.records, pc.current, pc.emit)

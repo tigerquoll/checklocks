@@ -439,7 +439,7 @@ func isCallee(inst ssa.Instruction, v ssa.Value) bool {
 // replaying returns the engine, and whether inst is a site of the top-level function whose
 // replay is running, or of a literal inside it.
 func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
-	if pc.engine == nil || pc.emit != emitReplay || inst == nil || len(pc.records) == 0 || pc.current.wc.foreign {
+	if pc.engine == nil || pc.emit != emitReplay || inst == nil || len(pc.records) == 0 || pc.current.wc.foreign || pc.foreign {
 		return nil, false
 	}
 	fn := pc.records[0].wc.fn
