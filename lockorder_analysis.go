@@ -28,7 +28,8 @@ import (
 )
 
 // ignoredAround is functionIgnored for fn, or for the function around it when fn is a literal
-// the function calls or defers in place; any other literal is analysed as a function of its own.
+// the function calls or defers in place or its range-over-func loop body; any other literal is
+// analysed as a function of its own.
 func (pc *lockOrderContext) ignoredAround(fn *ssa.Function) bool {
 	if pc.engineView() != nil && pc.ignoreCovers(fn) {
 		return pc.functionIgnored(topOf(fn))
@@ -228,7 +229,9 @@ type walkState struct {
 	deferred  []ssa.CallInstruction
 }
 
-// newWalkState returns the state a block starts from: no released classes yet; held locks come from the engine's record at each site.
+// newWalkState returns the state a block starts from: no released classes yet, and held locks
+// come from the engine's record at each site. Nothing is carried in for the instances: an
+// annotation names a class, not the instance it was taken on.
 func newWalkState(locks *recordLocks) *walkState {
 	return &walkState{locks: locks, instances: newInstanceSet()}
 }

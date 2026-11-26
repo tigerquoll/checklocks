@@ -577,10 +577,10 @@ lockblocking skipped this function: checklocks gave up on it (more than 64 lock 
 ```
 
 A function literal that gave up gets its own row; the literals inside a function
-that gave up are skipped without one, except that a literal an ignore does not
-cover, inside an ignored function that gave up, gets its own row. Callers of the
-function are still checked against its annotations; nothing the walk of its body
-found reaches them.
+that gave up are skipped without one, except that the outermost literal an ignore
+does not cover, inside an ignored function that gave up, gets its own row.
+Callers of the function are still checked against its annotations; nothing the
+walk of its body found reaches them.
 
 To clear it, split the function so each loop holds fewer lock combinations,
 annotate its locks so more are declared on entry than discovered by the walk, or
@@ -588,8 +588,8 @@ mark the function `+checklocksignore`, which says its body is not checked. A
 `+checklocksforce` on the function line silences the message too, and the
 findings are still dropped. Both clear checklocks' row only: `lockorder` and
 `lockblocking` print theirs unless the function, or the function around a literal
-it calls or defers in place, carries `+lockorderignore` or `+lockblockingignore`
-respectively.
+it calls or defers in place or around its range-over-func loop body, carries
+`+lockorderignore` or `+lockblockingignore` respectively.
 
 ## Locks lost in a loop
 

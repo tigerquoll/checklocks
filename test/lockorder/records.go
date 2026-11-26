@@ -337,3 +337,14 @@ func zzHeldOnOneBranchDeferred(a *App, p *Partition, c bool) {
 	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 	p.Unlock()
 }
+
+// zzEscapingLiteralHolds: a direct field lock in a stored literal passed to another function is analysed on its own.
+func zzEscapingLiteralHolds(a *App, p *Partition, keep func(func())) {
+	f := func() {
+		a.mu.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+		p.Unlock()
+		a.mu.Unlock()
+	}
+	keep(f)
+}
