@@ -40,9 +40,9 @@ var shadowRun struct {
 	decision []string
 }
 
-var diagnosticLine = regexp.MustCompile(`^\S+\.go:\d+:\d+: |^# \S+$`)
+var diagnosticLine = regexp.MustCompile(`^\S+\.go:\d+:\d+: |^# \S+$|^go: `)
 
-// onlyDiagnostics reports whether out is non-empty and holds only diagnostics and package headers.
+// onlyDiagnostics reports whether out is non-empty and holds only diagnostics, package headers and go command notices.
 func onlyDiagnostics(out []byte) bool {
 	n := 0
 	for _, l := range strings.Split(string(out), "\n") {

@@ -27,6 +27,15 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
+// ignoredAround is functionIgnored for fn, or for the function around it when fn is a literal
+// called in place; any other literal is analysed as a function of its own.
+func (pc *lockOrderContext) ignoredAround(fn *ssa.Function) bool {
+	if view := pc.engineView(); view != nil && view.recordable(fn) {
+		return pc.functionIgnored(topOf(fn))
+	}
+	return pc.functionIgnored(fn)
+}
+
 // analyzeFunction walks a function and produces its summary, reporting any ordering
 // violation it realizes.
 //
@@ -61,7 +70,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	if pc.recordState() != nil {
 		if view := pc.engineView(); view != nil {
 			if reason := view.gaveUpIn(fn); reason != "" {
-				if own := view.gaveUp[fn]; own != "" && report && !pc.functionIgnored(topOf(fn)) &&
+				if own := view.gaveUp[fn]; own != "" && report && !pc.ignoredAround(fn) &&
 					(fn.Parent() == nil || view.gaveUpIn(fn.Parent()) == "") {
 					name := "lockorder"
 					if pc.check == checkBlocking {
@@ -76,7 +85,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	if fn.Blocks == nil {
 		return
 	}
-	ignored := pc.functionIgnored(topOf(fn))
+	ignored := pc.ignoredAround(fn)
 
 	// Entry state: the classes the function is annotated as already holding. This is what
 	// makes an annotated callback work, where the caller took the lock and handed control

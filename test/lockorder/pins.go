@@ -180,6 +180,18 @@ func zzProbeIgnoredLit(a *App, p *Partition) {
 	a.Unlock()
 }
 
+// Pins that a literal started with go is not covered by its function's lockorder ignore.
+//
+// +lockorderignore
+func zzProbeIgnoredGoLit(a *App, p *Partition) {
+	go func() {
+		a.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition
+		p.Unlock()
+		a.Unlock()
+	}()
+}
+
 // Pins that a literal's give-up row follows the ignore of the function around it.
 //
 // +checklocksignore +lockorderignore +lockblockingignore

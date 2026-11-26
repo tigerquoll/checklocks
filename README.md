@@ -522,7 +522,9 @@ applied consistently and without the need for ignoring and forcing.
 
 For `lockorder`, `+lockorderignore` on a function drops its ordering reports and keeps
 its acquisitions from reaching its callers; on a single line it drops that line's
-ordering reports. It does not hide the function's waits from `lockblocking`.
+ordering reports. It does not hide the function's waits from `lockblocking`. A literal
+the function calls in place follows its ignore; any other literal (started with `go`,
+deferred to another function, stored) is analysed as a function of its own and is not covered.
 
 ### More than one annotation on a comment
 
@@ -1089,8 +1091,10 @@ so including them would report all nesting and say nothing; that nesting is
     and its waits count for no caller at any depth, except a wait declared with
     `+blocking`; on a line, drops the diagnostics on that line. Call sites of a
     function that also has `+blocking` are still reported, and silencing one
-    needs a line-level `+lockblockingignore` there. Function literals inside an
-    ignored function are not covered: they are analysed as functions of their own.
+    needs a line-level `+lockblockingignore` there. A literal the
+    function calls in place follows its ignore; any other literal (started with `go`,
+    deferred to another function, stored) is analysed as a function of its own and
+    is not covered.
 *   `+lockblockingfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
 

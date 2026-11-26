@@ -50,6 +50,17 @@ func zzInlineLiteralWaits(a *App, c chan int) {
 	a.mu.Unlock()
 }
 
+// Pins that a literal started with go is not covered by its function's lockblocking ignore.
+//
+// +lockblockingignore
+func zzIgnoredGoLiteralWaits(a *App, c chan int) {
+	go func() {
+		a.mu.Lock()
+		<-c // +lockblockingfail=a channel receive
+		a.mu.Unlock()
+	}()
+}
+
 // A go literal whose deferred wait runs under a lock when the parameter says so.
 func zzGoLiteralDefersWait(a *App, wg *sync.WaitGroup, c bool) {
 	go func() {
