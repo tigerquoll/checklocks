@@ -37,7 +37,7 @@ type heldLock struct {
 
 // engineView is what the engine records per pass for lockorder and lockblocking: locks held at
 // each call and channel operation, entry locks, and what each call's annotations acquired and
-// released. Sites of function literals are recorded for held only. A nil view records and reports nothing.
+// released. Literal sites carry held, gains, op gains and releases too. A nil view records and reports nothing.
 type engineView struct {
 	// held is the locks held at each site in some state; a client that suppresses or derives must use query.
 	held   map[ssa.Instruction]map[pathKey]heldLock
@@ -364,7 +364,7 @@ func (e *engineView) entryOf(fn *ssa.Function) ([]heldLock, bool) {
 	return locks, true
 }
 
-// whyNone says why the engine has no record in fn: "gave up: <reason>", or for a literal "not called directly"
+// whyNone names why a site of fn has no usable record: "gave up: <reason>", or for a literal "not called directly"
 // or "not reached"; "" otherwise.
 func (e *engineView) whyNone(fn *ssa.Function) string {
 	if e == nil {
@@ -439,7 +439,7 @@ func isCallee(inst ssa.Instruction, v ssa.Value) bool {
 // replaying returns the engine, and whether inst is a site of the top-level function whose
 // replay is running, or of a literal inside it.
 func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
-	if pc.engine == nil || pc.emit != emitReplay || inst == nil || len(pc.records) == 0 {
+	if pc.engine == nil || pc.emit != emitReplay || inst == nil || len(pc.records) == 0 || pc.current.wc.foreign {
 		return nil, false
 	}
 	fn := pc.records[0].wc.fn
@@ -455,7 +455,7 @@ func (pc *passContext) replaying(inst ssa.Instruction) (*engineView, bool) {
 // that is not recordable is recorded under any top and answers unknown to query.
 func (pc *passContext) recordHeld(inst ssa.Instruction, run *ssa.RunDefers, wc *walkContext, ls *lockState) {
 	fn := wc.fn
-	if pc.engine == nil || pc.emit != emitReplay || inst == nil || inst.Parent() != fn || len(pc.records) == 0 {
+	if pc.engine == nil || pc.emit != emitReplay || inst == nil || inst.Parent() != fn || len(pc.records) == 0 || wc.foreign {
 		return
 	}
 	top := pc.records[0].wc.fn
@@ -469,10 +469,11 @@ func (pc *passContext) recordHeld(inst ssa.Instruction, run *ssa.RunDefers, wc *
 	}
 	entry := pc.records[0].parent.lockedMutexes
 	pc.engine.add(inst, ls, entry)
-	if approx {
+	d, isDefer := inst.(*ssa.Defer)
+	if approx && !isDefer {
 		pc.engine.markInexact(inst)
 	}
-	if d, ok := inst.(*ssa.Defer); ok && run != nil {
+	if isDefer && run != nil {
 		pc.engine.addPair(deferPair{run, d}, ls, entry)
 	}
 }

@@ -211,7 +211,7 @@ func pathOwner(p lockPath) (owner *types.Named, field string, final types.Type) 
 		return t
 	}
 	t := p.root.value.Type()
-	// A free variable is a pointer to the captured variable; a bound wrapper's receiver classes the same one level down.
+	// A free variable holds the captured variable's address; for a bound wrapper's receiver the dereference names the same type.
 	if p.root.kind == pathRootFreeVar {
 		t = deref(t)
 	}

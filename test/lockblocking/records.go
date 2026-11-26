@@ -49,3 +49,15 @@ func zzInlineLiteralWaits(a *App, c chan int) {
 	}()
 	a.mu.Unlock()
 }
+
+// A go literal whose deferred wait runs under a lock at two returns.
+func zzGoLiteralDefersWait(a *App, wg *sync.WaitGroup, c bool) {
+	go func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		defer wg.Wait() // +lockblockingfail=while holding App|while holding App
+		if c {
+			return
+		}
+	}()
+}

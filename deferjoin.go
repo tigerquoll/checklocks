@@ -164,7 +164,10 @@ func (pc *passContext) runDefers(run *ssa.RunDefers, wc *walkContext, ls *lockSt
 		pc.opFailed = false
 		site := newCallSite(d)
 		site.run = run
+		outer := pc.foreign
+		pc.foreign = outer || d.Parent() != wc.fn
 		pc.checkCall(site, wc, at)
+		pc.foreign = outer
 		failed = failed || pc.opFailed && slices.Contains(st.defers, d)
 		ran = append(ran, d)
 	})
@@ -176,9 +179,14 @@ func (pc *passContext) runDefers(run *ssa.RunDefers, wc *walkContext, ls *lockSt
 		return
 	}
 	marked := false
+	approx := pc.engine != nil && wc.fn.Parent() != nil && !pc.engine.recordable(wc.fn)
 	for _, d := range ran {
 		if inexact || slices.ContainsFunc(st.noops, func(e deferEntry) bool { return e.d == d && e.may }) {
 			marked = pc.engine.markInexact(d) || marked
+		}
+		// Marked after the count above, so that mark does not hide it.
+		if approx && d.Parent() == wc.fn {
+			pc.engine.markInexact(d)
 		}
 	}
 	if marked {

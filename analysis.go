@@ -1255,6 +1255,9 @@ type walkContext struct {
 
 	// gaveUp is set when a block in a cycle overflowed; the walk then stops.
 	gaveUp bool
+
+	// foreign is set for a walk made while running a deferred call of another function; it records nothing.
+	foreign bool
 }
 
 // checkInstruction checks the legality the single instruction based on the
@@ -1355,7 +1358,9 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, wc *walkContext, l
 		}
 		legacy := pc.legacyLits
 		pc.legacyLits = false
+		recordsAt := len(pc.records)
 		pc.checkFunction(callSite{kind: siteEntry}, wc, clfn, &nlff, nil, false /* force */)
+		pc.markUnjoined(clfn, recordsAt)
 		pc.legacyLits = legacy
 	case *ssa.Return:
 		return x, ls // Valid return state.
@@ -1638,7 +1643,7 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	if outer != nil {
 		outerFresh = outer.fresh
 	}
-	wc = &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh), context: context}
+	wc = &walkContext{fn: fn, lff: lff, fresh: pc.computeFresh(fn, outerFresh), context: context, foreign: pc.foreign}
 
 	// An inline body is entered with the caller's locks held; only what it takes
 	// itself is its own to release, and a lock merely assumed is no cover.

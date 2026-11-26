@@ -159,7 +159,7 @@ func TestShadowAgree(t *testing.T) {
 		t.Errorf("want a D line with Eonly G in the literal, got %q", got[0])
 	}
 
-	// A literal handed away is recorded as unknown, so there is nothing to compare.
+	// A literal handed away is recorded, and its record holds what lockorder holds.
 	log, first, last = shadowCorpus(t, "litEscapes")
 	if got = linesIn(log, first, last); len(got) != 0 {
 		t.Errorf("want no line in litEscapes, got %q", got)

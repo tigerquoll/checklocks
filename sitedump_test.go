@@ -155,7 +155,7 @@ var litCells = map[string]int{
 	"litInherits$1":      3,
 	"litInherits$1$1":    1,
 	"litNoopSites$1":     1,
-	"litRewalkPanic$1":   1,
+	"litRewalkPanic$1":   0,
 	"litRewalkPanic$2":   1,
 	"litNestGiveUp$1":    0,
 	"litNestGiveUp$1$1":  0,

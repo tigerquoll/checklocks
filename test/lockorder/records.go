@@ -211,7 +211,36 @@ func zzTwoReturnsLiteral(a *App, o *seamOuter, p *Partition, c bool) { // +check
 	o.inner.mu.Lock()
 } // +checklocksfail=return with unexpected locks held
 
-// A method value of a lock method, passed away.
-func zzBoundLockPassedAway(a *App, run func(func())) {
-	run(a.Lock)
+// A literal that defers a no-op call, run inside a caller that defers a literal.
+func zzProbeNoIgnore(a *App, t *Context, p *Partition, c bool) {
+	defer func() {
+		p.Lock()
+		p.Unlock()
+	}()
+	a.Lock()
+	func() { // +checklocksfail=incompatible return states
+		defer djNoop()
+		if c {
+			t.Lock()
+		}
+	}() // +checklocksfail=return with unexpected locks held
+	a.Unlock()
+}
+
+// A literal that returns early with a lock held, run inside a caller that defers a literal.
+func zzProbeLegacyWalk(a *App, p *Partition, c bool) {
+	defer func() {
+		p.Lock()
+		p.Unlock()
+	}()
+	func() { // +checklocksfail=incompatible return states
+		defer djNoop()
+		if c {
+			a.Lock()
+			return // +checklocksfail=return with unexpected locks held
+		}
+	}()
+	if c {
+		a.Unlock()
+	}
 }

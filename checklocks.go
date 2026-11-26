@@ -154,6 +154,9 @@ type passContext struct {
 	// legacyLits is set while a literal is walked again with its caller's pending defers, and every literal it calls inline is walked that way too.
 	legacyLits bool
 
+	// foreign is set while a deferred call runs at the return of a function other than the one that deferred it.
+	foreign bool
+
 	// unjoined holds the literals walked, in the top function being analyzed, without joining their defer stacks.
 	unjoined map[*ssa.Function]bool
 

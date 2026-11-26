@@ -406,7 +406,7 @@ func litAnswers(t *testing.T, src, fn string) (top *ssa.Function, e *engineView,
 	return top, pc.engine, answers
 }
 
-// TestViewLiteralSites checks a literal only called directly is answered over its walks, any other answers unknown.
+// TestViewLiteralSites checks a literal only called directly is answered over its walks, and any other site it records answers unknown.
 func TestViewLiteralSites(t *testing.T) {
 	src := litSource()
 	for _, tc := range []struct {
@@ -425,8 +425,22 @@ func TestViewLiteralSites(t *testing.T) {
 		if inFn, inLit := answers(top), answers(lit); inFn != tc.inFn || inLit != tc.inLit {
 			t.Errorf("%s: sink answers in the function %q and in its literal %q, want %q and %q", tc.fn, inFn, inLit, tc.inFn, tc.inLit)
 		}
-		if got := e.whyNone(lit); tc.inLit == "-" && got != tc.why {
+		if got := e.whyNone(lit); tc.why != "" && got != tc.why {
 			t.Errorf("%s: whyNone = %q, want %q", tc.fn, got, tc.why)
+		}
+		if tc.why == "not called directly" {
+			recorded := 0
+			for inst := range e.held {
+				if inst.Parent() == lit {
+					recorded++
+					if !e.inexact[inst] {
+						t.Errorf("%s: recorded site %s of the literal is not inexact", tc.fn, inst)
+					}
+				}
+			}
+			if (recorded == 0) != (tc.inLit == "-") {
+				t.Errorf("%s: %d recorded sites in the literal, want some unless the row answers no record", tc.fn, recorded)
+			}
 		}
 		if got := (&engineView{}).whyNone(lit); tc.fn == "twoStates" && got != "not reached" {
 			t.Errorf("a literal no walk reached: whyNone = %q, want not reached", got)

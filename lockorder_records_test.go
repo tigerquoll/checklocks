@@ -50,6 +50,7 @@ var recordRows = map[string][]string{
 		"test/lockorder/records.go:196:9: acquiring App (via (*App).Lock) while holding App: two locks of one class must not nest",
 		"test/lockorder/records.go:204:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
 		"test/lockorder/records.go:204:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
+		"test/lockorder/records.go:224:10: acquiring Context (via (*Context).Lock) while holding App: the declared order has Context before App",
 		"test/lockorder/records.go:51:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
 		"test/lockorder/records.go:61:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
 		"test/lockorder/records.go:72:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
@@ -57,6 +58,8 @@ var recordRows = map[string][]string{
 	},
 	"lockblocking": {
 		"test/lockblocking/records.go:48:3: a channel receive while holding App: a wait under a lock stalls every other user of it",
+		"test/lockblocking/records.go:58:19: missing expected failure \"while holding App\"",
+		"test/lockblocking/records.go:58:19: missing expected failure \"while holding App\"",
 	},
 }
 
@@ -75,6 +78,7 @@ var recordDumpDiffs = []string{
 	recordsLockorder + ": zzAnnotatedLiteralSameClass$1",
 	recordsLockorder + ": zzInlineLiteralInherits$1",
 	recordsLockorder + ": zzPlainBodyLiteral$1",
+	recordsLockorder + ": zzProbeNoIgnore$2",
 	recordsLockorder + ": zzTwoReturnsLiteral$1",
 	recordsLockorder + ": zzWrapperTakenInLiteral$1",
 }
