@@ -18,8 +18,6 @@ package checklocks
 
 import "golang.org/x/tools/go/ssa"
 
-type recordCounts struct{}
-
 func (*lockOrderContext) recordState() siteLocks { return nil }
 
 func (*lockOrderContext) summaryDump([]*ssa.Function, map[*ssa.Function]*summaryFact) {}

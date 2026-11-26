@@ -50,33 +50,6 @@ func (pc *lockOrderContext) shadowAcquire(cur siteLocks, class string) {
 	}
 }
 
-// callerOwned says whether the record at call, taken before it, leaves class known and held by no lock the body took.
-func (pc *lockOrderContext) callerOwned(fn *ssa.Function, call ssa.CallInstruction, class string) bool {
-	view := pc.engineView()
-	rec, ok := view.heldSet(call)
-	if !ok || view.inexact[call] {
-		return false
-	}
-	sv := view.sites[call]
-	if sv == nil || sv.top {
-		return false
-	}
-	for _, p := range sv.marker {
-		if c, _ := pc.engineClass(p); c == class {
-			return false
-		}
-	}
-	for _, l := range rec {
-		if l.assumed || l.entry {
-			continue
-		}
-		if classes, _ := pc.engineClasses(fn, l); slices.Contains(classes, class) {
-			return false
-		}
-	}
-	return true
-}
-
 // shadowGains clears d2 of the classes of the locks the call took.
 func (pc *lockOrderContext) shadowGains(fn *ssa.Function, call ssa.CallInstruction, cur siteLocks, report bool) {
 	cs, ok := cur.(*classSet)
