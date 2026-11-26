@@ -28,12 +28,54 @@ import (
 )
 
 // ignoredAround is functionIgnored for fn, or for the function around it when fn is a literal
-// called in place; any other literal is analysed as a function of its own.
+// the function calls or defers in place; any other literal is analysed as a function of its own.
 func (pc *lockOrderContext) ignoredAround(fn *ssa.Function) bool {
-	if view := pc.engineView(); view != nil && view.recordable(fn) {
+	if pc.engineView() != nil && ignoreCovers(fn) {
 		return pc.functionIgnored(topOf(fn))
 	}
 	return pc.functionIgnored(fn)
+}
+
+// ignoreCovers says whether fn, and every literal around it, is used in its parent only as the
+// callee of a call or a defer.
+func ignoreCovers(fn *ssa.Function) bool {
+	parent := fn.Parent()
+	if parent == nil {
+		return true
+	}
+	if !ignoreCovers(parent) {
+		return false
+	}
+	for _, b := range parent.Blocks {
+		for _, inst := range b.Instrs {
+			if mc, ok := inst.(*ssa.MakeClosure); ok && mc.Fn == fn {
+				if refs := mc.Referrers(); refs != nil && slices.ContainsFunc(*refs, func(r ssa.Instruction) bool { return !calleeOrDeferred(r, mc) }) {
+					return false
+				}
+				continue
+			}
+			for _, op := range inst.Operands(nil) {
+				if *op == fn && !calleeOrDeferred(inst, fn) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// calleeOrDeferred says whether inst calls or defers v and uses it nowhere else.
+func calleeOrDeferred(inst ssa.Instruction, v ssa.Value) bool {
+	if d, ok := inst.(*ssa.Defer); ok {
+		uses := 0
+		for _, op := range inst.Operands(nil) {
+			if *op == v {
+				uses++
+			}
+		}
+		return !d.Call.IsInvoke() && d.Call.Value == v && uses == 1
+	}
+	return isCallee(inst, v)
 }
 
 // analyzeFunction walks a function and produces its summary, reporting any ordering

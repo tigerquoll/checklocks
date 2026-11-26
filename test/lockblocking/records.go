@@ -139,3 +139,14 @@ func zzCallsGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) 
 	zzGiveUpWaits(f, wg, c)
 	a.Unlock()
 }
+
+// Pins that a literal the function defers is covered by its lockblocking ignore.
+//
+// +lockblockingignore
+func zzIgnoredDeferLiteralWaits(a *App, c chan int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	defer func() {
+		<-c
+	}()
+}

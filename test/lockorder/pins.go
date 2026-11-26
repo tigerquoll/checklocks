@@ -222,3 +222,46 @@ func zzGiveUpLiteralIgnored(f *litSeven, c func() bool) {
 		}
 	}()
 }
+
+// Pins that a literal the function defers is covered by its lockorder ignore.
+//
+// +lockorderignore
+func zzProbeIgnoredDeferLit(a *App, p *Partition) {
+	a.Lock()
+	defer a.Unlock()
+	defer func() {
+		p.Lock()
+		p.Unlock()
+	}()
+}
+
+// Pins the skipped rows for a go literal that gave up inside a function under both ignores.
+//
+// +lockorderignore +lockblockingignore
+func zzGiveUpGoLiteralIgnored(f *litSeven, c func() bool) {
+	go func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+		for c() {
+			if c() {
+				f.a.Lock()
+			}
+			if c() {
+				f.b.Lock()
+			}
+			if c() {
+				f.c.Lock()
+			}
+			if c() {
+				f.d.Lock()
+			}
+			if c() {
+				f.e.Lock()
+			}
+			if c() {
+				f.f.Lock()
+			}
+			if c() {
+				f.g.Lock()
+			}
+		}
+	}()
+}

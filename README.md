@@ -523,8 +523,9 @@ applied consistently and without the need for ignoring and forcing.
 For `lockorder`, `+lockorderignore` on a function drops its ordering reports and keeps
 its acquisitions from reaching its callers; on a single line it drops that line's
 ordering reports. It does not hide the function's waits from `lockblocking`. A literal
-the function calls in place follows its ignore; any other literal (started with `go`,
-deferred to another function, stored) is analysed as a function of its own and is not covered.
+the function calls or defers in place follows its ignore; any other literal (started with
+`go`, passed to another function, or stored) is analysed as a function of its own and is not
+covered.
 
 ### More than one annotation on a comment
 
@@ -584,8 +585,9 @@ annotate its locks so more are declared on entry than discovered by the walk, or
 mark the function `+checklocksignore`, which says its body is not checked. A
 `+checklocksforce` on the function line silences the message too, and the
 findings are still dropped. Both clear checklocks' row only: `lockorder` and
-`lockblocking` print theirs unless the function (or the function around a
-literal) carries `+lockorderignore` or `+lockblockingignore` respectively.
+`lockblocking` print theirs unless the function, or the function around a literal
+it calls or defers in place, carries `+lockorderignore` or `+lockblockingignore`
+respectively.
 
 ## Locks lost in a loop
 
@@ -1091,10 +1093,10 @@ so including them would report all nesting and say nothing; that nesting is
     and its waits count for no caller at any depth, except a wait declared with
     `+blocking`; on a line, drops the diagnostics on that line. Call sites of a
     function that also has `+blocking` are still reported, and silencing one
-    needs a line-level `+lockblockingignore` there. A literal the
-    function calls in place follows its ignore; any other literal (started with `go`,
-    deferred to another function, stored) is analysed as a function of its own and
-    is not covered.
+    needs a line-level `+lockblockingignore` there. A literal the function
+    calls or defers in place follows its ignore; any other literal (started with
+    `go`, passed to another function, or stored) is analysed as a function of its
+    own and is not covered.
 *   `+lockblockingfail`: states that a line must be reported, for the test
     corpus, exactly as `+checklocksfail` does for `checklocks`.
 
