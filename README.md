@@ -576,6 +576,9 @@ lockorder skipped this function: checklocks gave up on it (more than 64 lock sta
 lockblocking skipped this function: checklocks gave up on it (more than 64 lock states reach one block in a loop)
 ```
 
+A literal whose row comes from the function around it reads "checklocks gave up on
+the function around it" instead.
+
 A function literal that gave up gets its own row; the literals inside a function
 that gave up are skipped without one, except that the outermost literal an ignore
 does not cover, inside an ignored function that gave up, gets its own row.

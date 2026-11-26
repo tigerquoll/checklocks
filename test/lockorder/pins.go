@@ -117,7 +117,7 @@ func zzCallsDeferUnionReleased(a, b *App, wg *sync.WaitGroup, c bool) {
 }
 
 // Pins one skipped row per pass when a literal and the function around it both gave up.
-func zzGiveUpBoth(f *litSeven, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+func zzGiveUpBoth(f *litSeven, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function: checklocks gave up on it +lockblockingfail=lockblocking skipped this function
 	func() {
 		for c() {
 			if c() {
@@ -239,7 +239,7 @@ func zzProbeIgnoredDeferLit(a *App, p *Partition) {
 //
 // +lockorderignore +lockblockingignore
 func zzGiveUpGoLiteralIgnored(f *litSeven, c func() bool) {
-	go func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+	go func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function: checklocks gave up on it +lockblockingfail=lockblocking skipped this function
 		for c() {
 			if c() {
 				f.a.Lock()
@@ -282,7 +282,7 @@ func zzIgnoredRangeBody(a *App, p *Partition) {
 //
 // +lockorderignore +lockblockingignore
 func zzGiveUpFunctionGoLiteral(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function
-	go func() { // +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+	go func() { // +lockorderfail=lockorder skipped this function: checklocks gave up on the function around it +lockblockingfail=lockblocking skipped this function
 		a.Lock()
 		p.Lock()
 		p.Unlock()

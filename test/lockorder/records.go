@@ -246,7 +246,7 @@ func zzProbeLegacyWalk(a *App, p *Partition, c bool) {
 }
 
 // Pins for the flip: a function the engine gave up in takes App then Partition.
-func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function: checklocks gave up on it +lockblockingfail=lockblocking skipped this function
 	for c() {
 		if c() {
 			f.a.Lock()

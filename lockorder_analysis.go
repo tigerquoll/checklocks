@@ -133,7 +133,11 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 				if pc.check == checkBlocking {
 					name = "lockblocking"
 				}
-				pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on it (%s)", name, reason)
+				what := "it"
+				if view.gaveUp[fn] == "" {
+					what = "the function around it"
+				}
+				pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on %s (%s)", name, what, reason)
 			}
 			return
 		}
