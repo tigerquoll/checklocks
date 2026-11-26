@@ -95,7 +95,7 @@ func zzRangeFuncDefer(a *App, p *Partition) {
 	a.Unlock()
 }
 
-// Pins the union read by callerOwned: App is released at one return and a body lock of its class is held at the other.
+// Pins the union callerOwned reads at a deferred release: a body lock of the released class is held at one of the two returns.
 //
 // +checklocks:a.mu
 // +checklocksignore
@@ -114,4 +114,99 @@ func zzCallsDeferUnionReleased(a, b *App, wg *sync.WaitGroup, c bool) {
 	a.mu.Lock()
 	a.zzDeferUnionReleased(b, wg, c) // +lockorderfail=acquiring App (via (*App).zzDeferUnionReleased) while holding App +lockblockingfail=calling (*App).zzDeferUnionReleased
 	a.mu.Unlock()
+}
+
+// Pins one skipped row per pass when a literal and the function around it both gave up.
+func zzGiveUpBoth(f *litSeven, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+	func() {
+		for c() {
+			if c() {
+				f.a.Lock()
+			}
+			if c() {
+				f.b.Lock()
+			}
+			if c() {
+				f.c.Lock()
+			}
+			if c() {
+				f.d.Lock()
+			}
+			if c() {
+				f.e.Lock()
+			}
+			if c() {
+				f.f.Lock()
+			}
+			if c() {
+				f.g.Lock()
+			}
+		}
+	}()
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+}
+
+// Pins that a function's lockorder ignore covers the literal it calls inline.
+//
+// +lockorderignore
+func zzProbeIgnoredLit(a *App, p *Partition) {
+	a.Lock()
+	func() {
+		p.Lock()
+		p.Unlock()
+	}()
+	a.Unlock()
+}
+
+// Pins that a literal's give-up row follows the ignore of the function around it.
+//
+// +checklocksignore +lockorderignore +lockblockingignore
+func zzGiveUpLiteralIgnored(f *litSeven, c func() bool) {
+	func() {
+		for c() {
+			if c() {
+				f.a.Lock()
+			}
+			if c() {
+				f.b.Lock()
+			}
+			if c() {
+				f.c.Lock()
+			}
+			if c() {
+				f.d.Lock()
+			}
+			if c() {
+				f.e.Lock()
+			}
+			if c() {
+				f.f.Lock()
+			}
+			if c() {
+				f.g.Lock()
+			}
+		}
+	}()
 }

@@ -283,7 +283,7 @@ func zzCallsGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) {
 	p.Unlock()
 }
 
-// Pins for the flip: zzGiveUpOrder under +checklocksignore, so no give-up row is printed.
+// Pins for the flip: zzGiveUpOrder under each pass's ignore, so no give-up row is printed.
 //
 // +checklocksignore +lockorderignore +lockblockingignore
 func zzGiveUpOrderIgnored(f *litSeven, a *App, p *Partition, c func() bool) {

@@ -528,7 +528,7 @@ func seamAcquireThenInvert(a *App, p *Partition) {
 	a.mu.Unlock()
 }
 
-// A callee's release is not applied, so the re-acquire reads as nested.
+// A callee's release is applied, so the re-acquire does not nest.
 func seamReleaseThenReacquire(a *App) {
 	a.mu.Lock()
 	seamUnlockApp(a)
@@ -709,7 +709,7 @@ func seamTwoHolds(a, c, b *App, p *Partition) {
 	c.mu.Unlock()
 }
 
-// The gain is undone by the release, but never below what this walk holds itself.
+// Releasing the entry lock leaves the App lock seamLockApp took held, so the next App acquire nests.
 //
 // +checklocks:seamGApp.mu
 func seamUndoFloor(a, b *App, p *Partition) {
@@ -783,7 +783,7 @@ func seamAliasEntry(o *seamOuter, p *Partition) {
 	p.Unlock()
 }
 
-// A recursive read lock with one read unlock still holds the lock.
+// Pins an accepted loss: after one of two read unlocks the engine holds no App, so p.Lock is not reported.
 //
 // +checklocksignore
 func seamRecursiveRead(a *App, p *Partition) {

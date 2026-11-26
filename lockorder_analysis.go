@@ -61,7 +61,8 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	if pc.recordState() != nil {
 		if view := pc.engineView(); view != nil {
 			if reason := view.gaveUpIn(fn); reason != "" {
-				if own := view.gaveUp[fn]; own != "" && report && !pc.functionIgnored(topOf(fn)) {
+				if own := view.gaveUp[fn]; own != "" && report && !pc.functionIgnored(topOf(fn)) &&
+					(fn.Parent() == nil || view.gaveUpIn(fn.Parent()) == "") {
 					name := "lockorder"
 					if pc.check == checkBlocking {
 						name = "lockblocking"
@@ -75,7 +76,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	if fn.Blocks == nil {
 		return
 	}
-	ignored := pc.functionIgnored(fn)
+	ignored := pc.functionIgnored(topOf(fn))
 
 	// Entry state: the classes the function is annotated as already holding. This is what
 	// makes an annotated callback work, where the caller took the lock and handed control

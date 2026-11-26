@@ -17,12 +17,12 @@
 package checklocks
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -40,6 +40,23 @@ var shadowRun struct {
 	decision []string
 }
 
+var diagnosticLine = regexp.MustCompile(`^\S+\.go:\d+:\d+: |^# \S+$`)
+
+// onlyDiagnostics reports whether out is non-empty and holds only diagnostics and package headers.
+func onlyDiagnostics(out []byte) bool {
+	n := 0
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		if !diagnosticLine.MatchString(l) || strings.Contains(l, "panic:") || strings.Contains(l, "internal error") {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
 // shadowLogs vets the shadow and lockorder corpora once with both logs on and returns what they wrote.
 func shadowLogs(t *testing.T) (shadow map[string]string, decision []string) {
 	t.Helper()
@@ -53,7 +70,7 @@ func shadowLogs(t *testing.T) (shadow map[string]string, decision []string) {
 		cmd.Env = append(os.Environ(), "GOCACHE="+t.TempDir(), "CHECKLOCKS_SHADOW_LOG="+shadowDir, "CHECKLOCKS_DECISION_LOG="+decisionDir, "CHECKLOCKS_LOCKORDER_STATE=walk")
 		// The walk prints its rows against the engine-based corpus.
 		var exit *exec.ExitError
-		if out, err := cmd.CombinedOutput(); err != nil && (!errors.As(err, &exit) || len(bytes.TrimSpace(out)) == 0) {
+		if out, err := cmd.CombinedOutput(); err != nil && (!errors.As(err, &exit) || !onlyDiagnostics(out)) {
 			t.Fatalf("vet failed: %v\n%s", err, out)
 		}
 		shadowRun.shadow = make(map[string]string)
