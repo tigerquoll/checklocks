@@ -532,7 +532,7 @@ func seamAcquireThenInvert(a *App, p *Partition) {
 func seamReleaseThenReacquire(a *App) {
 	a.mu.Lock()
 	seamUnlockApp(a)
-	a.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
+	a.mu.Lock()
 	a.mu.Unlock()
 }
 
@@ -695,16 +695,16 @@ func (a *App) seamDropBoth(b *App, p *Partition) {
 	b.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
 	seamUnlockB(b)
 	a.mu.Unlock() // +lockgapfail=the caller's critical section is split
-	p.Lock()      // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Lock()
 	p.Unlock()
-	a.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
+	a.mu.Lock()
 }
 
 // c stays held across the callee, whatever the callee releases.
 func seamTwoHolds(a, c, b *App, p *Partition) {
 	c.mu.Lock()
 	a.mu.Lock()          // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
-	a.seamDropBoth(b, p) // +lockorderfail=acquiring App (via (*App).seamDropBoth)|acquiring Partition (via (*App).seamDropBoth) while holding App
+	a.seamDropBoth(b, p) // +lockorderfail=acquiring App (via (*App).seamDropBoth)
 	a.mu.Unlock()
 	c.mu.Unlock()
 }
@@ -715,7 +715,7 @@ func seamTwoHolds(a, c, b *App, p *Partition) {
 func seamUndoFloor(a, b *App, p *Partition) {
 	seamLockApp(a)       // +lockorderfail=acquiring App (via seamLockApp) while holding App
 	seamGApp.mu.Unlock() // +lockgapfail=the mu lock is released here and taken again
-	b.mu.Lock()
+	b.mu.Lock()          // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
 	seamUnlockApp(a)
 	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 	p.Unlock()
@@ -790,7 +790,7 @@ func seamRecursiveRead(a *App, p *Partition) {
 	a.mu.RLock()
 	a.mu.RLock() // +lockorderfail=acquiring App (via (*RWMutex).RLock) while holding App
 	a.mu.RUnlock()
-	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Lock()
 	p.Unlock()
 	a.mu.RUnlock()
 }

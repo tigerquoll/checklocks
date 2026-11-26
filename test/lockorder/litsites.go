@@ -109,7 +109,7 @@ func litDeferred(s *litGuarded) {
 //
 // +checklocksignore
 func litNestGiveUp(f *litSeven, c func() bool) {
-	outer := func() {
+	outer := func() { // +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		inner := func() { litSink() }
 		for c() {
 			if c() {
@@ -150,7 +150,7 @@ func litNestGiveUp(f *litSeven, c func() bool) {
 func litGaveUp(s *litGuarded, f *litSeven, c func() bool) {
 	s.mu.Lock()
 	litSink()
-	func() {
+	func() { // +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for c() {
 			if c() {
 				f.a.Lock()

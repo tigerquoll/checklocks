@@ -37,10 +37,10 @@ var (
 
 func init() {
 	switch lockorderState {
-	case "", "walk":
-	case "engine":
+	case "walk":
+	case "", "engine":
 		if shadowLogDir != "" {
-			panic("CHECKLOCKS_LOCKORDER_STATE=engine cannot be combined with CHECKLOCKS_SHADOW_LOG")
+			panic("CHECKLOCKS_SHADOW_LOG needs CHECKLOCKS_LOCKORDER_STATE=walk")
 		}
 	default:
 		panic(fmt.Sprintf("CHECKLOCKS_LOCKORDER_STATE %q is not \"walk\" or \"engine\"", lockorderState))
@@ -48,7 +48,7 @@ func init() {
 }
 
 func (pc *lockOrderContext) recordState() siteLocks {
-	if lockorderState != "engine" {
+	if lockorderState == "walk" {
 		return nil
 	}
 	return &recordLocks{pc: pc, released: make(map[string]bool)}
@@ -62,7 +62,7 @@ func (pc *lockOrderContext) summaryDump(fns []*ssa.Function, summaries map[*ssa.
 	}
 	state := lockorderState
 	if state == "" {
-		state = "walk"
+		state = "engine"
 	}
 	pkg := pc.pass.Pkg.Path()
 	var out strings.Builder

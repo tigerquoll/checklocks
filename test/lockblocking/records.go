@@ -45,7 +45,7 @@ func zzGoLiteralWaits(a *App, c chan int) {
 func zzInlineLiteralWaits(a *App, c chan int) {
 	a.mu.Lock()
 	func() {
-		<-c
+		<-c // +lockblockingfail=a channel receive
 	}()
 	a.mu.Unlock()
 }
@@ -66,7 +66,7 @@ type zzSeven struct {
 }
 
 // Pins for the flip: a function the engine gave up in waits under a lock taken before the loop.
-func zzGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func zzGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	a.Lock()
 	for c() {
 		if c() {
@@ -91,11 +91,11 @@ func zzGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) { // 
 			f.g.Lock()
 		}
 	}
-	wg.Wait() // +lockblockingfail=calling (*WaitGroup).Wait
+	wg.Wait()
 	a.Unlock()
 }
 
-func zzGiveUpWaits(f *zzSeven, wg *sync.WaitGroup, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func zzGiveUpWaits(f *zzSeven, wg *sync.WaitGroup, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	for c() {
 		if c() {
 			f.a.Lock()
@@ -125,6 +125,6 @@ func zzGiveUpWaits(f *zzSeven, wg *sync.WaitGroup, c func() bool) { // +checkloc
 // Pins for the flip: the exported summary of a given-up function that waits, seen from a caller holding App.
 func zzCallsGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) {
 	a.Lock()
-	zzGiveUpWaits(f, wg, c) // +lockblockingfail=calling zzGiveUpWaits
+	zzGiveUpWaits(f, wg, c)
 	a.Unlock()
 }

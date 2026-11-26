@@ -142,7 +142,7 @@ type sevenLocks struct {
 	a, b, c, d, e, f, g sync.Mutex
 }
 
-func overCap(f *sevenLocks, t *T, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func overCap(f *sevenLocks, t *T, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	for c() {
 		t.v = 1
 		if c() {

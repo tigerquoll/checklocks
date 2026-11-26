@@ -565,16 +565,25 @@ stored in some locals. The marker for a lock a loop dropped is not part of the
 count.
 
 When it gives up, checklocks drops every finding in that function and in the
-closures inside it, so a bug there is not reported. `lockorder` falls back to
-its own walk of the function, without what the engine adds. Callers of the
-function are still checked against its annotations; nothing the walk of its body
-found reaches them.
+closures inside it, so a bug there is not reported. `lockorder` and
+`lockblocking` skip it too, and each prints its own row on the function's line:
+
+```
+lockorder skipped this function: checklocks gave up on it (more than 64 lock states reach one block in a loop)
+lockblocking skipped this function: checklocks gave up on it (more than 64 lock states reach one block in a loop)
+```
+
+A function literal that gave up gets its own row; the literals inside a function
+that gave up are skipped without one. Callers of the function are still checked
+against its annotations; nothing the walk of its body found reaches them.
 
 To clear it, split the function so each loop holds fewer lock combinations,
 annotate its locks so more are declared on entry than discovered by the walk, or
 mark the function `+checklocksignore`, which says its body is not checked. A
 `+checklocksforce` on the function line silences the message too, and the
-findings are still dropped.
+findings are still dropped. Both clear checklocks' row only: `lockorder` and
+`lockblocking` print theirs unless the function (or the function around a
+literal) carries `+lockorderignore` or `+lockblockingignore` respectively.
 
 ## Locks lost in a loop
 

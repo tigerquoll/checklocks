@@ -58,6 +58,20 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		summary.addBlocking(nil, true /* named */)
 		pc.recordWitnessWait(fn, displayName(fn)+" is declared blocking", fn.Pos(), nil, true /* named */, true /* annotated */)
 	}
+	if pc.recordState() != nil {
+		if view := pc.engineView(); view != nil {
+			if reason := view.gaveUpIn(fn); reason != "" {
+				if own := view.gaveUp[fn]; own != "" && report && !pc.functionIgnored(topOf(fn)) {
+					name := "lockorder"
+					if pc.check == checkBlocking {
+						name = "lockblocking"
+					}
+					pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on it (%s)", name, own)
+				}
+				return
+			}
+		}
+	}
 	if fn.Blocks == nil {
 		return
 	}

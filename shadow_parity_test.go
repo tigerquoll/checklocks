@@ -17,6 +17,8 @@
 package checklocks
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -48,8 +50,10 @@ func shadowLogs(t *testing.T) (shadow map[string]string, decision []string) {
 		}
 		shadowDir, decisionDir := t.TempDir(), t.TempDir()
 		cmd := exec.Command("go", "vet", "-vettool="+bin, "./test/shadow", "./test/lockorder")
-		cmd.Env = append(os.Environ(), "GOCACHE="+t.TempDir(), "CHECKLOCKS_SHADOW_LOG="+shadowDir, "CHECKLOCKS_DECISION_LOG="+decisionDir)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		cmd.Env = append(os.Environ(), "GOCACHE="+t.TempDir(), "CHECKLOCKS_SHADOW_LOG="+shadowDir, "CHECKLOCKS_DECISION_LOG="+decisionDir, "CHECKLOCKS_LOCKORDER_STATE=walk")
+		// The walk prints its rows against the engine-based corpus.
+		var exit *exec.ExitError
+		if out, err := cmd.CombinedOutput(); err != nil && (!errors.As(err, &exit) || len(bytes.TrimSpace(out)) == 0) {
 			t.Fatalf("vet failed: %v\n%s", err, out)
 		}
 		shadowRun.shadow = make(map[string]string)

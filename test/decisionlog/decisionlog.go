@@ -84,7 +84,7 @@ type sevenLocks struct {
 	a, b, c, d, e, f, g sync.Mutex
 }
 
-func overflowWithLiteral(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func overflowWithLiteral(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	func() {
 		if c() {
 			f.a.Lock()

@@ -18,6 +18,8 @@ package checklocks
 
 import "golang.org/x/tools/go/ssa"
 
-func (*lockOrderContext) recordState() siteLocks { return nil }
+func (pc *lockOrderContext) recordState() siteLocks {
+	return &recordLocks{pc: pc, released: make(map[string]bool)}
+}
 
 func (*lockOrderContext) summaryDump([]*ssa.Function, map[*ssa.Function]*summaryFact) {}

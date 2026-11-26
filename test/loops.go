@@ -305,7 +305,7 @@ second:
 	}
 } // +checklocksfail=return with unexpected locks held
 
-func loopOverflowWithLiteral(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func loopOverflowWithLiteral(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	func() {
 		if c() {
 			f.a.Lock()
@@ -340,7 +340,7 @@ func loopOverflowInLiteral(f *sevenLocks, o *loopT, c func() bool) {
 	if c() {
 		o.x = 1 // +checklocksfail=invalid field access
 	}
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for c() {
 			if c() {
 				f.a.Lock()
@@ -370,7 +370,7 @@ func loopOverflowInLiteral(f *sevenLocks, o *loopT, c func() bool) {
 	}
 }
 
-func loopOverflowDefer(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func loopOverflowDefer(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	defer loopWork()
 	for c() {
 		if c() {
@@ -425,7 +425,7 @@ func loopMarkerAtCap(f *sevenLocks, c func() bool) { // +checklocksfail=incompat
 	}
 } // +checklocksfail=unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held|unexpected locks held
 
-func loopSeqThenInLoopGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func loopSeqThenInLoopGiveUp(f *sevenLocks, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	if c() {
 		f.a.Lock()
 	}
@@ -469,7 +469,7 @@ func loopNestedGiveUp(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c, c1, c
 	} else {
 		loopWork()
 	}
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for i := 0; i < n; i++ {
 			if c1 {
 				m1.Lock() // +checklocksfail=already locked
@@ -502,7 +502,7 @@ func loopNestedGiveUp(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c, c1, c
 // A closure run inline inside a literal that gives up is not analysed again without the locks it ran under.
 func loopGiveUpInline(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
 	t.mu.Lock()
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		func() { loopNeedsMu(t) }()
 		for i := 0; i < n; i++ {
 			if c1 {
@@ -534,7 +534,7 @@ func loopGiveUpInline(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, 
 
 func loopGiveUpInlineField(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
 	t.mu.Lock()
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for i := 0; i < n; i++ {
 			if c1 {
 				m1.Lock()
@@ -565,7 +565,7 @@ func loopGiveUpInlineField(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1,
 
 func loopGiveUpBreakOnly(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7, c8 bool) {
 	t.mu.Lock()
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for {
 			if c1 {
 				m1.Lock()
@@ -599,7 +599,7 @@ func loopGiveUpBreakOnly(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c
 
 func loopGiveUpThreeLevels(t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mutex, c1, c2, c3, c4, c5, c6, c7 bool, n int) {
 	t.mu.Lock()
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for i := 0; i < n; i++ {
 			if c1 {
 				m1.Lock()
@@ -646,7 +646,7 @@ func loopGiveUpTwoEntries(c bool, t *loopT, m1, m2, m3, m4, m5, m6, m7 *sync.Mut
 	} else {
 		loopWork()
 	}
-	func() { // +checklocksfail=checklocks gave up on this function
+	func() { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 		for {
 			if c1 {
 				m1.Lock() // +checklocksfail=already locked

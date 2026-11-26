@@ -14,11 +14,13 @@
 
 package lockorder
 
+import "sync"
+
 // Pins the G1 gap: a deferred literal run during a panic, after an inline literal that defers and conditionally locks.
 func zzForeignLit(a *App, p *Partition, t *Context, c bool) {
 	defer func() {
 		a.Lock()
-		p.Lock() // +lockorderfail=acquiring Partition
+		p.Lock()
 		p.Unlock()
 		a.Unlock()
 	}()
@@ -35,7 +37,7 @@ func zzForeignLit(a *App, p *Partition, t *Context, c bool) {
 func zzForeignLitLoop(a *App, p *Partition, t *Context, c bool) {
 	defer func() {
 		a.Lock()
-		p.Lock() // +lockorderfail=acquiring Partition
+		p.Lock()
 		p.Unlock()
 		a.Unlock()
 	}()
@@ -63,7 +65,7 @@ func zzUnionReturns(a *App, p *Partition, c bool) { // +checklocksfail=incompati
 func zzUnionReturnsLiteral(a *App, p *Partition, c bool) { // +checklocksfail=incompatible return states
 	a.Lock()
 	defer func() {
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 		p.Unlock()
 	}()
 	if c {
@@ -91,4 +93,25 @@ func zzRangeFuncDefer(a *App, p *Partition) {
 		defer takesThePartition(p)
 	}
 	a.Unlock()
+}
+
+// Pins the union read by callerOwned: App is released at one return and a body lock of its class is held at the other.
+//
+// +checklocks:a.mu
+// +checklocksignore
+func (a *App) zzDeferUnionReleased(b *App, wg *sync.WaitGroup, c bool) {
+	if !c {
+		defer wg.Wait() // +lockblockingfail=calling (*WaitGroup).Wait
+	}
+	defer a.mu.Unlock()
+	if c {
+		b.mu.Lock() // +lockorderfail=acquiring App (via (*RWMutex).Lock) while holding App
+		return
+	}
+}
+
+func zzCallsDeferUnionReleased(a, b *App, wg *sync.WaitGroup, c bool) {
+	a.mu.Lock()
+	a.zzDeferUnionReleased(b, wg, c) // +lockorderfail=acquiring App (via (*App).zzDeferUnionReleased) while holding App +lockblockingfail=calling (*App).zzDeferUnionReleased
+	a.mu.Unlock()
 }

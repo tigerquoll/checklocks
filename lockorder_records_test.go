@@ -36,47 +36,85 @@ const (
 	recordsLockorder = recordsModule + "/test/lockorder"
 )
 
-// recordRows is what the engine state prints in the corpora of lockorder and lockblocking, per case.
-var recordRows = map[string][]string{
-	"lockorder": {
-		"test/lockorder/lockorder.go:535:14: missing expected failure \"acquiring App (via (*RWMutex).Lock) while holding App\"",
-		"test/lockorder/lockorder.go:698:16: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
-		"test/lockorder/lockorder.go:700:14: missing expected failure \"acquiring App (via (*RWMutex).Lock) while holding App\"",
-		"test/lockorder/lockorder.go:707:23: missing expected failure \"acquiring Partition (via (*App).seamDropBoth) while holding App\"",
-		"test/lockorder/lockorder.go:718:11: acquiring App (via (*RWMutex).Lock) while holding App: two locks of one class must not nest",
-		"test/lockorder/lockorder.go:793:11: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
-		// pins.go 21 and 38: G1, the deferred literal's row is lost. 66: a deferred literal is checked against the union of the returns that run it.
-		"test/lockorder/pins.go:21:12: missing expected failure \"acquiring Partition\"",
-		"test/lockorder/pins.go:38:12: missing expected failure \"acquiring Partition\"",
-		"test/lockorder/pins.go:66:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
-		"test/lockorder/records.go:122:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
-		"test/lockorder/records.go:144:12: missing expected failure \"acquiring Partition\"",
-		"test/lockorder/records.go:196:9: acquiring App (via (*App).Lock) while holding App: two locks of one class must not nest",
-		"test/lockorder/records.go:204:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
-		"test/lockorder/records.go:204:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
-		"test/lockorder/records.go:224:10: acquiring Context (via (*Context).Lock) while holding App: the declared order has Context before App",
-		"test/lockorder/records.go:274:11: missing expected failure \"acquiring Partition\"",
-		"test/lockorder/records.go:314:11: missing expected failure \"acquiring Partition\"",
-		"test/lockorder/records.go:51:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
-		"test/lockorder/records.go:61:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
-		"test/lockorder/records.go:72:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
-		"test/lockorder/records.go:81:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
+// recordWalkRows is what the walk state prints in the corpora, per case, where the engine state prints nothing.
+var recordWalkRows = map[string][]string{
+	"checklocks": {
+		"test/loops.go:308:62: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:308:62: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:343:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:343:11: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:373:56: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:373:56: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:428:62: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:428:62: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:472:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:472:11: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:505:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:505:11: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:537:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:537:11: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:568:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:568:11: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:602:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:602:11: missing expected failure \"lockorder skipped this function\"",
+		"test/loops.go:649:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/loops.go:649:11: missing expected failure \"lockorder skipped this function\"",
+		"test/polarity/polarity.go:145:52: missing expected failure \"lockblocking skipped this function\"",
+		"test/polarity/polarity.go:145:52: missing expected failure \"lockorder skipped this function\"",
 	},
 	"lockblocking": {
-		"test/lockblocking/records.go:48:3: a channel receive while holding App: a wait under a lock stalls every other user of it",
-		"test/lockblocking/records.go:94:12: missing expected failure \"calling (*WaitGroup).Wait\"",
+		"test/lockblocking/records.go:128:15: calling zzGiveUpWaits, which may block (calling (*WaitGroup).Wait at lockblocking/records.go:122) while holding App: a wait under a lock stalls every other user of it",
+		"test/lockblocking/records.go:48:7: missing expected failure \"a channel receive\"",
+		"test/lockblocking/records.go:69:78: missing expected failure \"lockblocking skipped this function\"",
+		"test/lockblocking/records.go:69:78: missing expected failure \"lockorder skipped this function\"",
+		"test/lockblocking/records.go:94:9: calling (*WaitGroup).Wait, which blocks while holding App: a wait under a lock stalls every other user of it",
+		"test/lockblocking/records.go:98:69: missing expected failure \"lockblocking skipped this function\"",
+		"test/lockblocking/records.go:98:69: missing expected failure \"lockorder skipped this function\"",
+	},
+	"lockorder": {
+		"test/lockorder/litsites.go:112:20: missing expected failure \"lockblocking skipped this function\"",
+		"test/lockorder/litsites.go:112:20: missing expected failure \"lockorder skipped this function\"",
+		"test/lockorder/litsites.go:153:11: missing expected failure \"lockblocking skipped this function\"",
+		"test/lockorder/litsites.go:153:11: missing expected failure \"lockorder skipped this function\"",
+		"test/lockorder/lockorder.go:535:11: acquiring App (via (*RWMutex).Lock) while holding App: two locks of one class must not nest",
+		"test/lockorder/lockorder.go:698:8: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
+		"test/lockorder/lockorder.go:700:11: acquiring App (via (*RWMutex).Lock) while holding App: two locks of one class must not nest",
+		"test/lockorder/lockorder.go:707:16: acquiring Partition (via (*App).seamDropBoth) while holding App: the declared order has Partition before App",
+		"test/lockorder/lockorder.go:718:23: missing expected failure \"acquiring App (via (*RWMutex).Lock) while holding App\"",
+		"test/lockorder/lockorder.go:793:8: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
+		"test/lockorder/pins.go:23:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
+		"test/lockorder/pins.go:40:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
+		"test/lockorder/pins.go:68:12: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
+		"test/lockorder/records.go:122:12: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
+		"test/lockorder/records.go:144:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
+		"test/lockorder/records.go:196:12: missing expected failure \"acquiring App (via (*App).Lock) while holding App\"",
+		"test/lockorder/records.go:204:12: missing expected failure \"while holding App:\"",
+		"test/lockorder/records.go:204:12: missing expected failure \"while holding SeamInner:\"",
+		"test/lockorder/records.go:224:13: missing expected failure \"acquiring Context (via (*Context).Lock) while holding App\"",
+		"test/lockorder/records.go:249:72: missing expected failure \"lockblocking skipped this function\"",
+		"test/lockorder/records.go:249:72: missing expected failure \"lockorder skipped this function\"",
+		"test/lockorder/records.go:274:8: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
+		"test/lockorder/records.go:282:15: acquiring Partition (via zzGiveUpOrder) while holding Partition: two locks of one class must not nest",
+		"test/lockorder/records.go:51:12: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
+		"test/lockorder/records.go:61:12: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding SeamInner\"",
+		"test/lockorder/records.go:72:12: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding SeamInner\"",
+		"test/lockorder/records.go:81:12: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
 	},
 }
 
 // recordNotWalked is the sites the engine state's dump counts as not walked, per case: lock-primitive bodies.
 var recordNotWalked = map[string]int{"checklocks": 5, "fresh": 2, "lockgap": 2, "lockorder": 6, "locktype": 6}
 
-// recordGaveUp is the sites the engine state's dump counts as in a function it gave up in, per case.
-var recordGaveUp = map[string]int{"checklocks": 134, "lockblocking": 34, "lockblocking-filelist": 34, "lockorder": 70}
-
 // recordDumpDiffs is the functions whose summary line differs between the states.
 var recordDumpDiffs = []string{
+	"command-line-arguments: zzCallsGiveUpBlocks",
+	"command-line-arguments: zzGiveUpBlocks",
+	"command-line-arguments: zzGiveUpWaits",
+	recordsModule + "/test/lockblocking: zzCallsGiveUpBlocks",
+	recordsModule + "/test/lockblocking: zzGiveUpBlocks",
+	recordsModule + "/test/lockblocking: zzGiveUpWaits",
 	recordsLockorder + ": (*App).seamDropBoth",
+	recordsLockorder + ": (*App).zzDeferUnionReleased",
 	recordsLockorder + ": seamRecursiveRead",
 	recordsLockorder + ": seamReleaseThenReacquire",
 	recordsLockorder + ": seamTwoHolds",
@@ -84,6 +122,7 @@ var recordDumpDiffs = []string{
 	recordsLockorder + ": zzAliasEntryLiteral$1",
 	recordsLockorder + ": zzAliasInAnnotatedLiteral$1",
 	recordsLockorder + ": zzAnnotatedLiteralSameClass$1",
+	recordsLockorder + ": zzCallsGiveUpOrder",
 	recordsLockorder + ": zzForeignLit$1",
 	recordsLockorder + ": zzForeignLitLoop$1",
 	recordsLockorder + ": zzGiveUpOrder",
@@ -136,7 +175,7 @@ func recordsVet(t *testing.T, bin string, args []string, state, order string) re
 	return run
 }
 
-// TestLockOrderRecords runs every corpus case with the walk state and the engine state, and pins what differs.
+// TestLockOrderRecords runs every corpus case with the walk state and the engine state, and pins what the walk prints differently.
 func TestLockOrderRecords(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "checklocks")
 	if out, err := exec.Command("go", "build", "-tags=checklocks_parity", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
@@ -160,17 +199,18 @@ func TestLockOrderRecords(t *testing.T) {
 				walk := recordsVet(t, bin, args, "walk", "")
 				engine := recordsVet(t, bin, args, "engine", "")
 
-				if len(walk.rows) > 0 {
-					t.Errorf("walk state printed:\n%s", strings.Join(walk.rows, "\n"))
+				// The walk arm is the oracle until the walk is deleted.
+				if len(engine.rows) > 0 {
+					t.Errorf("engine state printed:\n%s", strings.Join(engine.rows, "\n"))
 				}
-				want := recordRows[strings.TrimSuffix(tc.name, "-filelist")]
-				if !slices.Equal(engine.rows, want) {
-					t.Errorf("engine state rows differ:\ngot:\n%s\nwant:\n%s", strings.Join(engine.rows, "\n"), strings.Join(want, "\n"))
+				want := recordWalkRows[strings.TrimSuffix(tc.name, "-filelist")]
+				if !slices.Equal(walk.rows, want) {
+					t.Errorf("walk state rows differ:\ngot:\n%s\nwant:\n%s", strings.Join(walk.rows, "\n"), strings.Join(want, "\n"))
 				}
 				if want != nil {
 					for _, order := range []string{"reverse", "7"} {
-						if got := recordsVet(t, bin, args, "engine", order).rows; !slices.Equal(got, engine.rows) {
-							t.Errorf("walk order %s: rows differ from the default order:\n%s", order, strings.Join(got, "\n"))
+						if got := recordsVet(t, bin, args, "engine", order).rows; len(got) > 0 {
+							t.Errorf("walk order %s: the engine state printed:\n%s", order, strings.Join(got, "\n"))
 						}
 					}
 				}
@@ -237,8 +277,9 @@ func TestLockOrderRecords(t *testing.T) {
 					if n := notWalked[ext]; n != recordNotWalked[tc.name] {
 						t.Errorf("%s dumps: %d sites not walked, want %d", ext, n, recordNotWalked[tc.name])
 					}
-					if n := gaveUp[ext]; n != recordGaveUp[tc.name] {
-						t.Errorf("%s dumps: %d sites in a function the engine gave up in, want %d", ext, n, recordGaveUp[tc.name])
+					// A function the engine gave up in is skipped, so no site in one is left.
+					if n := gaveUp[ext]; n != 0 {
+						t.Errorf("%s dumps: %d sites in a function the engine gave up in, want 0", ext, n)
 					}
 				}
 			})

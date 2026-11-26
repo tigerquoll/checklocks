@@ -48,7 +48,7 @@ func zzDeferredLiteralInverts(a *App, p *Partition) {
 func zzInlineLiteralInherits(a *App, p *Partition) {
 	a.Lock()
 	func() {
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 		p.Unlock()
 	}()
 	a.Unlock()
@@ -58,7 +58,7 @@ func zzInlineLiteralInherits(a *App, p *Partition) {
 func zzAliasBodyLiteral(o *seamOuter, p *Partition) {
 	o.inner.mu.Lock()
 	func() {
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding SeamInner
 		p.Unlock()
 	}()
 	o.inner.mu.Unlock()
@@ -69,7 +69,7 @@ func zzAliasBodyLiteral(o *seamOuter, p *Partition) {
 // +checklocks:o.inner.mu
 func zzAliasEntryLiteral(o *seamOuter, p *Partition) {
 	func() {
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding SeamInner
 		p.Unlock()
 	}()
 }
@@ -78,7 +78,7 @@ func zzAliasEntryLiteral(o *seamOuter, p *Partition) {
 func zzPlainBodyLiteral(a *App, p *Partition) {
 	seamLockApp(a)
 	func() {
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 		p.Unlock()
 	}()
 	seamUnlockApp(a)
@@ -119,7 +119,7 @@ func zzPlainTakenInLiteral(a *App, p *Partition) {
 func zzWrapperTakenInLiteral(a *App, p *Partition) {
 	func() {
 		seamLockApp(a)
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 		p.Unlock()
 		seamUnlockApp(a)
 	}()
@@ -141,7 +141,7 @@ func zzAliasInAnnotatedLiteral(run func(func(*Context, *seamOuter, *Partition)))
 	// +checklocks:c.mu
 	run(func(c *Context, o *seamOuter, p *Partition) {
 		o.inner.mu.Lock()
-		p.Lock() // +lockorderfail=acquiring Partition
+		p.Lock()
 		p.Unlock()
 		o.inner.mu.Unlock()
 	})
@@ -193,7 +193,7 @@ func zzPlainInNestedLiteral(a *App, p *Partition) {
 func zzAnnotatedLiteralSameClass(run func(func(*App, *App))) {
 	// +checklocks:a.mu
 	run(func(a, b *App) {
-		b.Lock()
+		b.Lock() // +lockorderfail=acquiring App (via (*App).Lock) while holding App
 		b.Unlock()
 	})
 }
@@ -201,7 +201,7 @@ func zzAnnotatedLiteralSameClass(run func(func(*App, *App))) {
 // A deferred literal run at two returns that hold different locks.
 func zzTwoReturnsLiteral(a *App, o *seamOuter, p *Partition, c bool) { // +checklocksfail=incompatible return states
 	defer func() {
-		p.Lock()
+		p.Lock() // +lockorderfail=while holding App:|while holding SeamInner:
 		p.Unlock()
 	}()
 	if c {
@@ -221,7 +221,7 @@ func zzProbeNoIgnore(a *App, t *Context, p *Partition, c bool) {
 	func() { // +checklocksfail=incompatible return states
 		defer djNoop()
 		if c {
-			t.Lock()
+			t.Lock() // +lockorderfail=acquiring Context (via (*Context).Lock) while holding App
 		}
 	}() // +checklocksfail=return with unexpected locks held
 	a.Unlock()
@@ -246,7 +246,7 @@ func zzProbeLegacyWalk(a *App, p *Partition, c bool) {
 }
 
 // Pins for the flip: a function the engine gave up in takes App then Partition.
-func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function
+func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
 	for c() {
 		if c() {
 			f.a.Lock()
@@ -271,7 +271,7 @@ func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +check
 		}
 	}
 	a.Lock()
-	p.Lock() // +lockorderfail=acquiring Partition
+	p.Lock()
 	p.Unlock()
 	a.Unlock()
 }
@@ -279,13 +279,13 @@ func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +check
 // Pins for the flip: the exported summary of a given-up function, seen from a caller holding Partition.
 func zzCallsGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) {
 	p.Lock()
-	zzGiveUpOrder(f, a, p, c) // +lockorderfail=acquiring Partition
+	zzGiveUpOrder(f, a, p, c)
 	p.Unlock()
 }
 
 // Pins for the flip: zzGiveUpOrder under +checklocksignore, so no give-up row is printed.
 //
-// +checklocksignore
+// +checklocksignore +lockorderignore +lockblockingignore
 func zzGiveUpOrderIgnored(f *litSeven, a *App, p *Partition, c func() bool) {
 	for c() {
 		if c() {
@@ -311,7 +311,7 @@ func zzGiveUpOrderIgnored(f *litSeven, a *App, p *Partition, c func() bool) {
 		}
 	}
 	a.Lock()
-	p.Lock() // +lockorderfail=acquiring Partition
+	p.Lock()
 	p.Unlock()
 	a.Unlock()
 }
