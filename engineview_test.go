@@ -115,7 +115,7 @@ func TestRunDefersRecordsPair(t *testing.T) {
 	}
 }
 
-// TestEngineViewEffects pins the gain and release records: union over states, and none for a function given up on.
+// TestEngineViewEffects pins the gain records: union over states, and none for a function given up on.
 func TestEngineViewEffects(t *testing.T) {
 	pkg := buildTestPackage(t, "effects", "package effects\n\nfunc f() {}\n")
 	f := pkg.Func("f")
@@ -126,22 +126,18 @@ func TestEngineViewEffects(t *testing.T) {
 	e := &engineView{}
 	e.addGain(at, p)
 	e.addGain(at, q)
-	e.addRelease(at, p)
 	if got := e.gainsOf(at); len(got) != 2 {
 		t.Errorf("gains = %v, want both locks", got)
 	}
-	if got := e.releasesOf(at); len(got) != 1 || !got[p.Key()] {
-		t.Errorf("releases = %v, want the one lock", got)
-	}
 	e.giveUp(f, "test")
-	if e.gainsOf(at) != nil || e.releasesOf(at) != nil {
-		t.Error("function given up on still has effect records")
+	if e.gainsOf(at) != nil {
+		t.Error("function given up on still has gain records")
 	}
 
 	var none *engineView
 	none.addGain(at, p)
 	none.add(at, newLockState(), nil)
-	if _, ok := none.heldAt(at); ok || none.gainsOf(at) != nil || none.releasesOf(at) != nil {
+	if _, ok := none.heldAt(at); ok || none.gainsOf(at) != nil {
 		t.Error("nil view reported records")
 	}
 }

@@ -113,23 +113,22 @@ func (pc *lockOrderContext) labels(fn *ssa.Function) map[pathKey]map[string]stru
 	return own
 }
 
-// engineClasses returns the classes of a held engine lock and the rule that found them: 'e' for
-// the class lockorder entered it under, 'l' for the classes of the acquires that took it, else
-// the projection's rule. A forced lock is only projected.
-func (pc *lockOrderContext) engineClasses(fn *ssa.Function, l heldLock) ([]string, byte) {
+// engineClasses returns the classes of a held engine lock: the class lockorder entered it under,
+// else the classes of the acquires that took it, else its projection. A forced lock is only projected.
+func (pc *lockOrderContext) engineClasses(fn *ssa.Function, l heldLock) []string {
 	if !l.assumed {
 		k := l.path.Key()
 		if class := pc.engineEntry(fn)[k]; class != "" {
-			return []string{class}, 'e'
+			return []string{class}
 		}
 		if set := pc.labels(fn)[k]; len(set) > 0 {
-			return slices.Sorted(maps.Keys(set)), 'l'
+			return slices.Sorted(maps.Keys(set))
 		}
 	}
-	if class, rule := pc.engineClass(l.path); class != "" {
-		return []string{class}, rule
+	if class := pc.engineClass(l.path); class != "" {
+		return []string{class}
 	}
-	return nil, 'U'
+	return nil
 }
 
 // pathOwner walks the types along a lock path to the struct that owns its last field step,
@@ -207,20 +206,20 @@ func pathOwner(p lockPath) (owner *types.Named, field string, final types.Type) 
 	return owner, field, t
 }
 
-// engineClass maps an engine lock to a class by the field rule 'F', else the type rule 'T', else 'U' for none.
-func (pc *lockOrderContext) engineClass(p lockPath) (string, byte) {
+// engineClass maps an engine lock to a class by its owner's field, else by its type, else "".
+func (pc *lockOrderContext) engineClass(p lockPath) string {
 	owner, field, final := pathOwner(p)
 	if owner != nil {
 		if c := pc.classForNamed(owner, field); c != "" {
-			return c, 'F'
+			return c
 		}
 	}
 	if final != nil {
 		if named, ok := namedOf(final); ok {
 			if c := pc.classForNamed(named, ""); c != "" {
-				return c, 'T'
+				return c
 			}
 		}
 	}
-	return "", 'U'
+	return ""
 }

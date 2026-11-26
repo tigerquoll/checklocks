@@ -432,4 +432,9 @@ func f(g *G, c chan int) {
 	if len(got) != 2 {
 		t.Errorf("reported %q, want the send and the receive", got)
 	}
+	for _, msg := range got {
+		if !strings.Contains(msg, "while holding Grouped") {
+			t.Errorf("report %q does not name the held class", msg)
+		}
+	}
 }

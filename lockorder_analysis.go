@@ -213,7 +213,7 @@ type walkState struct {
 	deferred  []ssa.CallInstruction
 }
 
-// newWalkState returns the state a block starts from, holding the given classes. Nothing is
+// newWalkState returns the state a block starts from, with the given locks. Nothing is
 // carried in for the instances: an annotation names a class, not the instance it was taken
 // on.
 func newWalkState(locks *recordLocks) *walkState {

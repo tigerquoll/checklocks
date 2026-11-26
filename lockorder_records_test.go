@@ -39,15 +39,15 @@ type recordsRun struct {
 	dump map[string]string
 }
 
-// recordsVet vets args on its own cache so no run reads another's facts.
-func recordsVet(t *testing.T, bin string, args []string) recordsRun {
+// recordsVet vets args on its own cache so no run reads another's facts; order is the walk order, empty for SSA order.
+func recordsVet(t *testing.T, bin string, args []string, order string) recordsRun {
 	t.Helper()
 	dumpDir := t.TempDir()
 	cmd := exec.Command("go", append([]string{"vet", "-vettool=" + bin}, args...)...)
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		return strings.HasPrefix(kv, "CHECKLOCKS_DECISION_LOG=")
+		return strings.HasPrefix(kv, "CHECKLOCKS_DECISION_LOG=") || strings.HasPrefix(kv, "CHECKLOCKS_WALK_ORDER=")
 	})
-	cmd.Env = append(env, "GOCACHE="+t.TempDir(), "CHECKLOCKS_SUMMARY_DUMP="+dumpDir)
+	cmd.Env = append(env, "GOCACHE="+t.TempDir(), "CHECKLOCKS_SUMMARY_DUMP="+dumpDir, "CHECKLOCKS_WALK_ORDER="+order)
 	out, err := cmd.CombinedOutput()
 	// Vet exits non-zero when it prints.
 	var exit *exec.ExitError
@@ -87,9 +87,14 @@ func TestLockOrderRecords(t *testing.T) {
 			if tc.fileList {
 				args = expandToFiles(t, args)
 			}
-			engine := recordsVet(t, bin, args)
+			engine := recordsVet(t, bin, args, "")
 			if len(engine.rows) > 0 {
 				t.Errorf("engine state printed:\n%s", strings.Join(engine.rows, "\n"))
+			}
+			for _, order := range []string{"reverse", "7"} {
+				if got := recordsVet(t, bin, args, order).rows; len(got) > 0 {
+					t.Errorf("walk order %s: the engine state printed:\n%s", order, strings.Join(got, "\n"))
+				}
 			}
 
 			for _, unit := range corpusUnits(tc.args, tc.fileList) {

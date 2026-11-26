@@ -21,7 +21,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// recordCounts is the sites the record-based state found no record at, with the reason, and which of them were read.
+// recordCounts is the sites the walk found no record at, with the reason, and which of them were read.
 type recordCounts struct {
 	reason map[ssa.Instruction]string
 	read   map[ssa.Instruction]bool
@@ -113,7 +113,7 @@ func (r *recordLocks) held() []string {
 		if l.assumed {
 			continue
 		}
-		cs, _ := r.pc.engineClasses(r.top, l)
+		cs := r.pc.engineClasses(r.top, l)
 		for _, c := range cs {
 			classes[c] = struct{}{}
 		}
@@ -158,7 +158,7 @@ func (r *recordLocks) after(call ssa.CallInstruction) {
 	view := r.pc.engineView()
 	for _, gained := range []map[pathKey]lockPath{view.gainsOf(call), view.opGainsOf(call)} {
 		for _, p := range gained {
-			classes, _ := r.pc.engineClasses(r.top, heldLock{path: p})
+			classes := r.pc.engineClasses(r.top, heldLock{path: p})
 			for _, c := range classes {
 				delete(r.released, c)
 			}
@@ -178,7 +178,7 @@ func (pc *lockOrderContext) callerOwned(fn *ssa.Function, call ssa.CallInstructi
 		return false
 	}
 	for _, p := range sv.marker {
-		if c, _ := pc.engineClass(p); c == class {
+		if pc.engineClass(p) == class {
 			return false
 		}
 	}
@@ -186,7 +186,7 @@ func (pc *lockOrderContext) callerOwned(fn *ssa.Function, call ssa.CallInstructi
 		if l.assumed || l.entry {
 			continue
 		}
-		if classes, _ := pc.engineClasses(fn, l); slices.Contains(classes, class) {
+		if slices.Contains(pc.engineClasses(fn, l), class) {
 			return false
 		}
 	}

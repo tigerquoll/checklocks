@@ -15,8 +15,12 @@
 package checklocks
 
 import (
+	"go/types"
 	"slices"
 	"testing"
+
+	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/ssa"
 )
 
 // yunikornOrder builds the taxonomy the yunikorn scheduler declares, which is the order the
@@ -233,6 +237,65 @@ func TestRecordLocksMergeIntersectsReleases(t *testing.T) {
 	gap.merge(&recordLocks{released: map[string]bool{}})
 	if got := gap.releasedClasses(); len(got) != 0 {
 		t.Errorf("released on one path only, got %v", got)
+	}
+}
+
+// TestRecordLocksReleaseExportsOnlyTheCallersLocks pins which releases a function exports: its
+// caller's lock, not one the function took itself, and not another object's.
+func TestRecordLocksReleaseExportsOnlyTheCallersLocks(t *testing.T) {
+	const src = `package r
+
+type G struct{}
+
+func h() {}
+
+func f(g *G) { h() }
+`
+	pkg := buildTestPackage(t, "example.com/r", src)
+	fn := pkg.Func("f")
+	var call ssa.CallInstruction
+	for _, in := range fn.Blocks[0].Instrs {
+		if c, ok := in.(ssa.CallInstruction); ok {
+			call = c
+		}
+	}
+	held := newLockPath(pathRootParam, fn.Params[0], nil, "g")
+	ls := newLockState()
+	ls.lockedMutexes[held.Key()] = lockInfo{path: held}
+
+	released := func(atEntry, receiverOwned bool) []string {
+		view := &engineView{}
+		var entry map[pathKey]lockInfo
+		if atEntry {
+			entry = ls.lockedMutexes
+		}
+		view.add(call, ls, entry)
+		pass := &analysis.Pass{
+			Fset:     pkg.Prog.Fset,
+			Pkg:      pkg.Pkg,
+			ResultOf: map[*analysis.Analyzer]any{Analyzer: &ownerResult{engine: view}},
+			ImportObjectFact: func(obj types.Object, fact analysis.Fact) bool {
+				cf, ok := fact.(*classFact)
+				if ok && obj.Name() == "G" {
+					cf.Class = "Task"
+					return true
+				}
+				return false
+			},
+		}
+		r := (&lockOrderContext{pass: pass}).recordState()
+		r.at(fn, call)
+		r.release("Task", receiverOwned)
+		return r.releasedClasses()
+	}
+	if got := released(true, true); !equalClasses(got, []string{"Task"}) {
+		t.Errorf("releasing the caller's lock: %v, want it exported", got)
+	}
+	if got := released(false, true); len(got) != 0 {
+		t.Errorf("releasing a lock the function took itself: %v, want none", got)
+	}
+	if got := released(true, false); len(got) != 0 {
+		t.Errorf("releasing another object's lock: %v, want none", got)
 	}
 }
 

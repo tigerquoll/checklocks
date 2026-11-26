@@ -37,7 +37,7 @@ type heldLock struct {
 
 // engineView is what the engine records per pass for lockorder and lockblocking: locks held at
 // each call and channel operation, entry locks, and what each call's annotations acquired and
-// released. Literal sites carry held, gains, op gains and releases too. A nil view records and reports nothing.
+// released. Literal sites carry held, gains and op gains too. A nil view records and reports nothing.
 type engineView struct {
 	// held is the locks held at each site in some state; a client that suppresses or derives must use query.
 	held   map[ssa.Instruction]map[pathKey]heldLock
@@ -50,9 +50,6 @@ type engineView struct {
 	// opGains is the lock a direct lock operation took at each call, joined over the states. It is
 	// kept apart from gains, which the old walk reads at every call it does not consume.
 	opGains map[ssa.Instruction]map[pathKey]lockPath
-
-	// releases is the real locks each call's release annotations dropped, in some state.
-	releases map[ssa.Instruction]map[pathKey]bool
 
 	// deferHeld is held for a deferred call as run by one return; the Defer's own record is the union over its returns.
 	deferHeld map[deferPair]map[pathKey]heldLock
@@ -247,20 +244,6 @@ func (e *engineView) addOpGain(inst ssa.Instruction, path lockPath) {
 	e.opGains[inst][path.Key()] = path
 }
 
-// addRelease records that the annotations of the call at inst released path.
-func (e *engineView) addRelease(inst ssa.Instruction, path lockPath) {
-	if e == nil {
-		return
-	}
-	if e.releases == nil {
-		e.releases = make(map[ssa.Instruction]map[pathKey]bool)
-	}
-	if e.releases[inst] == nil {
-		e.releases[inst] = make(map[pathKey]bool)
-	}
-	e.releases[inst][path.Key()] = true
-}
-
 // sortedHeld returns the locks in key order.
 func sortedHeld(locks map[pathKey]heldLock) []heldLock {
 	keys := make([]pathKey, 0, len(locks))
@@ -342,14 +325,6 @@ func (e *engineView) opGainsOf(inst ssa.Instruction) map[pathKey]lockPath {
 		return nil
 	}
 	return e.opGains[inst]
-}
-
-// releasesOf returns the locks the call's release annotations dropped in some state, or nil.
-func (e *engineView) releasesOf(inst ssa.Instruction) map[pathKey]bool {
-	if !e.usable(inst) {
-		return nil
-	}
-	return e.releases[inst]
 }
 
 // entryOf returns the locks the engine entered fn with, and false when it has no record of fn.
@@ -489,13 +464,6 @@ func (pc *passContext) recordGain(inst ssa.Instruction, path lockPath) {
 func (pc *passContext) recordOpGain(inst ssa.Instruction, path lockPath) {
 	if e, ok := pc.replaying(inst); ok {
 		e.addOpGain(inst, path)
-	}
-}
-
-// recordRelease records a real lock the annotations of the call at inst dropped.
-func (pc *passContext) recordRelease(inst ssa.Instruction, path lockPath) {
-	if e, ok := pc.replaying(inst); ok {
-		e.addRelease(inst, path)
 	}
 }
 

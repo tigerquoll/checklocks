@@ -115,7 +115,7 @@ type lockOrderContext struct {
 	// extra walk the witness derivation makes.
 	witness *witnessGraph
 
-	// records is the sites the walk found no record at; see lockorder_engine_state.go.
+	// records is the sites with no engine record; see lockorder_engine_state.go.
 	records recordCounts
 
 	// entries caches what the engine entered each function with; see engineEntry.

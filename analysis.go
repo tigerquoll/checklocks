@@ -656,7 +656,7 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 		return fg.Resolver.resolveCall(pc, ls, site.Common().Args, site.Result())
 	}
 
-	// lost is the real locks the release annotations dropped, for the engine view.
+	// lost is the real locks the release annotations dropped; one taken back by the same call is no gain.
 	var lost []lockPath
 	// Release all locks not still held.
 	for _, g := range resolveGuards(ls, lff.HeldOnEntry, lff.HeldOnExit, resolve) {
@@ -725,9 +725,6 @@ func (pc *passContext) postFunctionCallUpdate(site callSite, lff *lockFunctionFa
 				pc.suppressed()
 			}
 		}
-	}
-	for _, p := range lost {
-		pc.recordRelease(site.instr, p)
 	}
 }
 

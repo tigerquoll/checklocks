@@ -21,8 +21,8 @@ import (
 
 // The guard facts of the checklocks analyzer are read here, so that a code base annotated
 // for guarded fields gets the ordering check without a second set of annotations. A
-// function declared to run with a lock held starts the ordering walk with that lock's class
-// held, which is what carries the order across a boundary this analysis cannot follow on
+// function declared to run with a lock held is entered with that lock's class held, which
+// is what carries the order across a boundary this analysis cannot follow on
 // its own: a callback invoked by machinery after the caller took the lock.
 //
 // The facts are inherited from the required analyzer rather than re-read from the comments.

@@ -523,8 +523,8 @@ func zzR2Release(pl *Mutex, c bool) {
 			continue
 		}
 		deferred++
-		if len(e.releases[d]) > 0 || len(e.gains[d]) > 0 || len(e.opGains[d]) > 0 {
-			t.Errorf("%s: release %v, gain %v, op gain %v recorded at the caller's defer", d, e.releases[d], e.gains[d], e.opGains[d])
+		if len(e.gains[d]) > 0 || len(e.opGains[d]) > 0 {
+			t.Errorf("%s: gain %v, op gain %v recorded at the caller's defer", d, e.gains[d], e.opGains[d])
 		}
 	}
 	if deferred != 1 {
