@@ -148,8 +148,8 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 	pc.loadDeclaredOrder()
 	pc.importOrderFacts()
 	if err := pc.order.close(); err != nil {
-		// A cycle is a declaration bug rather than a finding in the analyzed code, so it
-		// is reported once against the package rather than at a call site.
+		// A cycle is a declaration bug rather than a finding in the analyzed code, so it is reported against the
+		// package, here and in every importer, whose order also leaves the cycle's edges out.
 		pc.pass.Reportf(token.NoPos, "%s", err.Error())
 	}
 	pc.exportOrderFact()
@@ -187,6 +187,7 @@ func (pc *lockOrderContext) loadDeclaredOrder() {
 						pc.pass.Reportf(c.Pos(), "invalid lockorder annotation: %v", err)
 						return
 					}
+					e.Pkg = pc.pass.Pkg.Path()
 					pc.order.addEdge(e)
 				},
 				lockHierarchicalAnnotation: func(p string) {

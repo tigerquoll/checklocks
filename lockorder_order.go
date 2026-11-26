@@ -17,6 +17,7 @@ package checklocks
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // order is the declared partial order over lock classes, closed transitively.
@@ -77,9 +78,9 @@ func (o *order) classes() []string {
 	return out
 }
 
-// close computes the transitive closure of the declared edges and reports a cycle if the
-// declarations do not form a partial order. A cycle is a declaration bug: it would make
-// every acquisition of the classes involved a violation.
+// close computes the transitive closure of the declared edges. If the declarations contain a cycle, it returns an
+// error naming it and the packages that declared it, and closes only the edges that lie on no cycle: a cycle would
+// make every acquisition of the classes involved a violation. The declared edges are kept whole for export.
 func (o *order) close() error {
 	cs := o.classes()
 	for _, k := range cs {
@@ -105,14 +106,23 @@ func (o *order) close() error {
 		// cycle are closed again; the declared list is restored whole for export.
 		closure, declared := o.precedes, o.edges
 		o.precedes, o.edges = make(map[string]map[string]bool), nil
+		dropped := make(map[string]bool)
 		for _, e := range declared {
-			if !closure[e.After][e.Before] {
+			if closure[e.After][e.Before] {
+				dropped[e.Pkg] = true
+			} else {
 				o.addEdge(e)
 			}
 		}
+		// The kept edges are acyclic: an edge on any cycle of theirs would have had its reverse in the first closure.
 		_ = o.close()
 		o.edges = declared
-		return fmt.Errorf("lock order declarations contain a cycle through class %q", c)
+		pkgs := make([]string, 0, len(dropped))
+		for p := range dropped {
+			pkgs = append(pkgs, p)
+		}
+		sort.Strings(pkgs)
+		return fmt.Errorf("lock order declarations contain a cycle through class %q (declared in %s)", c, strings.Join(pkgs, ", "))
 	}
 	return nil
 }

@@ -71,10 +71,12 @@ var lockOrderAnnotations = annotationSet{
 	ignore: lockOrderIgnore,
 }
 
-// orderEdge is one declared "a is acquired before b" relation.
+// orderEdge is one declared "a is acquired before b" relation, with the package that
+// declared it.
 type orderEdge struct {
 	Before string
 	After  string
+	Pkg    string
 }
 
 // parseOrderEdge parses the payload of a lockorder annotation, "A < B".

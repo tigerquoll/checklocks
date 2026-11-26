@@ -29,13 +29,13 @@ func yunikornOrder(t *testing.T) *order {
 	t.Helper()
 	o := newOrder()
 	for _, e := range []orderEdge{
-		{"ClusterContext", "PartitionContext"},
-		{"PartitionContext", "Application"},
-		{"Application", "Queue"},
-		{"Application", "Node"},
-		{"Application", "UGMManager"},
-		{"UGMManager", "UserTracker"},
-		{"UGMManager", "GroupTracker"},
+		{Before: "ClusterContext", After: "PartitionContext"},
+		{Before: "PartitionContext", After: "Application"},
+		{Before: "Application", After: "Queue"},
+		{Before: "Application", After: "Node"},
+		{Before: "Application", After: "UGMManager"},
+		{Before: "UGMManager", After: "UserTracker"},
+		{Before: "UGMManager", After: "GroupTracker"},
 	} {
 		o.addEdge(e)
 	}
@@ -118,11 +118,38 @@ func TestWithheldSuppressesSameClass(t *testing.T) {
 
 func TestCycleIsReported(t *testing.T) {
 	o := newOrder()
-	o.addEdge(orderEdge{"A", "B"})
-	o.addEdge(orderEdge{"B", "C"})
-	o.addEdge(orderEdge{"C", "A"})
+	o.addEdge(orderEdge{Before: "A", After: "B"})
+	o.addEdge(orderEdge{Before: "B", After: "C"})
+	o.addEdge(orderEdge{Before: "C", After: "A"})
 	if err := o.close(); err == nil {
 		t.Error("a cyclic declaration must be reported")
+	}
+}
+
+func TestCycleKeepsOffCycleEdges(t *testing.T) {
+	o := newOrder()
+	for _, e := range []orderEdge{
+		{Before: "A", After: "B", Pkg: "q"},
+		{Before: "B", After: "A", Pkg: "p"},
+		{Before: "X", After: "A", Pkg: "x"},
+		{Before: "B", After: "C", Pkg: "x"},
+		{Before: "C", After: "D", Pkg: "x"},
+	} {
+		o.addEdge(e)
+	}
+	err := o.close()
+	want := `lock order declarations contain a cycle through class "A" (declared in p, q)`
+	if err == nil || err.Error() != want {
+		t.Errorf("close() = %v, want %s", err, want)
+	}
+	if o.orders("A", "B") || o.orders("B", "A") || o.orders("A", "A") {
+		t.Error("an edge on the cycle must be left out of the order")
+	}
+	if !o.orders("X", "A") || !o.orders("B", "D") {
+		t.Error("edges off the cycle must stay in the order")
+	}
+	if len(o.edges) != 5 {
+		t.Errorf("declared edges = %d, want 5", len(o.edges))
 	}
 }
 
@@ -132,8 +159,8 @@ func TestParseOrderEdge(t *testing.T) {
 		want    orderEdge
 		wantErr bool
 	}{
-		{in: "A < B", want: orderEdge{"A", "B"}},
-		{in: "  Cluster  <  Partition ", want: orderEdge{"Cluster", "Partition"}},
+		{in: "A < B", want: orderEdge{Before: "A", After: "B"}},
+		{in: "  Cluster  <  Partition ", want: orderEdge{Before: "Cluster", After: "Partition"}},
 		{in: "A", wantErr: true},
 		{in: "A < ", wantErr: true},
 		{in: " < B", wantErr: true},

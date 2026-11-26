@@ -600,23 +600,39 @@ func OffCycle(b *p.B, z *Z) {
 	for name, tc := range map[string]struct {
 		argv  []string
 		lines int
+		want  []string
 	}{
-		"standalone": {[]string{bin, "-lockgap.enable=true", "-lockorder.hierarchy=true", "./..."}, 0},
-		"vet":        {[]string{"go", "vet", "-vettool=" + bin, "-lockgap.enable=true", "-lockorder.hierarchy=true", "./..."}, 3},
+		"standalone": {[]string{bin, "-lockgap.enable=true", "-lockorder.hierarchy=true", "./..."}, 0, []string{"(declared in cyc/p)"}},
+		"vet": {[]string{"go", "vet", "-vettool=" + bin, "-lockgap.enable=true", "-lockorder.hierarchy=true", "./..."}, 3,
+			[]string{"(declared in cyc/p)", "(declared in cyc/p, cyc/r)"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd := exec.Command(tc.argv[0], tc.argv[1:]...)
 			cmd.Dir = dir
 			out, _ := cmd.CombinedOutput()
 			cycles := 0
+			named := make(map[string]int)
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				switch {
 				case strings.HasPrefix(line, "#"):
 				case strings.Contains(line, "lock order declarations contain a cycle"):
 					cycles++
+					for _, w := range tc.want {
+						if strings.HasSuffix(line, w) {
+							named[w]++
+						}
+					}
 				default:
 					t.Errorf("unexpected output line: %s", line)
 				}
+			}
+			for _, w := range tc.want {
+				if named[w] == 0 {
+					t.Errorf("no cycle line ends with %s:\n%s", w, out)
+				}
+			}
+			if tc.lines != 0 && named[tc.want[0]] != 2 {
+				t.Errorf("want the cycle lines of p and q to end with %s, got %d:\n%s", tc.want[0], named[tc.want[0]], out)
 			}
 			if cycles == 0 || (tc.lines != 0 && cycles != tc.lines) {
 				t.Errorf("want %d cycle lines (any under standalone: 0), got %d:\n%s", tc.lines, cycles, out)
