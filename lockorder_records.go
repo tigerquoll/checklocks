@@ -28,45 +28,18 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-var (
-	lockorderState = os.Getenv("CHECKLOCKS_LOCKORDER_STATE")
+// summaryDumpDir is where the summary dumps go; empty writes none.
+var summaryDumpDir = os.Getenv("CHECKLOCKS_SUMMARY_DUMP")
 
-	// summaryDumpDir is where the summary dumps go; empty writes none.
-	summaryDumpDir = os.Getenv("CHECKLOCKS_SUMMARY_DUMP")
-)
-
-func init() {
-	switch lockorderState {
-	case "walk":
-	case "", "engine":
-		if shadowLogDir != "" {
-			panic("CHECKLOCKS_SHADOW_LOG needs CHECKLOCKS_LOCKORDER_STATE=walk")
-		}
-	default:
-		panic(fmt.Sprintf("CHECKLOCKS_LOCKORDER_STATE %q is not \"walk\" or \"engine\"", lockorderState))
-	}
-}
-
-func (pc *lockOrderContext) recordState() siteLocks {
-	if lockorderState == "walk" {
-		return nil
-	}
-	return &recordLocks{pc: pc, released: make(map[string]bool)}
-}
-
-// summaryDump writes this unit's summaries, one line per function, and in engine mode the sites with no record.
+// summaryDump writes this unit's summaries, one line per function and the sites with no record.
 // The lockblocking pass writes the second part only, to a .blocking file.
 func (pc *lockOrderContext) summaryDump(fns []*ssa.Function, summaries map[*ssa.Function]*summaryFact) {
 	if summaryDumpDir == "" {
 		return
 	}
-	state := lockorderState
-	if state == "" {
-		state = "engine"
-	}
 	pkg := pc.pass.Pkg.Path()
 	var out strings.Builder
-	fmt.Fprintf(&out, "# %s state=%s\n", pkg, state)
+	fmt.Fprintf(&out, "# %s state=engine\n", pkg)
 	for _, fn := range slices.SortedStableFunc(slices.Values(fns), func(a, b *ssa.Function) int {
 		return strings.Compare(relFuncName(a), relFuncName(b))
 	}) {

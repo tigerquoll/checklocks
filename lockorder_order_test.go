@@ -217,59 +217,22 @@ func TestReleasedBeforeIntersectsOnMerge(t *testing.T) {
 	}
 }
 
-// TestClassSetReleaseTracksTheCallersLocks pins what a summary may export: only a lock the
-// function was called with held, and only its receiver's.
-func TestClassSetReleaseTracksTheCallersLocks(t *testing.T) {
-	// The gap shape: called with the lock held, drops it, takes it back at the end.
-	cs := newClassSet()
-	cs.enter("Task")
-	cs.release("Task", true)
-	if got, want := cs.releasedClasses(), []string{"Task"}; !equalClasses(got, want) {
-		t.Errorf("after releasing the caller's lock: %v, want %v", got, want)
-	}
-	if !cs.empty() {
-		t.Errorf("the class must not be held after the release: %v", cs)
-	}
-	cs.acquire("Task")
-	if got := cs.releasedClasses(); len(got) != 0 {
+// TestRecordLocksAcquireClosesTheGap pins that taking a released lock back drops it from the released set.
+func TestRecordLocksAcquireClosesTheGap(t *testing.T) {
+	r := &recordLocks{released: map[string]bool{"Task": true}}
+	r.acquire("Task")
+	if got := r.releasedClasses(); len(got) != 0 {
 		t.Errorf("taking the lock back closes the gap, got %v", got)
-	}
-
-	// A lock the function took itself is not the caller's, however it is released.
-	cs = newClassSet()
-	cs.acquire("Task")
-	cs.release("Task", true)
-	if got := cs.releasedClasses(); len(got) != 0 {
-		t.Errorf("releasing an own acquisition is not a gap, got %v", got)
-	}
-
-	// Another object's lock is not modelled, so the call site keeps holding it.
-	cs = newClassSet()
-	cs.enter("Task")
-	cs.release("Task", false)
-	if got := cs.releasedClasses(); len(got) != 0 {
-		t.Errorf("releasing another object's lock must not be exported, got %v", got)
 	}
 }
 
-// TestClassSetMergeIntersectsReleases pins the join point: a gap on one path only does not
+// TestRecordLocksMergeIntersectsReleases pins the join point: a gap on one path only does not
 // excuse the path that still holds the lock.
-func TestClassSetMergeIntersectsReleases(t *testing.T) {
-	gap := newClassSet()
-	gap.enter("Task")
-	gap.release("Task", true)
-
-	direct := newClassSet()
-	direct.enter("Task")
-
-	if !gap.mergeChanged(direct) {
-		t.Error("dropping a release at a join point is a change")
-	}
+func TestRecordLocksMergeIntersectsReleases(t *testing.T) {
+	gap := &recordLocks{released: map[string]bool{"Task": true}}
+	gap.merge(&recordLocks{released: map[string]bool{}})
 	if got := gap.releasedClasses(); len(got) != 0 {
 		t.Errorf("released on one path only, got %v", got)
-	}
-	if got, want := gap.held(), []string{"Task"}; !equalClasses(got, want) {
-		t.Errorf("held = %v, want %v", got, want)
 	}
 }
 

@@ -62,16 +62,6 @@ func (pc *lockOrderContext) engineEntry(fn *ssa.Function) map[pathKey]string {
 	return own
 }
 
-// engineKeyClass returns the class of an engine lock: the class lockorder entered it under, else
-// the projection of its path.
-func (pc *lockOrderContext) engineKeyClass(fn *ssa.Function, key pathKey, path lockPath) string {
-	if class := pc.engineEntry(fn)[key]; class != "" {
-		return class
-	}
-	class, _ := pc.engineClass(path)
-	return class
-}
-
 // acquiredClass returns the class a call acquires as a lock operation visitCall recognises, or "".
 func (pc *lockOrderContext) acquiredClass(call ssa.CallInstruction) string {
 	obj := calledFunc(staticCallee(call))
@@ -140,62 +130,6 @@ func (pc *lockOrderContext) engineClasses(fn *ssa.Function, l heldLock) ([]strin
 		return []string{class}, rule
 	}
 	return nil, 'U'
-}
-
-// applyEffect adds the locks the annotations of a call this analysis did not treat as a lock
-// operation acquired, and takes back its own earlier additions the call released. It never
-// lowers a count below this analysis's own.
-func (pc *lockOrderContext) applyEffect(fn *ssa.Function, call ssa.CallInstruction, cs *classSet) {
-	view := pc.engineView()
-	if view == nil || fn.Parent() != nil {
-		return
-	}
-	gains := view.gainsOf(call)
-	for k := range view.releasesOf(call) {
-		if _, gained := gains[k]; gained {
-			continue
-		}
-		if class, counted := cs.eng[k]; counted {
-			cs.undo(class)
-			delete(cs.eng, k)
-		}
-	}
-	for k, p := range gains {
-		if class := pc.engineKeyClass(fn, k, p); class != "" {
-			cs.gain(class)
-			cs.eng[k] = class
-		}
-	}
-}
-
-// entryOverlay sets cs.site to the classes of the entry locks only the engine has, as it still
-// held them at inst.
-func (pc *lockOrderContext) entryOverlay(fn *ssa.Function, inst ssa.Instruction, cs *classSet) {
-	view := pc.engineView()
-	if view == nil || fn.Parent() != nil {
-		return
-	}
-	held, ok := view.heldSet(inst)
-	if !ok {
-		cs.site = nil
-		return
-	}
-	var site map[string]int
-	for k, l := range held {
-		if l.assumed || !l.entry {
-			continue
-		}
-		if _, counted := cs.eng[k]; counted {
-			continue
-		}
-		if class := pc.engineKeyClass(fn, k, l.path); class != "" {
-			if site == nil {
-				site = make(map[string]int)
-			}
-			site[class]++
-		}
-	}
-	cs.site = site
 }
 
 // pathOwner walks the types along a lock path to the struct that owns its last field step,

@@ -29,24 +29,6 @@ import (
 // That keeps one source of truth for what an annotation means, and it picks up the guards
 // of functions in other packages, which a scan of this package's syntax cannot see.
 
-// heldOnEntry returns the classes a function is annotated as holding when it is called.
-func (pc *lockOrderContext) heldOnEntry(obj *types.Func) []string {
-	var lff lockFunctionFacts
-	if !pc.pass.ImportObjectFact(obj, &lff) {
-		return nil
-	}
-	if len(lff.HeldOnEntry) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(lff.HeldOnEntry))
-	for guard := range lff.HeldOnEntry {
-		if class := pc.classOfGuard(obj, guard); class != "" {
-			out = append(out, class)
-		}
-	}
-	return out
-}
-
 // classOfGuard resolves a guard expression to the class of the object that owns the lock.
 //
 // A guard names a path to a lock field, rooted at the receiver or a parameter:

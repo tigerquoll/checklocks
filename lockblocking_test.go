@@ -381,7 +381,9 @@ func readClose(c ReadCloser)  { c.Get() }
 func TestChannelOpKey(t *testing.T) {
 	const src = `package c
 
-func f(c chan int) {
+type G struct{}
+
+func f(g *G, c chan int) {
 	c <- 1
 	<-c
 }
@@ -392,9 +394,20 @@ func f(c chan int) {
 		t.Fatal("no function f")
 	}
 	var got []string
+	view := &engineView{}
 	pass := &analysis.Pass{
-		Fset:   pkg.Prog.Fset,
-		Report: func(d analysis.Diagnostic) { got = append(got, d.Message) },
+		Fset:     pkg.Prog.Fset,
+		Pkg:      pkg.Pkg,
+		Report:   func(d analysis.Diagnostic) { got = append(got, d.Message) },
+		ResultOf: map[*analysis.Analyzer]any{Analyzer: &ownerResult{engine: view}},
+		ImportObjectFact: func(obj types.Object, fact analysis.Fact) bool {
+			cf, ok := fact.(*classFact)
+			if ok && obj.Name() == "G" {
+				cf.Class = "Grouped"
+				return true
+			}
+			return false
+		},
 	}
 	defer func(prev bool) { groupBlockingReports = prev }(groupBlockingReports)
 	groupBlockingReports = true
@@ -404,12 +417,14 @@ func f(c chan int) {
 		order:        newOrder(),
 		check:        checkBlocking,
 	}
-	cur := newClassSet()
-	cur.pc = pc
-	cur.acquire("Grouped")
+	held := newLockPath(pathRootParam, fn.Params[0], nil, "g")
+	ls := newLockState()
+	ls.lockedMutexes[held.Key()] = lockInfo{path: held}
+	cur := pc.recordState()
 	var summary summaryFact
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			view.add(instr, ls, nil)
 			pc.visitChannelOp(fn, instr, cur, &summary, true /* report */)
 		}
 	}

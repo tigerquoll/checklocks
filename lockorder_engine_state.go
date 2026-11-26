@@ -21,8 +21,6 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// The lock state read from the engine's records in place of the walk's own.
-
 // recordCounts is the sites the record-based state found no record at, with the reason, and which of them were read.
 type recordCounts struct {
 	reason map[ssa.Instruction]string
@@ -41,6 +39,10 @@ type recordLocks struct {
 	run *ssa.RunDefers
 
 	released map[string]bool
+}
+
+func (pc *lockOrderContext) recordState() *recordLocks {
+	return &recordLocks{pc: pc, released: make(map[string]bool)}
 }
 
 func topOf(fn *ssa.Function) *ssa.Function {
@@ -137,12 +139,11 @@ func (r *recordLocks) release(class string, receiverOwned bool) {
 	}
 }
 
-func (r *recordLocks) fork() siteLocks {
+func (r *recordLocks) fork() *recordLocks {
 	return &recordLocks{pc: r.pc, site: r.site, top: r.top, run: r.run, released: maps.Clone(r.released)}
 }
 
-func (r *recordLocks) merge(other siteLocks) {
-	o := other.(*recordLocks)
+func (r *recordLocks) merge(o *recordLocks) {
 	for k := range r.released {
 		if !o.released[k] {
 			delete(r.released, k)
@@ -150,7 +151,7 @@ func (r *recordLocks) merge(other siteLocks) {
 	}
 }
 
-func (r *recordLocks) after(_ *ssa.Function, call ssa.CallInstruction, _ bool) {
+func (r *recordLocks) after(call ssa.CallInstruction) {
 	if len(r.released) == 0 {
 		return
 	}

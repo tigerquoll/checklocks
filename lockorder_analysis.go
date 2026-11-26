@@ -109,19 +109,17 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		summary.addBlocking(nil, true /* named */)
 		pc.recordWitnessWait(fn, displayName(fn)+" is declared blocking", fn.Pos(), nil, true /* named */, true /* annotated */)
 	}
-	if pc.recordState() != nil {
-		if view := pc.engineView(); view != nil {
-			if reason := view.gaveUpIn(fn); reason != "" {
-				if own := view.gaveUp[fn]; own != "" && report && !pc.ignoredAround(fn) &&
-					(fn.Parent() == nil || view.gaveUpIn(fn.Parent()) == "") {
-					name := "lockorder"
-					if pc.check == checkBlocking {
-						name = "lockblocking"
-					}
-					pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on it (%s)", name, own)
+	if view := pc.engineView(); view != nil {
+		if reason := view.gaveUpIn(fn); reason != "" {
+			if own := view.gaveUp[fn]; own != "" && report && !pc.ignoredAround(fn) &&
+				(fn.Parent() == nil || view.gaveUpIn(fn.Parent()) == "") {
+				name := "lockorder"
+				if pc.check == checkBlocking {
+					name = "lockblocking"
 				}
-				return
+				pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on it (%s)", name, own)
 			}
+			return
 		}
 	}
 	if fn.Blocks == nil {
@@ -129,14 +127,9 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	}
 	ignored := pc.ignoredAround(fn)
 
-	// Entry state: the classes the function is annotated as already holding. This is what
-	// makes an annotated callback work, where the caller took the lock and handed control
-	// over through machinery this analysis cannot follow.
-	entry := pc.entryLocks(fn)
-
 	// The state reaching each block, built up as the blocks are walked.
 	in := make([]*walkState, len(fn.Blocks))
-	in[0] = newWalkState(entry)
+	in[0] = newWalkState(pc.recordState())
 
 	for _, b := range blockOrder(fn) {
 		if b == fn.Recover {
@@ -151,7 +144,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 		if state == nil {
 			// Unreachable from the entry as far as this walk is concerned; start clean
 			// rather than skipping, so its calls are still checked.
-			state = newWalkState(pc.emptyLocks())
+			state = newWalkState(pc.recordState())
 		}
 		state = state.fork()
 		cur := state.locks
@@ -215,7 +208,7 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 // function is exactly where that matters: treating every defer written anywhere in the body
 // as pending at every return puts a lock back that the early path never dropped.
 type walkState struct {
-	locks     siteLocks
+	locks     *recordLocks
 	instances *instanceSet
 	deferred  []ssa.CallInstruction
 }
@@ -223,7 +216,7 @@ type walkState struct {
 // newWalkState returns the state a block starts from, holding the given classes. Nothing is
 // carried in for the instances: an annotation names a class, not the instance it was taken
 // on.
-func newWalkState(locks siteLocks) *walkState {
+func newWalkState(locks *recordLocks) *walkState {
 	return &walkState{locks: locks, instances: newInstanceSet()}
 }
 
@@ -286,15 +279,9 @@ func blockOrder(fn *ssa.Function) []*ssa.BasicBlock {
 
 // visitCall handles one call: the lock operations it performs, and the classes it may
 // acquire through its callee.
-func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur siteLocks, curInst *instanceSet, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction, cur *recordLocks, curInst *instanceSet, summary *summaryFact, report bool) {
 	cur.at(fn, call)
-	pc.shadowCall(call, cur, report)
-	// The engine's additions apply on every exit, except for a call consumed as a lock operation.
-	consumed := false
-	defer func() {
-		pc.shadowGains(fn, call, cur, report)
-		cur.after(fn, call, consumed)
-	}()
+	defer cur.after(call)
 	callee := staticCallee(call)
 
 	// A lock operation changes what is held. Both the standard lock types and a type that
@@ -320,20 +307,16 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 					if class != "" {
 						pc.checkAcquire(call.Pos(), class, displayName(callee), cur.held(), summary, report)
 						pc.checkHierarchy(call.Pos(), recv, class, displayName(callee), curInst, report)
-						pc.shadowReleased(fn, call, cur, report, "acquire")
 						// What has been released is recorded as it stands BEFORE the
 						// acquisition: taking the lock back closes the gap.
 						summary.addAcquire(class, cur.releasedClasses())
 						cur.acquire(class)
-						pc.shadowAcquire(cur, class)
 						curInst.acquire(recv, class)
 					}
 				case opRelease:
 					cur.release(class, isReceiver(fn, recv))
-					pc.shadowRelease(fn, call, recv, class, cur, report)
 					curInst.release(recv)
 				}
-				consumed = true
 				return
 			}
 		}
@@ -344,7 +327,6 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	// enough to recognise a client library's round trip.
 	name, sinkKey, isSink := blockingCallee(call, callee)
 	if isSink {
-		pc.shadowReleased(fn, call, cur, report, "sink")
 		pc.noteBlocking(call.Pos(), "calling "+name+", which blocks", sinkKey, nil, cur.held(), cur.releasedClasses(), true /* named */, summary, report)
 		pc.recordWitnessWait(fn, "calling "+name, call.Pos(), cur.releasedClasses(), true /* named */, false /* annotated */)
 	}
@@ -358,7 +340,6 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 				for i := range fn.TypeParams().Len() {
 					if fn.TypeParams().At(i) == tp {
 						at := strings.TrimPrefix(pc.witnessHop("", call.Pos()), " at ")
-						pc.shadowReleased(fn, call, cur, report, "param")
 						summary.addParamCall(i, common.Method.Name(), isReceiver(fn, common.Value), cur.releasedClasses(), at)
 					}
 				}
@@ -390,7 +371,6 @@ func (pc *lockOrderContext) visitCall(fn *ssa.Function, call ssa.CallInstruction
 	if recv, ok := receiverOf(call); ok {
 		onReceiver = isReceiver(fn, recv)
 	}
-	pc.shadowReleased(fn, call, cur, report, "call")
 	released := cur.releasedClasses()
 	ownBlocking, ownWitnesses := cs.Blocking, cs.Witnesses
 	var resolved []witnessPath
@@ -473,39 +453,6 @@ func (pc *lockOrderContext) checkAcquire(pos token.Pos, acquired, via string, he
 		}
 		pc.report(key, pos, "acquiring %s (via %s) while holding %s: the declared order has %s before %s", acquired, via, held, acquired, held)
 	}
-}
-
-// entryLocks returns the classes a function is annotated as holding on entry.
-//
-// The annotations are the ones the checklocks analyzer already reads, so a code base that
-// has been annotated for guarded fields gets the ordering check for free: a function
-// declared to run with a lock held starts with that lock's class held here.
-func (pc *lockOrderContext) entryLocks(fn *ssa.Function) siteLocks {
-	if l := pc.recordState(); l != nil {
-		return l
-	}
-	cs := newClassSet()
-	cs.pc = pc
-	obj := funcObject(fn)
-	if obj == nil {
-		return cs
-	}
-	for _, class := range pc.heldOnEntry(obj) {
-		cs.enter(class)
-	}
-	for k, class := range pc.engineEntry(fn) {
-		cs.eng[k] = class
-	}
-	return cs
-}
-
-func (pc *lockOrderContext) emptyLocks() siteLocks {
-	if l := pc.recordState(); l != nil {
-		return l
-	}
-	cs := newClassSet()
-	cs.pc = pc
-	return cs
 }
 
 // functionIgnored reports whether reporting is suppressed inside a function, by the
@@ -591,7 +538,7 @@ func (pc *lockOrderContext) noteBlocking(pos token.Pos, what, waitKey string, wi
 // A send or a receive waits for the other side. A select waits too, unless it has a default
 // case, which is what makes the non blocking dispatch idiom safe under a lock; the SSA form
 // records exactly that distinction, so it does not have to be inferred from the syntax.
-func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instruction, cur siteLocks, summary *summaryFact, report bool) {
+func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instruction, cur *recordLocks, summary *summaryFact, report bool) {
 	var what string
 	switch t := instr.(type) {
 	case *ssa.Send:
@@ -612,7 +559,6 @@ func (pc *lockOrderContext) visitChannelOp(fn *ssa.Function, instr ssa.Instructi
 	cur.at(fn, instr)
 	// A channel operation is a wait this analysis inferred rather than one it can name, so
 	// it does not travel out of the package it occurs in unless the module says otherwise.
-	pc.shadowReleased(fn, instr, cur, report, "chan")
 	pc.noteBlocking(instr.Pos(), what, what /* waitKey: its kind is all that identifies it */, nil, cur.held(), cur.releasedClasses(), false /* named */, summary, report)
 	pc.recordWitnessWait(fn, what, instr.Pos(), cur.releasedClasses(), false /* named */, false /* annotated */)
 }
@@ -662,7 +608,6 @@ func (pc *lockOrderContext) analyzePackage(fns []*ssa.Function) {
 	for _, fn := range fns {
 		pc.analyzeFunction(fn, summaries[fn], true)
 	}
-	pc.shadowCompare()
 	pc.summaryDump(fns, summaries)
 }
 
