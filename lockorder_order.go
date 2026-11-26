@@ -98,9 +98,21 @@ func (o *order) close() error {
 		}
 	}
 	for _, c := range cs {
-		if o.orders(c, c) {
-			return fmt.Errorf("lock order declarations contain a cycle through class %q", c)
+		if !o.orders(c, c) {
+			continue
 		}
+		// An edge is on a cycle when its reverse is in the closure. Only the edges off every
+		// cycle are closed again; the declared list is restored whole for export.
+		closure, declared := o.precedes, o.edges
+		o.precedes, o.edges = make(map[string]map[string]bool), nil
+		for _, e := range declared {
+			if !closure[e.After][e.Before] {
+				o.addEdge(e)
+			}
+		}
+		_ = o.close()
+		o.edges = declared
+		return fmt.Errorf("lock order declarations contain a cycle through class %q", c)
 	}
 	return nil
 }

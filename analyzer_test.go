@@ -16,6 +16,7 @@ package checklocks_test
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -422,6 +423,203 @@ func TestLockOrderCycle(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("no cycle report in output:\n%s", out)
+			}
+		})
+	}
+}
+
+const cycleLockType = `
+// +lockclass:%[1]s
+type %[1]s struct {
+	mu sync.Mutex
+}
+
+// +checklocksignore +checklocksacquire:v.mu
+func (v *%[1]s) Lock() { v.mu.Lock() }
+
+// +checklocksignore +checklocksrelease:v.mu
+func (v *%[1]s) Unlock() { v.mu.Unlock() }
+`
+
+// TestLockOrderCycleKeepsFacts requires that a declared cycle leaves everything but its
+// own edges in force, in the package, in an importer and in a package that closes a
+// cycle of its own: the only output is the cycle line, once per package under vet.
+func TestLockOrderCycleKeepsFacts(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "checklocks")
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/checklocks").CombinedOutput(); err != nil {
+		t.Fatalf("building the vettool failed: %v\n%s", err, out)
+	}
+
+	types := func(names ...string) string {
+		var s string
+		for _, n := range names {
+			s += fmt.Sprintf(cycleLockType, n)
+		}
+		return s
+	}
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod": "module cyc\n\ngo 1.21\n",
+		"p/p.go": `// Package p declares a cycle and an edge off it.
+//
+// +lockorder:A < B
+// +lockorder:B < A
+// +lockorder:X < A
+// +lockhierarchical:H
+package p
+
+import "sync"
+` + types("A", "B", "X") + `
+// +lockclass:H
+type H struct {
+	mu sync.Mutex
+
+	// +lockhierarchyedge
+	parent *H // +checklocksfail=may require checklocks annotation for mu, used with lock held 100% of the time
+}
+
+// +checklocksignore +checklocksacquire:h.mu
+func (h *H) Lock() { h.mu.Lock() }
+
+// +checklocksignore +checklocksrelease:h.mu
+func (h *H) Unlock() { h.mu.Unlock() }
+
+func (h *H) ChildThenParent() {
+	h.Lock()
+	h.parent.Lock() // +lockorderfail=parent first
+	h.parent.Unlock()
+	h.Unlock()
+}
+
+// Wait stands for a wait the analysis cannot see.
+//
+// +blocking
+func Wait() {}
+
+func Receive(a *A, c chan int) {
+	a.Lock()
+	<-c // +lockblockingfail=a channel receive
+	a.Unlock()
+}
+
+func CallsWait(a *A) {
+	a.Lock()
+	Wait() // +lockblockingfail=which may block
+	a.Unlock()
+}
+
+// +lockblockingignore
+func Ignored(a *A, c chan int) {
+	a.Lock()
+	<-c
+	a.Unlock()
+}
+
+func OffCycle(a *A, x *X) {
+	a.Lock()
+	x.Lock() // +lockorderfail=acquiring X
+	x.Unlock()
+	a.Unlock()
+}
+
+func OnCycle(a *A, b *B) {
+	b.Lock()
+	a.Lock()
+	a.Unlock()
+	b.Unlock()
+}
+
+func SameClass(a1, a2 *A) {
+	a1.Lock()
+	a2.Lock() // +lockorderfail=two locks of one class
+	a2.Unlock()
+	a1.Unlock()
+}
+`,
+		"q/q.go": `package q
+
+import "cyc/p"
+
+func CallsWait(a *p.A) {
+	a.Lock()
+	p.Wait() // +lockblockingfail=which may block
+	a.Unlock()
+}
+
+func OffCycle(a *p.A, x *p.X) {
+	a.Lock()
+	x.Lock() // +lockorderfail=acquiring X
+	x.Unlock()
+	a.Unlock()
+}
+
+func OnCycle(a *p.A, b *p.B) {
+	b.Lock()
+	a.Lock()
+	a.Unlock()
+	b.Unlock()
+}
+`,
+		"r/r.go": `// Package r closes a cycle through two edges it imports.
+//
+// +lockorder:B < X
+// +lockorder:B < Z
+package r
+
+import (
+	"sync"
+
+	"cyc/p"
+)
+` + types("Z") + `
+func OnCycle(a *p.A, x *p.X) {
+	a.Lock()
+	x.Lock()
+	x.Unlock()
+	a.Unlock()
+}
+
+func OffCycle(b *p.B, z *Z) {
+	z.Lock()
+	b.Lock() // +lockorderfail=acquiring B
+	b.Unlock()
+	z.Unlock()
+}
+`,
+	}
+	for name, body := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		argv  []string
+		lines int
+	}{
+		"standalone": {[]string{bin, "-lockgap.enable=true", "-lockorder.hierarchy=true", "./..."}, 0},
+		"vet":        {[]string{"go", "vet", "-vettool=" + bin, "-lockgap.enable=true", "-lockorder.hierarchy=true", "./..."}, 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(tc.argv[0], tc.argv[1:]...)
+			cmd.Dir = dir
+			out, _ := cmd.CombinedOutput()
+			cycles := 0
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				switch {
+				case strings.HasPrefix(line, "#"):
+				case strings.Contains(line, "lock order declarations contain a cycle"):
+					cycles++
+				default:
+					t.Errorf("unexpected output line: %s", line)
+				}
+			}
+			if cycles == 0 || (tc.lines != 0 && cycles != tc.lines) {
+				t.Errorf("want %d cycle lines (any under standalone: 0), got %d:\n%s", tc.lines, cycles, out)
 			}
 		})
 	}

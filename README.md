@@ -81,6 +81,10 @@ A disabled analyzer still runs when another one requires it, so disabling
 `checklocks` silences its diagnostics without depriving `lockstringer` of the
 guard annotations it reads.
 
+If a package's `+lockorder:` declarations form a cycle, `lockorder` reports it, the
+declarations on the cycle are left out of the order, and everything else is
+checked, in the package and in each importer.
+
 ### Flags
 
 Each analyzer's own flags are namespaced under its name:

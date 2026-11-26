@@ -151,7 +151,6 @@ func runLockOrder(pass *analysis.Pass) (any, error) {
 		// A cycle is a declaration bug rather than a finding in the analyzed code, so it
 		// is reported once against the package rather than at a call site.
 		pc.pass.Reportf(token.NoPos, "%s", err.Error())
-		return snapshotOf(own), nil
 	}
 	pc.exportOrderFact()
 
