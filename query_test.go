@@ -468,6 +468,70 @@ func TestViewLiteralSites(t *testing.T) {
 	}
 }
 
+// TestForeignDeferNotRecorded checks the caller's deferred release, run at a return of a literal inside it, is not recorded.
+func TestForeignDeferNotRecorded(t *testing.T) {
+	pkg := buildTestPackage(t, "foreign", `package p
+
+type Mutex struct{}
+
+func acquire(m *Mutex) {}
+func release(m *Mutex) {}
+func other()           {}
+
+func zzR2Release(pl *Mutex, c bool) {
+	defer release(pl)
+	func() {
+		defer other()
+		if c {
+			acquire(pl)
+			return
+		}
+	}()
+}
+`)
+	pass := &analysis.Pass{
+		Fset:   pkg.Prog.Fset,
+		Report: func(analysis.Diagnostic) {},
+		ImportObjectFact: func(o types.Object, fact analysis.Fact) bool {
+			f, ok := fact.(*lockFunctionFacts)
+			guard := map[string]functionGuardInfo{"m": {Resolver: &parameterGuard{Index: 0}, Exclusive: true}}
+			switch {
+			case ok && o.Name() == "release":
+				f.HeldOnEntry = guard
+			case ok && o.Name() == "acquire":
+				f.HeldOnExit = guard
+			default:
+				return false
+			}
+			return true
+		},
+	}
+	pc := &passContext{
+		expectations: newExpectations(pass, checkLocksAnnotations, true),
+		pass:         pass,
+		collect:      true,
+		functions:    make(map[*ssa.Function]struct{}),
+		engine:       &engineView{},
+	}
+	top := pkg.Func("zzR2Release")
+	pc.checkFunction(callSite{kind: siteEntry}, nil, top, &lockFunctionFacts{}, nil, false)
+	e := pc.engine
+	deferred := 0
+	for _, inst := range top.Blocks[0].Instrs {
+		d, ok := inst.(*ssa.Defer)
+		if !ok {
+			continue
+		}
+		deferred++
+		if len(e.releases[d]) > 0 || len(e.gains[d]) > 0 || len(e.opGains[d]) > 0 {
+			t.Errorf("%s: release %v, gain %v, op gain %v recorded at the caller's defer", d, e.releases[d], e.gains[d], e.opGains[d])
+		}
+	}
+	if deferred != 1 {
+		t.Fatalf("found %d defers in the caller, want 1", deferred)
+	}
+}
+
 // unwindFixture is the replay of one function's defers, each recorded as a site of an engine.
 type unwindFixture struct {
 	pc    *passContext
