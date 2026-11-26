@@ -49,7 +49,7 @@ func zzForeignLitLoop(a *App, p *Partition, t *Context, c bool) {
 	}
 }
 
-// Pins the union at a deferred call: callerOwned and gains read the union over returns.
+// Pins a deferred call checked at each return that runs it; both states report it.
 func zzUnionReturns(a *App, p *Partition, c bool) { // +checklocksfail=incompatible return states
 	a.Lock()
 	defer takesThePartition(p) // +lockorderfail=acquiring Partition
@@ -74,7 +74,7 @@ func zzUnionReturnsLiteral(a *App, p *Partition, c bool) { // +checklocksfail=in
 
 func zzYield(yield func(int) bool) { yield(1) }
 
-// Pins a lock held across the body of a range-over-func loop.
+// Pins a lock held across a range-over-func body: neither state reports the nesting inside the body.
 func zzRangeFuncHeld(a *App, p *Partition) {
 	a.Lock()
 	for range zzYield {

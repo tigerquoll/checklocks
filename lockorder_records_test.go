@@ -45,7 +45,7 @@ var recordRows = map[string][]string{
 		"test/lockorder/lockorder.go:707:23: missing expected failure \"acquiring Partition (via (*App).seamDropBoth) while holding App\"",
 		"test/lockorder/lockorder.go:718:11: acquiring App (via (*RWMutex).Lock) while holding App: two locks of one class must not nest",
 		"test/lockorder/lockorder.go:793:11: missing expected failure \"acquiring Partition (via (*Partition).Lock) while holding App\"",
-		// pins.go 21 and 38: G1, the deferred literal's row is lost. 66: callerOwned and gains read the union over returns.
+		// pins.go 21 and 38: G1, the deferred literal's row is lost. 66: a deferred literal is checked against the union of the returns that run it.
 		"test/lockorder/pins.go:21:12: missing expected failure \"acquiring Partition\"",
 		"test/lockorder/pins.go:38:12: missing expected failure \"acquiring Partition\"",
 		"test/lockorder/pins.go:66:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
