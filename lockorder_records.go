@@ -197,8 +197,9 @@ func (r *recordLocks) after(_ *ssa.Function, call ssa.CallInstruction, _ bool) {
 }
 
 // summaryDump writes this unit's summaries, one line per function, and in engine mode the sites with no record.
+// The lockblocking pass writes the second part only, to a .blocking file.
 func (pc *lockOrderContext) summaryDump(fns []*ssa.Function, summaries map[*ssa.Function]*summaryFact) {
-	if summaryDumpDir == "" || pc.check != checkOrder {
+	if summaryDumpDir == "" {
 		return
 	}
 	state := lockorderState
@@ -242,6 +243,10 @@ func (pc *lockOrderContext) summaryDump(fns []*ssa.Function, summaries map[*ssa.
 			break
 		}
 	}
+	ext := ".summary"
+	if pc.check == checkBlocking {
+		ext = ".blocking"
+	}
 	tmp, err := os.CreateTemp(summaryDumpDir, name+".tmp*")
 	if err == nil {
 		_, err = tmp.WriteString(out.String())
@@ -249,7 +254,7 @@ func (pc *lockOrderContext) summaryDump(fns []*ssa.Function, summaries map[*ssa.
 			err = cerr
 		}
 		if err == nil {
-			err = os.Rename(tmp.Name(), filepath.Join(summaryDumpDir, name+".summary"))
+			err = os.Rename(tmp.Name(), filepath.Join(summaryDumpDir, name+ext))
 		}
 		if err != nil {
 			os.Remove(tmp.Name())

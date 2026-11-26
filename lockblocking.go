@@ -170,6 +170,7 @@ func runLockBlocking(pass *analysis.Pass) (any, error) {
 	for _, fn := range state.SrcFuncs {
 		pc.analyzeFunction(fn, &summaryFact{}, true)
 	}
+	pc.summaryDump(nil, nil)
 
 	pc.reportWrappers()
 	pc.flushGroups()

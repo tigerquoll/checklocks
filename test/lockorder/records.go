@@ -124,3 +124,14 @@ func zzWrapperTakenInLiteral(a *App, p *Partition) {
 		seamUnlockApp(a)
 	}()
 }
+
+// A caller's lock released on one path only, then the paths join.
+//
+// +checklocks:a.mu
+func (a *App) zzReleaseOnOnePath(p *Partition, c bool) { // +checklocksfail=incompatible return states
+	if c {
+		a.mu.Unlock() // +lockgapfail=releases a lock its caller holds
+	}
+	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
+	p.Unlock()
+} // +checklocksfail=not held exclusively

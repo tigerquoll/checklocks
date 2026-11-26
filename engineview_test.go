@@ -98,6 +98,23 @@ func TestEngineViewDeferPair(t *testing.T) {
 	}
 }
 
+// TestRunDefersRecordsPair pins that runDefers records a deferred call under the return it runs at.
+func TestRunDefersRecordsPair(t *testing.T) {
+	u := newUnwindFixture(t, "package unwind\n\nfunc g() {}\n\nfunc f() {\n\tdefer g()\n}\n", "f")
+	var run *ssa.RunDefers
+	for _, inst := range u.fn.Blocks[0].Instrs {
+		if r, ok := inst.(*ssa.RunDefers); ok {
+			run = r
+		}
+	}
+	ls := newLockState()
+	ls.pushDefer(u.sites[0], true)
+	u.pc.runDefers(run, u.wc, ls)
+	if _, ok := u.pc.engine.deferHeldSet(run, u.sites[0]); !ok {
+		t.Error("runDefers left no record for the deferred call at its return")
+	}
+}
+
 // TestEngineViewEffects pins the gain and release records: union over states, and none for a function given up on.
 func TestEngineViewEffects(t *testing.T) {
 	pkg := buildTestPackage(t, "effects", "package effects\n\nfunc f() {}\n")

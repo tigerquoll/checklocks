@@ -19,7 +19,6 @@ package checklocks_test
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"maps"
 	"net/url"
@@ -131,10 +130,14 @@ func TestLockOrderRecords(t *testing.T) {
 
 	var mu sync.Mutex
 	diffs := make(map[string]bool)
+	ran := 0
 	t.Run("cases", func(t *testing.T) {
 		for _, tc := range analyzerCases {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
+				mu.Lock()
+				ran++
+				mu.Unlock()
 				args := allEnabledArgs(tc.args)
 				if tc.fileList {
 					args = expandToFiles(t, args)
@@ -166,10 +169,13 @@ func TestLockOrderRecords(t *testing.T) {
 							t.Errorf("%s state wrote no summary dump for %s", arm, unit)
 						}
 					}
+					if _, ok := engine.dump[url.PathEscape(unit)+".blocking"]; !ok {
+						t.Errorf("engine state wrote no blocking dump for %s", unit)
+					}
 				}
-				notWalked := 0
+				notWalked := map[string]int{}
 				for name, text := range engine.dump {
-					unit, err := url.PathUnescape(strings.TrimSuffix(name, ".summary"))
+					unit, err := url.PathUnescape(strings.TrimSuffix(strings.TrimSuffix(name, ".summary"), ".blocking"))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -186,7 +192,10 @@ func TestLockOrderRecords(t *testing.T) {
 						}
 						var n int
 						if _, err := fmt.Sscanf(line, "# norecord not walked sites=%d", &n); err == nil {
-							notWalked += n
+							notWalked[filepath.Ext(name)] += n
+						}
+						if strings.HasPrefix(line, "# norecord") && strings.HasSuffix(name, ".blocking") {
+							t.Logf("%s: %s", name, line)
 						}
 					}
 					w, e := summaryLines(walk.dump[name]), summaryLines(text)
@@ -203,13 +212,15 @@ func TestLockOrderRecords(t *testing.T) {
 					}
 					mu.Unlock()
 				}
-				if notWalked != recordNotWalked[tc.name] {
-					t.Errorf("%d sites not walked, want %d", notWalked, recordNotWalked[tc.name])
+				for _, ext := range []string{".summary", ".blocking"} {
+					if n := notWalked[ext]; n != recordNotWalked[tc.name] {
+						t.Errorf("%s dumps: %d sites not walked, want %d", ext, n, recordNotWalked[tc.name])
+					}
 				}
 			})
 		}
 	})
-	if strings.Contains(flag.Lookup("test.run").Value.String(), "/") {
+	if ran != len(analyzerCases) {
 		return
 	}
 	if got := slices.Sorted(maps.Keys(diffs)); !slices.Equal(got, recordDumpDiffs) {
