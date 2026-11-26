@@ -51,6 +51,8 @@ var recordRows = map[string][]string{
 		"test/lockorder/records.go:204:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
 		"test/lockorder/records.go:204:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
 		"test/lockorder/records.go:224:10: acquiring Context (via (*Context).Lock) while holding App: the declared order has Context before App",
+		"test/lockorder/records.go:274:11: missing expected failure \"acquiring Partition\"",
+		"test/lockorder/records.go:314:11: missing expected failure \"acquiring Partition\"",
 		"test/lockorder/records.go:51:9: acquiring Partition (via (*Partition).Lock) while holding App: the declared order has Partition before App",
 		"test/lockorder/records.go:61:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
 		"test/lockorder/records.go:72:9: acquiring Partition (via (*Partition).Lock) while holding SeamInner: the declared order has Partition before SeamInner",
@@ -58,11 +60,15 @@ var recordRows = map[string][]string{
 	},
 	"lockblocking": {
 		"test/lockblocking/records.go:48:3: a channel receive while holding App: a wait under a lock stalls every other user of it",
+		"test/lockblocking/records.go:94:12: missing expected failure \"calling (*WaitGroup).Wait\"",
 	},
 }
 
 // recordNotWalked is the sites the engine state's dump counts as not walked, per case: lock-primitive bodies.
 var recordNotWalked = map[string]int{"checklocks": 5, "fresh": 2, "lockgap": 2, "lockorder": 6, "locktype": 6}
+
+// recordGaveUp is the sites the engine state's dump counts as in a function it gave up in, per case.
+var recordGaveUp = map[string]int{"checklocks": 134, "lockblocking": 34, "lockblocking-filelist": 34, "lockorder": 70}
 
 // recordDumpDiffs is the functions whose summary line differs between the states.
 var recordDumpDiffs = []string{
@@ -74,6 +80,8 @@ var recordDumpDiffs = []string{
 	recordsLockorder + ": zzAliasEntryLiteral$1",
 	recordsLockorder + ": zzAliasInAnnotatedLiteral$1",
 	recordsLockorder + ": zzAnnotatedLiteralSameClass$1",
+	recordsLockorder + ": zzGiveUpOrder",
+	recordsLockorder + ": zzGiveUpOrderIgnored",
 	recordsLockorder + ": zzInlineLiteralInherits$1",
 	recordsLockorder + ": zzPlainBodyLiteral$1",
 	recordsLockorder + ": zzProbeNoIgnore$2",
@@ -173,7 +181,7 @@ func TestLockOrderRecords(t *testing.T) {
 						t.Errorf("engine state wrote no blocking dump for %s", unit)
 					}
 				}
-				notWalked := map[string]int{}
+				notWalked, gaveUp := map[string]int{}, map[string]int{}
 				for name, text := range engine.dump {
 					unit, err := url.PathUnescape(strings.TrimSuffix(strings.TrimSuffix(name, ".summary"), ".blocking"))
 					if err != nil {
@@ -193,6 +201,12 @@ func TestLockOrderRecords(t *testing.T) {
 						var n int
 						if _, err := fmt.Sscanf(line, "# norecord not walked sites=%d", &n); err == nil {
 							notWalked[filepath.Ext(name)] += n
+						}
+						if rest, ok := strings.CutPrefix(line, "# norecord gave up: "); ok {
+							if _, tail, ok := strings.Cut(rest, " sites="); ok {
+								fmt.Sscanf(tail, "%d", &n)
+								gaveUp[filepath.Ext(name)] += n
+							}
 						}
 						if strings.HasPrefix(line, "# norecord") && strings.HasSuffix(name, ".blocking") {
 							t.Logf("%s: %s", name, line)
@@ -215,6 +229,9 @@ func TestLockOrderRecords(t *testing.T) {
 				for _, ext := range []string{".summary", ".blocking"} {
 					if n := notWalked[ext]; n != recordNotWalked[tc.name] {
 						t.Errorf("%s dumps: %d sites not walked, want %d", ext, n, recordNotWalked[tc.name])
+					}
+					if n := gaveUp[ext]; n != recordGaveUp[tc.name] {
+						t.Errorf("%s dumps: %d sites in a function the engine gave up in, want %d", ext, n, recordGaveUp[tc.name])
 					}
 				}
 			})

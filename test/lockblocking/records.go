@@ -60,3 +60,71 @@ func zzGoLiteralDefersWait(a *App, wg *sync.WaitGroup, c bool) {
 		}
 	}()
 }
+
+type zzSeven struct {
+	a, b, c, d, e, f, g sync.Mutex
+}
+
+// Pins for the flip: a function the engine gave up in waits under a lock taken before the loop.
+func zzGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	a.Lock()
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+	wg.Wait() // +lockblockingfail=calling (*WaitGroup).Wait
+	a.Unlock()
+}
+
+func zzGiveUpWaits(f *zzSeven, wg *sync.WaitGroup, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+	wg.Wait()
+}
+
+// Pins for the flip: the exported summary of a given-up function that waits, seen from a caller holding App.
+func zzCallsGiveUpBlocks(f *zzSeven, a *App, wg *sync.WaitGroup, c func() bool) {
+	a.Lock()
+	zzGiveUpWaits(f, wg, c) // +lockblockingfail=calling zzGiveUpWaits
+	a.Unlock()
+}

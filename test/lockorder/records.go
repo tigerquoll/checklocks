@@ -244,3 +244,74 @@ func zzProbeLegacyWalk(a *App, p *Partition, c bool) {
 		a.Unlock()
 	}
 }
+
+// Pins for the flip: a function the engine gave up in takes App then Partition.
+func zzGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+	a.Lock()
+	p.Lock() // +lockorderfail=acquiring Partition
+	p.Unlock()
+	a.Unlock()
+}
+
+// Pins for the flip: the exported summary of a given-up function, seen from a caller holding Partition.
+func zzCallsGiveUpOrder(f *litSeven, a *App, p *Partition, c func() bool) {
+	p.Lock()
+	zzGiveUpOrder(f, a, p, c) // +lockorderfail=acquiring Partition
+	p.Unlock()
+}
+
+// Pins for the flip: zzGiveUpOrder under +checklocksignore, so no give-up row is printed.
+//
+// +checklocksignore
+func zzGiveUpOrderIgnored(f *litSeven, a *App, p *Partition, c func() bool) {
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+	a.Lock()
+	p.Lock() // +lockorderfail=acquiring Partition
+	p.Unlock()
+	a.Unlock()
+}
