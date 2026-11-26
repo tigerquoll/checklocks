@@ -36,8 +36,8 @@ type heldLock struct {
 }
 
 // engineView is what the engine records per pass for lockorder and lockblocking: locks held at
-// each call and channel operation, entry locks, and what each call's annotations acquired and
-// released. Literal sites carry held, gains and op gains too. A nil view records and reports nothing.
+// each call and channel operation, entry locks, and what each call's annotations acquired.
+// Literal sites carry held, gains and op gains too. A nil view records and reports nothing.
 type engineView struct {
 	// held is the locks held at each site in some state; a client that suppresses or derives must use query.
 	held   map[ssa.Instruction]map[pathKey]heldLock
@@ -47,8 +47,7 @@ type engineView struct {
 	// gains is the real locks each call's acquire annotations took, joined over the states.
 	gains map[ssa.Instruction]map[pathKey]lockPath
 
-	// opGains is the lock a direct lock operation took at each call, joined over the states. It is
-	// kept apart from gains, which the old walk reads at every call it does not consume.
+	// opGains is the lock a direct lock operation took at each call, joined over the states.
 	opGains map[ssa.Instruction]map[pathKey]lockPath
 
 	// deferHeld is held for a deferred call as run by one return; the Defer's own record is the union over its returns.
