@@ -79,8 +79,9 @@ func (o *order) classes() []string {
 }
 
 // close computes the transitive closure of the declared edges. If the declarations contain a cycle, it returns an
-// error naming it and the packages that declared it, and closes only the edges that lie on no cycle: a cycle would
-// make every acquisition of the classes involved a violation. The declared edges are kept whole for export.
+// error naming it and the packages that declared the cycle through the named class, and closes only the edges
+// that lie on no cycle: a cycle would make every acquisition of the classes involved a violation. The declared
+// edges are kept whole for export.
 func (o *order) close() error {
 	cs := o.classes()
 	for _, k := range cs {
@@ -109,7 +110,9 @@ func (o *order) close() error {
 		dropped := make(map[string]bool)
 		for _, e := range declared {
 			if closure[e.After][e.Before] {
-				dropped[e.Pkg] = true
+				if closure[c][e.Before] && closure[e.After][c] {
+					dropped[e.Pkg] = true
+				}
 			} else {
 				o.addEdge(e)
 			}

@@ -84,9 +84,10 @@ guard annotations it reads.
 If the `+lockorder:` declarations a package sees, its own and those of its
 imports, form a cycle, `lockorder` reports it in that package, naming the
 packages that declared it, leaves the declarations on the cycle out of the
-order, and checks everything else. An importer that closes a larger cycle leaves
-out its edges too. The report has no source position, so an ignore cannot
-silence it; fix the declarations.
+order, and checks everything else. An importer whose own declarations close a
+larger cycle leaves out every declaration on that cycle, including the ones it
+imports. The report has no source position, so an ignore cannot silence it; fix
+the declarations.
 
 ### Flags
 

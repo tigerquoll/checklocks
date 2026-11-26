@@ -153,6 +153,30 @@ func TestCycleKeepsOffCycleEdges(t *testing.T) {
 	}
 }
 
+func TestCycleReportNamesOnlyTheNamedCycle(t *testing.T) {
+	o := newOrder()
+	for _, e := range []orderEdge{
+		{Before: "A", After: "B", Pkg: "p"},
+		{Before: "B", After: "A", Pkg: "p"},
+		{Before: "M", After: "N", Pkg: "s"},
+		{Before: "N", After: "M", Pkg: "s"},
+		{Before: "X", After: "A", Pkg: "x"},
+	} {
+		o.addEdge(e)
+	}
+	err := o.close()
+	want := `lock order declarations contain a cycle through class "A" (declared in p)`
+	if err == nil || err.Error() != want {
+		t.Errorf("close() = %v, want %s", err, want)
+	}
+	if o.orders("A", "B") || o.orders("M", "N") {
+		t.Error("an edge on a cycle must be left out of the order")
+	}
+	if !o.orders("X", "A") {
+		t.Error("an edge off every cycle must stay in the order")
+	}
+}
+
 func TestParseOrderEdge(t *testing.T) {
 	tests := []struct {
 		in      string
