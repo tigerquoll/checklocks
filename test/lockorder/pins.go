@@ -265,3 +265,50 @@ func zzGiveUpGoLiteralIgnored(f *litSeven, c func() bool) {
 		}
 	}()
 }
+
+// Pins that a range-over-func loop body follows its function's lockorder ignore: no row.
+//
+// +lockorderignore
+func zzIgnoredRangeBody(a *App, p *Partition) {
+	for range zzYield {
+		a.Lock()
+		p.Lock()
+		p.Unlock()
+		a.Unlock()
+	}
+}
+
+// Pins that a go literal gets the skipped rows when its function gave up under both ignores.
+//
+// +lockorderignore +lockblockingignore
+func zzGiveUpFunctionGoLiteral(f *litSeven, a *App, p *Partition, c func() bool) { // +checklocksfail=checklocks gave up on this function
+	go func() { // +lockorderfail=lockorder skipped this function +lockblockingfail=lockblocking skipped this function
+		a.Lock()
+		p.Lock()
+		p.Unlock()
+		a.Unlock()
+	}()
+	for c() {
+		if c() {
+			f.a.Lock()
+		}
+		if c() {
+			f.b.Lock()
+		}
+		if c() {
+			f.c.Lock()
+		}
+		if c() {
+			f.d.Lock()
+		}
+		if c() {
+			f.e.Lock()
+		}
+		if c() {
+			f.f.Lock()
+		}
+		if c() {
+			f.g.Lock()
+		}
+	}
+}

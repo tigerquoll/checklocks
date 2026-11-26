@@ -30,21 +30,36 @@ import (
 // ignoredAround is functionIgnored for fn, or for the function around it when fn is a literal
 // the function calls or defers in place; any other literal is analysed as a function of its own.
 func (pc *lockOrderContext) ignoredAround(fn *ssa.Function) bool {
-	if pc.engineView() != nil && ignoreCovers(fn) {
+	if pc.engineView() != nil && pc.ignoreCovers(fn) {
 		return pc.functionIgnored(topOf(fn))
 	}
 	return pc.functionIgnored(fn)
 }
 
 // ignoreCovers says whether fn, and every literal around it, is used in its parent only as the
-// callee of a call or a defer.
-func ignoreCovers(fn *ssa.Function) bool {
+// callee of a call or a defer, or is a range-over-func loop body.
+func (pc *lockOrderContext) ignoreCovers(fn *ssa.Function) bool {
+	if covered, ok := pc.covers[fn]; ok {
+		return covered
+	}
+	covered := pc.computeCovers(fn)
+	if pc.covers == nil {
+		pc.covers = make(map[*ssa.Function]bool)
+	}
+	pc.covers[fn] = covered
+	return covered
+}
+
+func (pc *lockOrderContext) computeCovers(fn *ssa.Function) bool {
 	parent := fn.Parent()
 	if parent == nil {
 		return true
 	}
-	if !ignoreCovers(parent) {
+	if !pc.ignoreCovers(parent) {
 		return false
+	}
+	if fn.Synthetic == "range-over-func yield" {
+		return true
 	}
 	for _, b := range parent.Blocks {
 		for _, inst := range b.Instrs {
@@ -111,13 +126,13 @@ func (pc *lockOrderContext) analyzeFunction(fn *ssa.Function, summary *summaryFa
 	}
 	if view := pc.engineView(); view != nil {
 		if reason := view.gaveUpIn(fn); reason != "" {
-			if own := view.gaveUp[fn]; own != "" && report && !pc.ignoredAround(fn) &&
-				(fn.Parent() == nil || view.gaveUpIn(fn.Parent()) == "") {
+			if report && !pc.ignoredAround(fn) &&
+				(fn.Parent() == nil || view.gaveUpIn(fn.Parent()) == "" || pc.ignoredAround(fn.Parent())) {
 				name := "lockorder"
 				if pc.check == checkBlocking {
 					name = "lockblocking"
 				}
-				pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on it (%s)", name, own)
+				pc.maybeFail(fn.Pos(), "%s skipped this function: checklocks gave up on it (%s)", name, reason)
 			}
 			return
 		}
@@ -213,9 +228,7 @@ type walkState struct {
 	deferred  []ssa.CallInstruction
 }
 
-// newWalkState returns the state a block starts from, with the given locks. Nothing is
-// carried in for the instances: an annotation names a class, not the instance it was taken
-// on.
+// newWalkState returns the state a block starts from: no released classes yet; held locks come from the engine's record at each site.
 func newWalkState(locks *recordLocks) *walkState {
 	return &walkState{locks: locks, instances: newInstanceSet()}
 }

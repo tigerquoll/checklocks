@@ -124,6 +124,9 @@ type lockOrderContext struct {
 	// labelSets caches the classes each function's calls acquired each lock under; see labels.
 	labelSets map[*ssa.Function]map[pathKey]map[string]struct{}
 
+	// covers caches ignoreCovers per function.
+	covers map[*ssa.Function]bool
+
 	// wrappers holds the lock methods known by class alone that carry no annotation.
 	wrappers map[*types.Func]*wrapperSite
 }

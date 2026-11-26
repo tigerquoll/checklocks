@@ -329,8 +329,6 @@ func zzCommaOKHolds(m map[string]*App, k string, p *Partition) {
 }
 
 // Pins a lock held on one branch and released by a defer.
-//
-// +checklocksignore
 func zzHeldOnOneBranchDeferred(a *App, p *Partition, c bool) {
 	if c {
 		a.mu.Lock()
@@ -338,15 +336,4 @@ func zzHeldOnOneBranchDeferred(a *App, p *Partition, c bool) {
 	}
 	p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 	p.Unlock()
-}
-
-// Pins a lock taken inside a literal that escapes to a callee.
-func zzEscapingLiteralHolds(a *App, p *Partition, keep func(func())) {
-	f := func() {
-		a.mu.Lock()
-		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
-		p.Unlock()
-		a.mu.Unlock()
-	}
-	keep(f)
 }

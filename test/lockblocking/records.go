@@ -150,3 +150,16 @@ func zzIgnoredDeferLiteralWaits(a *App, c chan int) {
 		<-c
 	}()
 }
+
+func zzYield(yield func(int) bool) { yield(1) }
+
+// Pins that a range-over-func loop body follows its function's lockblocking ignore: no row.
+//
+// +lockblockingignore
+func zzIgnoredRangeBodyWaits(a *App, c chan int) {
+	for range zzYield {
+		a.mu.Lock()
+		<-c
+		a.mu.Unlock()
+	}
+}
