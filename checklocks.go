@@ -203,6 +203,7 @@ const (
 	returnResolve      decisionKind = "returnResolve"
 	returnHeld         decisionKind = "returnHeld"
 	returnCount        decisionKind = "returnCount"
+	rangeLockLost      decisionKind = "rangeLockLost"
 	entryResolve       decisionKind = "entryResolve"
 	entryDuplicate     decisionKind = "entryDuplicate"
 	incompatibleReturn decisionKind = "incompatibleReturn"

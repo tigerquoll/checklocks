@@ -76,11 +76,11 @@ func zzUnionReturnsLiteral(a *App, p *Partition, c bool) { // +checklocksfail=in
 
 func zzYield(yield func(int) bool) { yield(1) }
 
-// Pins a lock held across a range-over-func body: neither state reports the nesting inside the body.
+// Pins a lock held across a range-over-func body: the body's acquisition is ordered against it.
 func zzRangeFuncHeld(a *App, p *Partition) {
 	a.Lock()
 	for range zzYield {
-		p.Lock()
+		p.Lock() // +lockorderfail=acquiring Partition (via (*Partition).Lock) while holding App
 		p.Unlock()
 	}
 	a.Unlock()

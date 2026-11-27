@@ -460,10 +460,12 @@ may be an opportunity to split them into named functions for improved analysis
 and debuggability, and avoid the need to use force annotations.
 
 A range-over-func loop body (`for v := range seq`, where `seq` is an iterator
-function) is such a closure: it is passed to the iterator, so its accesses are
-checked with no lock state, even when the loop holds a lock around them. Copy
-the values out under the lock first, or take the lock inside the loop body
-instead of around the loop.
+function) is checked in place, starting from the locks held at the loop, because
+Go calls it only during the loop. After the loop the function continues with the
+locks it held before the loop, and a body iteration that changes the loop's locks
+is reported. A lock taken in the body and held at `break` or `return`, and
+defers inside the body, are not followed after the loop. A closure passed to any
+other function keeps the rule above.
 
 ### Mixed Atomic Access and Lock Enforcement
 

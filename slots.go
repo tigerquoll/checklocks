@@ -245,6 +245,19 @@ func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.
 			}
 		}
 	}
+	for _, arg := range args {
+		mc, ok := arg.(*ssa.MakeClosure)
+		if !ok || !isRangeBody(mc.Fn.(*ssa.Function)) {
+			continue
+		}
+		clfn := mc.Fn.(*ssa.Function)
+		for i, fv := range clfn.FreeVars {
+			if sub(clfn).loaded[fv] || pc.hasAliasFacts(fv) {
+				load(mc.Bindings[i])
+				visit(mc.Bindings[i])
+			}
+		}
+	}
 	var tf *types.Func
 	if common.Method != nil {
 		tf = common.Method

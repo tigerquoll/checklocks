@@ -59,7 +59,7 @@ func (pc *lockOrderContext) computeCovers(fn *ssa.Function) bool {
 	if !pc.ignoreCovers(parent) {
 		return false
 	}
-	if fn.Synthetic == "range-over-func yield" {
+	if isRangeBody(fn) {
 		return true
 	}
 	for _, b := range parent.Blocks {

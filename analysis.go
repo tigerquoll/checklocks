@@ -18,6 +18,7 @@ import (
 	"cmp"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"maps"
@@ -469,6 +470,26 @@ func (pc *passContext) checkGlobalAccess(wc *walkContext, inst ssa.Instruction, 
 func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) {
 	pc.recordHeld(site.instr, site.run, wc, ls)
 	lff := wc.lff
+	// A range-over-func body runs only during the iterator call, so it is walked here with
+	// the locks held at the call. The caller continues with the locks it had before.
+	if pc.emit != emitReplay {
+		for _, arg := range site.Common().Args {
+			mc, ok := arg.(*ssa.MakeClosure)
+			if !ok {
+				continue
+			}
+			body := mc.Fn.(*ssa.Function)
+			if !isRangeBody(body) {
+				continue
+			}
+			bls := ls.fork()
+			bls.deferStack = deferStack{}
+			for i, fv := range body.FreeVars {
+				bls.store(fv, mc.Bindings[i])
+			}
+			pc.checkFunction(site, wc, body, &lockFunctionFacts{Ignore: lff.Ignore}, bls, true /* force */)
+		}
+	}
 	// See: https://godoc.org/golang.org/x/tools/go/ssa#CallCommon
 	//
 	// "invoke" mode: Method is non-nil, and Value is the underlying value.
@@ -1241,6 +1262,9 @@ type walkContext struct {
 	// entryLocks holds, by identity, the mode of each caller's lock an inline walk was entered with.
 	entryLocks map[pathKey]bool
 
+	// rangeEntry is the lock state a range-over-func body was walked in place from.
+	rangeEntry *lockState
+
 	// returnStates holds, by identity summary, the text of each lock state the walk returned in.
 	returnStates map[string]string
 
@@ -1450,6 +1474,21 @@ func returnPos(ret *ssa.Return) token.Pos {
 	return token.NoPos
 }
 
+// isRangeBody reports whether fn is the body of a range-over-func loop.
+func isRangeBody(fn *ssa.Function) bool {
+	_, ok := fn.Syntax().(*ast.RangeStmt)
+	return ok
+}
+
+// isBreakExit reports whether ret leaves a range-over-func body for good: break, return or goto.
+func isBreakExit(ret *ssa.Return) bool {
+	if !isRangeBody(ret.Parent()) || len(ret.Results) != 1 {
+		return false
+	}
+	c, ok := ret.Results[0].(*ssa.Const)
+	return ok && c.Value != nil && c.Value.Kind() == constant.Bool && !constant.BoolVal(c.Value)
+}
+
 // transferBlock runs the instructions of a block on a fork of parent. It returns
 // the resulting state and, when the block returns, that state again.
 func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, parent *lockState) (ls, rls *lockState) {
@@ -1503,6 +1542,22 @@ func (pc *passContext) transferBlock(wc *walkContext, block *ssa.BasicBlock, par
 					pc.maybeFailLocks(rls, pos, "return with unexpected locks held (locks: %s)", rls.String())
 				} else if !counted {
 					pc.suppressed()
+				}
+				if wc.rangeEntry != nil && !isBreakExit(rv) {
+					// An iteration must end holding the loop's locks, or the next one starts without them.
+					for _, key := range slices.Sorted(maps.Keys(wc.rangeEntry.lockedMutexes)) {
+						info := wc.rangeEntry.lockedMutexes[key]
+						if _, held := rls.lockedMutexes[key]; held {
+							continue
+						}
+						lock := fmt.Sprintf("%s %s", info.path.String(), exclusiveStr(info.exclusive))
+						pc.decide(at, rangeLockLost, false, lock)
+						if _, ok := pc.forced[pc.positionKey(pos)]; !ok && !wc.lff.Ignore {
+							pc.maybeFail(pos, "range loop body ends an iteration without %s held", lock)
+						} else {
+							pc.suppressed()
+						}
+					}
 				}
 			}
 		}
@@ -1650,6 +1705,9 @@ func (pc *passContext) checkFunction(site callSite, outer *walkContext, fn *ssa.
 	// An inline body is entered with the caller's locks held; only what it takes
 	// itself is its own to release, and a lock merely assumed is no cover.
 	if parent != nil {
+		if isRangeBody(fn) {
+			wc.rangeEntry = ls.fork()
+		}
 		wc.entryLocks = make(map[pathKey]bool, ls.count())
 		for key, info := range ls.lockedMutexes {
 			if !info.assumed {
