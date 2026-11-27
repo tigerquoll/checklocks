@@ -487,7 +487,7 @@ func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) 
 			for i, fv := range body.FreeVars {
 				b := mc.Bindings[i]
 				if outer, ok := b.(*ssa.FreeVar); ok {
-					// Bind to what the enclosing body's free variable stands for, when that is a stored value.
+					// Bind to what the enclosing function's free variable stands for, when that is a stored value.
 					if bound, ok := ls.stored[outer]; ok && !isFreeVar(bound) && ls.stored[bound] != nil {
 						b = bound
 					}
@@ -1488,6 +1488,7 @@ func isRangeBody(fn *ssa.Function) bool {
 }
 
 // isBreakExit reports whether ret leaves a range-over-func body for good: break, return or goto.
+// It gates only the per-iteration lock check, not the return states.
 func isBreakExit(ret *ssa.Return) bool {
 	if !isRangeBody(ret.Parent()) || len(ret.Results) != 1 {
 		return false

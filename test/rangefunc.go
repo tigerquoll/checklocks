@@ -221,15 +221,15 @@ func testRangeFuncDeferPending(tc *oneGuardStruct) {
 	}
 }
 
-// A loop, a called literal and a loop on its parameter.
-func testRangeFuncLiteralParam(tc *oneGuardStruct) {
+// A loop, a called literal that captures the struct, and a loop in it.
+func testRangeFuncLiteralCapture(tc *oneGuardStruct) {
 	tc.mu.Lock()
 	for range rangeSeq {
-		func(s *oneGuardStruct) {
+		func() {
 			for range rangeSeq {
-				s.guardedField++
+				tc.guardedField++
 			}
-		}(tc)
+		}()
 	}
 	tc.mu.Unlock()
 }

@@ -464,8 +464,8 @@ function) is checked in place, starting from the locks held at the loop, because
 Go calls it only during the loop. After the loop the function continues with the
 locks it held before the loop. An iteration that continues with the loop's locks
 changed is reported. A lock taken or released in the body before a `break` or
-`return`, and defers inside the body, are not followed after the loop. A closure passed to any
-other function keeps the rule above.
+`return`, and defers inside the body, are not followed after the loop. A closure
+passed to any other function keeps the rule above.
 
 ### Mixed Atomic Access and Lock Enforcement
 
