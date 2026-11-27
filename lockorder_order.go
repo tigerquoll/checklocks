@@ -16,6 +16,7 @@ package checklocks
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -47,8 +48,11 @@ func newOrder() *order {
 	}
 }
 
-// addEdge records a declared edge.
+// addEdge records a declared edge once.
 func (o *order) addEdge(e orderEdge) {
+	if slices.Contains(o.edges, e) {
+		return
+	}
 	o.edges = append(o.edges, e)
 	if o.precedes[e.Before] == nil {
 		o.precedes[e.Before] = make(map[string]bool)

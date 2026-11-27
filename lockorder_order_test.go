@@ -116,6 +116,16 @@ func TestWithheldSuppressesSameClass(t *testing.T) {
 	}
 }
 
+func TestAddEdgeRecordsAnIdenticalEdgeOnce(t *testing.T) {
+	o := newOrder()
+	o.addEdge(orderEdge{Before: "A", After: "B", Pkg: "p"})
+	o.addEdge(orderEdge{Before: "A", After: "B", Pkg: "p"})
+	o.addEdge(orderEdge{Before: "A", After: "B", Pkg: "q"})
+	if len(o.edges) != 2 || !o.orders("A", "B") {
+		t.Errorf("edges = %v, want one per declaring package", o.edges)
+	}
+}
+
 func TestCycleIsReported(t *testing.T) {
 	o := newOrder()
 	o.addEdge(orderEdge{Before: "A", After: "B"})

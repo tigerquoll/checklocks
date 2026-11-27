@@ -459,6 +459,12 @@ below. However, if anonymous functions and closures require annotations, there
 may be an opportunity to split them into named functions for improved analysis
 and debuggability, and avoid the need to use force annotations.
 
+A range-over-func loop body (`for v := range seq`, where `seq` is an iterator
+function) is such a closure: it is passed to the iterator, so its accesses are
+checked with no lock state, even when the loop holds a lock around them. Copy
+the values out under the lock first, or move the body into a function annotated
+with the locks it needs.
+
 ### Mixed Atomic Access and Lock Enforcement
 
 Some members may allow read-only atomic access, but be protected against writes
