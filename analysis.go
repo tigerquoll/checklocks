@@ -485,7 +485,14 @@ func (pc *passContext) checkCall(site callSite, wc *walkContext, ls *lockState) 
 			bls := ls.fork()
 			bls.deferStack = deferStack{}
 			for i, fv := range body.FreeVars {
-				bls.store(fv, mc.Bindings[i])
+				b := mc.Bindings[i]
+				if outer, ok := b.(*ssa.FreeVar); ok {
+					// Bind to what the enclosing body's free variable stands for, when that is a stored value.
+					if bound, ok := ls.stored[outer]; ok && !isFreeVar(bound) && ls.stored[bound] != nil {
+						b = bound
+					}
+				}
+				bls.store(fv, b)
 			}
 			pc.checkFunction(site, wc, body, &lockFunctionFacts{Ignore: lff.Ignore}, bls, true /* force */)
 		}

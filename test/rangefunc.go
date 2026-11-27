@@ -137,17 +137,17 @@ func testRangeFuncDeferReturn(tc *oneGuardStruct) int {
 	return 0
 }
 
-// A loop in a loop, in a called literal and a literal in a body: the free variable is two hops away.
+// A loop in a loop and in a called literal reach the lock; a literal in a body is one hop too far.
 func testRangeFuncNested(tc *oneGuardStruct) {
 	tc.mu.Lock()
 	for range rangeSeq {
 		for range rangeSeq {
-			tc.guardedField++ // +checklocksfail
+			tc.guardedField++
 		}
 	}
 	func() {
 		for range rangeSeq {
-			tc.guardedField++ // +checklocksfail
+			tc.guardedField++
 		}
 	}()
 	for range rangeSeq {
@@ -219,4 +219,82 @@ func testRangeFuncDeferPending(tc *oneGuardStruct) {
 	for range rangeSeq {
 		tc.guardedField++
 	}
+}
+
+// A loop, a called literal and a loop on its parameter.
+func testRangeFuncLiteralParam(tc *oneGuardStruct) {
+	tc.mu.Lock()
+	for range rangeSeq {
+		func(s *oneGuardStruct) {
+			for range rangeSeq {
+				s.guardedField++
+			}
+		}(tc)
+	}
+	tc.mu.Unlock()
+}
+
+// A loop in a loop over a local struct.
+func testRangeFuncNestedLocal() {
+	var tc oneGuardStruct
+	tc.mu.Lock()
+	for range rangeSeq {
+		for range rangeSeq {
+			tc.guardedField++
+		}
+	}
+	tc.mu.Unlock()
+}
+
+// Two loops, a called literal and a loop on its parameter.
+func testRangeFuncNestedLiteralParam(tc *oneGuardStruct) {
+	tc.mu.Lock()
+	for range rangeSeq {
+		for range rangeSeq {
+			func(s *oneGuardStruct) {
+				for range rangeSeq {
+					s.guardedField++
+				}
+			}(tc)
+		}
+	}
+	tc.mu.Unlock()
+}
+
+// A continue path that releases the loop's lock is reported once, at the body's end.
+func testRangeFuncContinueRelease(tc *oneGuardStruct, c bool) {
+	tc.mu.Lock()
+	for range rangeSeq {
+		if c {
+			tc.mu.Unlock()
+			continue
+		}
+		tc.guardedField++
+	} // +checklocksfail=range loop body ends an iteration without
+	tc.mu.Unlock()
+}
+
+// A continue path that takes another lock is reported as a return with locks held, not as incompatible states.
+func testRangeFuncContinueAcquire(tc *twoLocksStruct, c bool) {
+	tc.mu.Lock()
+	for range rangeSeq {
+		if c {
+			tc.secondMu.Lock()
+			continue
+		}
+	} // +checklocksfail=return with unexpected locks held
+	tc.mu.Unlock()
+}
+
+// Known false negative: the lock released before a break still counts as held after the loop.
+func testRangeFuncReleaseBreak(tc *oneGuardStruct, c bool) {
+	tc.mu.Lock()
+	for v := range rangeSeq {
+		if c {
+			tc.mu.Unlock()
+			break
+		}
+		tc.guardedField += v
+	}
+	tc.mu.Unlock()
 }

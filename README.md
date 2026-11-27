@@ -462,9 +462,9 @@ and debuggability, and avoid the need to use force annotations.
 A range-over-func loop body (`for v := range seq`, where `seq` is an iterator
 function) is checked in place, starting from the locks held at the loop, because
 Go calls it only during the loop. After the loop the function continues with the
-locks it held before the loop, and a body iteration that changes the loop's locks
-is reported. A lock taken in the body and held at `break` or `return`, and
-defers inside the body, are not followed after the loop. A closure passed to any
+locks it held before the loop. An iteration that continues with the loop's locks
+changed is reported. A lock taken or released in the body before a `break` or
+`return`, and defers inside the body, are not followed after the loop. A closure passed to any
 other function keeps the rule above.
 
 ### Mixed Atomic Access and Lock Enforcement

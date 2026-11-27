@@ -247,10 +247,13 @@ func (pc *passContext) callRoots(call ssa.CallInstruction, visit, load func(ssa.
 	}
 	for _, arg := range args {
 		mc, ok := arg.(*ssa.MakeClosure)
-		if !ok || !isRangeBody(mc.Fn.(*ssa.Function)) {
+		if !ok {
 			continue
 		}
 		clfn := mc.Fn.(*ssa.Function)
+		if !isRangeBody(clfn) {
+			continue
+		}
 		for i, fv := range clfn.FreeVars {
 			if sub(clfn).loaded[fv] || pc.hasAliasFacts(fv) {
 				load(mc.Bindings[i])

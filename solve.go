@@ -297,7 +297,7 @@ func (sv *solver) transfer(item workItem) {
 
 	if rls != nil {
 		text, summary := rls.acquiredString(wc.entryLocks)
-		if !isBreakExit(block.Instrs[len(block.Instrs)-1].(*ssa.Return)) {
+		if !isRangeBody(wc.fn) {
 			wc.returnStates[summary] = text
 		}
 		wc.exits = append(wc.exits, rls)
